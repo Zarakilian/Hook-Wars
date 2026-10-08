@@ -95,7 +95,27 @@ export function autoQuality(): Quality {
   const cores = navigator.hardwareConcurrency ?? 4;
   const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
   if (mobile) return 'low';
-  if (cores >= 12) return 'high';
+  const gpu = gpuName();
+  // Measured 2026-10-08 on Intel UHD (0x9A60) at 1280x720: low 8.8 ms, medium 11 ms, high 14 ms, ultra 21 ms.
+  if (/swiftshader|llvmpipe|software|basic render/i.test(gpu)) return 'low';
+  const integrated = /intel|iris|uhd|hd graphics|radeon\(tm\) graphics|radeon graphics|vega \d+ graphics|mali|adreno|powervr/i.test(gpu);
+  if (integrated) return cores >= 6 ? 'medium' : 'low';
+  if (/nvidia|geforce|rtx|gtx|radeon rx|radeon pro|apple m\d/i.test(gpu)) return cores >= 6 ? 'high' : 'medium';
   if (cores >= 6) return 'medium';
   return 'low';
+}
+
+/** The WebGL renderer string, from a throwaway context (empty string if unavailable). */
+function gpuName(): string {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') ?? c.getContext('webgl');
+    if (!gl) return '';
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return name;
+  } catch {
+    return '';
+  }
 }

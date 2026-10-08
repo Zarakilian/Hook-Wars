@@ -18,13 +18,13 @@ import { Predictor } from '../net/prediction.ts';
 import type { MatchSession } from '../net/session.ts';
 import {
   TEAM_COLORS, groundY, waterY, type AnimatedView, type AudioSystem, type ChainView, type DamageKind, type Engine, type FxSystem,
-  type HazardView, type PudgyView, type WaterView, type WorldView,
+  type HazardView, type WaterView, type WorldView,
 } from '../render/contracts.ts';
 import { createFx } from '../render/fx/fx.ts';
 import { createHazardView, createMineView, createMoverView, createRuneView } from '../render/models/props.ts';
-import { createPudgy, pudgyPalette } from '../render/models/pudgy.ts';
+import { createPudgy, pudgyPalette, type PudgyViewEx } from '../render/models/pudgy.ts';
 import { buildWorld } from '../render/world/terrain.ts';
-import { createWater } from '../render/world/water.ts';
+import { createWater, syncWaterMovers } from '../render/world/water.ts';
 import type { Settings } from '../settings.ts';
 import type { Hud, HudFrame } from '../ui/types.ts';
 import { CameraRig } from './camera.ts';
@@ -41,7 +41,10 @@ export interface GameClientDeps {
 }
 
 interface UnitView {
-  pudgy: PudgyView;
+  pudgy: PudgyViewEx;
+  family: PlayerInfo['family'];
+  fl: number;
+  wakeT: number;
   state: number;
   stateSince: number;
   x: number;
@@ -353,10 +356,13 @@ export class GameClient {
       if (!v) {
         const pudgy = createPudgy({ family: info.family, cosmetics: info.cosmetics, team: info.team, name: info.name, isLocal: id === this.youId, quality: this.engine.quality });
         this.root.add(pudgy.root);
-        v = { pudgy, state: u.st, stateSince: this.time, x: u.x, z: u.z, y: 0, face: u.f, speed: 0, lastSeen: this.time, visible: true, stepT: (id % 7) * 0.05 };
+        v = { pudgy, family: info.family, fl: u.fl, wakeT: 0, state: u.st, stateSince: this.time, x: u.x, z: u.z, y: 0, face: u.f, speed: 0, lastSeen: this.time, visible: true, stepT: 0 };
+        const view = v;
+        pudgy.onFootstep = (_foot, heavy) => this.footstep(view, heavy);
         this.views.set(id, v);
       }
       v.lastSeen = this.time;
+      v.fl = u.fl;
       let x = u.x;
       let z = u.z;
       let st: number = u.st;
@@ -403,7 +409,7 @@ export class GameClient {
         stateTime: this.time - v.stateSince,
         time: this.time,
       });
-      this.footsteps(v, u, info.family, dt);
+      this.wake(v, dt);
     }
     // hide units we can no longer see; drop long-gone ones
     for (const [id, v] of this.views) {
@@ -418,25 +424,42 @@ export class GameClient {
     }
   }
 
-  /** Dust, splash or snow puffs plus footstep sounds for units walking near the camera. */
-  private footsteps(v: UnitView, u: UnitSnap, family: PlayerInfo['family'], dt: number): void {
-    if (!v.visible || v.speed < 1.2 || (u.st !== UnitState.Alive && u.st !== UnitState.Drowning)) return;
-    v.stepT -= dt * (v.speed / 6);
-    if (v.stepT > 0) return;
-    v.stepT = 0.32;
+  /** Dust, splash or snow puffs plus footstep sounds, fired by the character rig on each step. */
+  private footstep(v: UnitView, heavy: boolean): void {
+    if (!v.visible) return;
     const f = this.cam.focusPoint;
     if (Math.abs(v.x - f.x) > 26 || Math.abs(v.z - f.z) > 18) return;
     const inChannel = channelDepthAt(this.map, v.x, v.z) > 0;
     const surface: 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud' =
-      u.fl & UFlag.OnIce ? 'ice'
-        : u.fl & (UFlag.Shallow | UFlag.Swimming) ? 'shallow'
+      v.fl & UFlag.OnIce ? 'ice'
+        : v.fl & (UFlag.Shallow | UFlag.Swimming) ? 'shallow'
           : inChannel ? 'mud'
             : this.map.id === 'frostfang' ? 'snow'
               : this.map.id === 'coralcove' ? 'sand'
                 : 'ground';
     this.tmpV.set(v.x, v.y, v.z);
     this.fx.footstep(this.tmpV, surface);
-    this.deps.audio.play('footstep', { x: v.x, z: v.z, family, volume: 0.45 });
+    this.deps.audio.play('footstep', { x: v.x, z: v.z, family: v.family, volume: heavy ? 0.6 : 0.4 });
+  }
+
+  /** Wading and swimming leave wakes on the water. */
+  private wake(v: UnitView, dt: number): void {
+    if (!v.visible || !(v.fl & (UFlag.Shallow | UFlag.Swimming)) || v.speed < 0.5) return;
+    v.wakeT -= dt;
+    if (v.wakeT > 0) return;
+    v.wakeT = 0.15;
+    this.water.disturb(v.x, v.z, Math.min(0.5, 0.12 + v.speed * 0.04), 0.6);
+  }
+
+  private readonly hookRipT = new Map<number, number>();
+
+  /** Hooks skimming or dragging a body through water leave a trail of ripples (throttled). */
+  private hookRipple(id: number, x: number, z: number): void {
+    const last = this.hookRipT.get(id) ?? -1;
+    if (this.time - last < 0.08) return;
+    if (!Number.isFinite(this.water.surfaceHeight(x, z))) return;
+    this.hookRipT.set(id, this.time);
+    this.water.disturb(x, z, 0.25, 0.45);
   }
 
   /** Reused point arrays per hook, so chains do not allocate every frame. */
@@ -470,10 +493,12 @@ export class GameClient {
       next().set(h.x, y, h.z);
       if (n < 2) next().copy(pool[0]);
       pool.length = n;
+      if (h.tg >= 0 || h.p === 0) this.hookRipple(h.i, h.x, h.z);
       c.setVisible(true);
       c.update(pool, vdt, { retracting: h.p === 1, carrying: h.tg >= 0 || h.ru >= 0, time: this.time });
     }
     for (const id of this.chainPts.keys()) if (!seen.has(id)) this.chainPts.delete(id);
+    for (const id of this.hookRipT.keys()) if (!seen.has(id)) this.hookRipT.delete(id);
     for (const [id, c] of this.chains) {
       if (seen.has(id)) continue;
       c.dispose();
@@ -530,6 +555,7 @@ export class GameClient {
     const floating = present && !snap.w.frozen && snap.w.level > 0.5;
     const mc = snap.mc - (floating ? (snap.t - renderTick) * TICK_DT : 0);
     w.updateMovers(mc, present);
+    syncWaterMovers(this.water, mc);
     for (let i = 0; i < this.movers.length; i++) {
       const p = w.moverPoses[i];
       const v = this.movers[i];
@@ -705,6 +731,7 @@ export class GameClient {
         break;
       }
       case 'drownStart':
+        this.water.disturb(ev.x, ev.z, 0.8, 1.2);
         a.play('drown', { x: ev.x, z: ev.z });
         this.fx.drownBubbles(this.p3(ev.x, ev.z, 0));
         break;
@@ -816,7 +843,8 @@ export class GameClient {
     const screen: HudFrame['screen'] = new Map();
     for (const [id, v] of this.views) {
       if (!v.visible) continue;
-      this.ndc.set(v.x, v.y + 2.75, v.z).project(cam);
+      v.pudgy.getHeadWorld(this.tmpV2);
+      this.ndc.set(this.tmpV2.x, this.tmpV2.y + 0.55, this.tmpV2.z).project(cam);
       const on = this.ndc.z < 1 && Math.abs(this.ndc.x) < 1.1 && Math.abs(this.ndc.y) < 1.1;
       screen.set(id, { x: ((this.ndc.x + 1) / 2) * w, y: ((1 - this.ndc.y) / 2) * hgt, onScreen: on });
     }
