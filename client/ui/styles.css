@@ -1,0 +1,51 @@
+/* Slice styles: plain but readable. The UI pass replaces this with the real look. */
+:root {
+  --bg: #0e1420;
+  --panel: rgba(16, 22, 34, 0.88);
+  --text: #f1ead8;
+  --muted: #9aa3b5;
+  --accent: #ffb347;
+  --danger: #ff5a4a;
+  font-family: 'Nunito Variable', system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden; }
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#ui { position: fixed; inset: 0; pointer-events: none; }
+.hidden { display: none !important; }
+.screens { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto; background: radial-gradient(ellipse at center, rgba(20,30,50,0.55), rgba(5,8,14,0.85)); }
+.panel { background: var(--panel); padding: 24px 28px; border-radius: 14px; min-width: 360px; max-width: min(900px, 94vw); max-height: 92vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.title { font-family: 'Lilita One', system-ui; font-size: 64px; margin: 0; letter-spacing: 2px; color: var(--accent); text-align: center; }
+.tag, .muted { color: var(--muted); }
+.error { color: var(--danger); }
+.btn { font: inherit; font-weight: 700; padding: 10px 16px; border-radius: 10px; border: 2px solid #3a4560; background: #1d2638; color: var(--text); cursor: pointer; }
+.btn:hover:not([disabled]) { border-color: var(--accent); }
+.btn[disabled] { opacity: 0.45; cursor: default; }
+.btn.primary { background: #c8641e; border-color: #f0a050; }
+.btn.small { padding: 6px 10px; font-size: 13px; text-align: left; }
+.field { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.field select, .field input, input { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid #3a4560; background: #121a28; color: var(--text); }
+.config { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.rooms { display: flex; flex-direction: column; gap: 6px; }
+.room { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px; background: #141c2b; border-radius: 8px; }
+.teams { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.teamcol { background: #141c2b; padding: 10px; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; }
+.slot { display: flex; flex-direction: column; padding: 6px 8px; background: #1b2436; border-radius: 6px; }
+.slot.empty { opacity: 0.5; }
+.chatlog { max-height: 140px; overflow: auto; font-size: 14px; color: var(--muted); }
+.hud { position: absolute; inset: 0; pointer-events: none; font-weight: 700; text-shadow: 0 2px 3px #000; }
+.hud-top { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.45); padding: 6px 14px; border-radius: 10px; white-space: nowrap; }
+.hud-bottom { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.5); padding: 8px 14px; border-radius: 10px; white-space: nowrap; font-size: 14px; }
+.feed { position: absolute; top: 56px; right: 16px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; font-size: 14px; }
+.announce { position: absolute; top: 22%; left: 50%; transform: translateX(-50%); font-family: 'Lilita One', system-ui; font-size: 44px; color: var(--accent); }
+.shop { position: absolute; right: 16px; bottom: 70px; width: 320px; background: var(--panel); padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 6px; pointer-events: auto; max-height: 70vh; overflow: auto; }
+.board, .end { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); padding: 18px; border-radius: 12px; pointer-events: auto; }
+.end { text-align: center; }
+table { border-collapse: collapse; }
+th, td { padding: 4px 10px; text-align: left; }
+.chatbox { position: absolute; left: 16px; bottom: 80px; font-size: 14px; display: flex; flex-direction: column; gap: 2px; }
+.chatin { position: absolute; left: 16px; bottom: 50px; width: 360px; pointer-events: auto; }
+.ingame-menu { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); padding: 20px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+.toast { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 10px; background: #233; pointer-events: none; }
+.toast.error { background: #5a1f1a; }

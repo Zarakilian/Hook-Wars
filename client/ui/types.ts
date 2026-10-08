@@ -1,0 +1,117 @@
+// Contract between the app controller (client/app.ts) and the UI layer (client/ui/*).
+// The app owns state and calls ui.render(state) whenever it changes; the UI calls actions.
+import type { MatchEnd, Profile, RoomState, RoomSummary } from '../../shared/protocol.ts';
+import type {
+  GameEvent, ItemId, MatchConfig, PlayerInfo, RiverState, ScoreRow, Team, UnitSnap, UpgradeStat, YouSnap,
+} from '../../shared/types.ts';
+import type { MapDef } from '../../shared/maps/types.ts';
+import type { HazardInst } from '../../shared/sim/entities.ts';
+import type { Settings } from '../settings.ts';
+
+export type Screen = 'menu' | 'solo' | 'online' | 'lobby' | 'match' | 'settings' | 'profile';
+
+export interface ChatLine {
+  from: string;
+  fromId: number;
+  text: string;
+  team: boolean;
+  teamId: Team | -1;
+  system?: boolean;
+  time: number;
+}
+
+export interface OnlineState {
+  status: 'idle' | 'connecting' | 'connected' | 'error';
+  url: string;
+  error?: string;
+  serverName?: string;
+  motd?: string;
+  youId: number;
+  rooms: RoomSummary[];
+}
+
+export interface AppState {
+  screen: Screen;
+  profile: Profile;
+  settings: Settings;
+  online: OnlineState;
+  room: RoomState | null;
+  /** set while a match is running or just ended */
+  match: { local: boolean; ended: MatchEnd | null } | null;
+  chat: ChatLine[];
+  toast: { text: string; kind: 'info' | 'error'; id: number } | null;
+}
+
+export interface AppActions {
+  go(screen: Screen): void;
+  saveProfile(p: Profile): void;
+  saveSettings(s: Settings): void;
+  /** Solo vs bots */
+  startSolo(config: MatchConfig, team: Team): void;
+  /** Online */
+  connect(url: string): void;
+  disconnect(): void;
+  refreshRooms(): void;
+  createRoom(name: string, isPrivate: boolean, config: MatchConfig): void;
+  joinRoom(code: string): void;
+  quickPlay(): void;
+  leaveRoom(): void;
+  setTeam(team: Team | -1): void;
+  setConfig(config: MatchConfig): void;
+  setReady(ready: boolean): void;
+  startMatch(): void;
+  sendChat(text: string, team: boolean): void;
+  /** In match */
+  buy(item: ItemId): void;
+  sell(slot: number): void;
+  upgrade(stat: UpgradeStat): void;
+  leaveMatch(): void;
+  /** UI sound hooks */
+  uiSound(kind: 'click' | 'hover' | 'open'): void;
+}
+
+/** Everything the HUD needs for one frame. */
+export interface HudFrame {
+  map: MapDef;
+  config: MatchConfig;
+  hazards: HazardInst[];
+  players: Map<number, PlayerInfo>;
+  units: Map<number, UnitSnap>; // interpolated, visible units
+  youId: number; // -1 spectating
+  you: YouSnap | null;
+  me: UnitSnap | null;
+  score: [number, number];
+  timeLeft: number;
+  overtime: boolean;
+  phase: 'countdown' | 'playing' | 'ended';
+  countdown: number;
+  river: RiverState;
+  scoreboard: ScoreRow[];
+  ping: number;
+  fps: number;
+  local: boolean;
+  /** world position of the local unit and the camera focus, for the minimap */
+  focus: { x: number; z: number };
+}
+
+export interface Hud {
+  show(): void;
+  hide(): void;
+  frame(f: HudFrame): void;
+  event(ev: GameEvent, f: HudFrame): void;
+  chat(line: ChatLine): void;
+  toggleShop(open?: boolean): void;
+  shopOpen(): boolean;
+  scoreboard(show: boolean): void;
+  openChat(team: boolean): void;
+  /** true while the chat box (or any HUD text field) has focus */
+  typing(): boolean;
+  showEnd(e: MatchEnd, youId: number, local: boolean): void;
+  /** Escape menu inside a match (resume / settings / leave). */
+  toggleMenu(open?: boolean): void;
+}
+
+export interface UI {
+  render(state: AppState): void;
+  readonly hud: Hud;
+}
