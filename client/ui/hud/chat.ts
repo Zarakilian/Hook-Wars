@@ -40,7 +40,6 @@ export class HudChat {
         this.setTeam(!this.team);
       }
     });
-    this.input.addEventListener('keyup', (e) => e.stopPropagation());
   }
 
   private setTeam(team: boolean): void {

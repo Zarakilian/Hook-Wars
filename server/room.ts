@@ -3,7 +3,7 @@ import { randomInt } from 'node:crypto';
 import { BOT_NAMES, MAX_TEAM_SIZE, TICK_DT } from '../shared/constants.ts';
 import type { LobbySlot, MatchEnd, MatchStart, Profile, RoomState, RoomSummary, ServerMsg } from '../shared/protocol.ts';
 import { GameSim } from '../shared/sim/sim.ts';
-import { FAMILIES, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type Team, type UpgradeStat } from '../shared/types.ts';
+import { FAMILIES, UnitState, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type Team, type UpgradeStat } from '../shared/types.ts';
 
 export interface RoomClient {
   id: number;
@@ -38,6 +38,8 @@ export class Room {
   private ended = false;
   lastActivity = Date.now();
   private onEmpty: (room: Room) => void;
+  /** set when the lobby state changed; flushed once per tick so spam cannot multiply the fan-out */
+  private dirty = false;
 
   constructor(code: string, name: string, isPrivate: boolean, config: MatchConfig, host: RoomClient, onEmpty: (room: Room) => void) {
     this.code = code;
@@ -79,8 +81,9 @@ export class Room {
     this.lastActivity = Date.now();
     const team = this.pickTeam();
     this.members.set(c.id, { client: c, team, ready: false });
-    if (this.phase === 'match' && this.sim) this.joinMidMatch(c, team);
-    this.broadcastState();
+    // during the 14 s end screen there is nothing to join: wait in the lobby for the next match
+    if (this.phase === 'match' && this.sim && this.sim.phase !== 'ended') this.joinMidMatch(c, team);
+    this.dirty = true;
   }
 
   leave(clientId: number): void {
@@ -111,7 +114,7 @@ export class Room {
       this.onEmpty(this);
       return;
     }
-    this.broadcastState();
+    this.dirty = true;
   }
 
   private pickTeam(): Team | -1 {
@@ -143,7 +146,12 @@ export class Room {
     }
     if (team !== -1) {
       // take over a bot on that team if there is one, else add a fresh unit if a slot is free
-      const bot = this.players.find((p) => p.team === team && p.isBot);
+      const safe = (id: number) => {
+        const u = sim.unitById.get(id);
+        return !!u && (u.state === UnitState.Alive || u.state === UnitState.Casting) && u.burnT <= 0 && u.hookedBy < 0;
+      };
+      const bot = this.players.find((p) => p.team === team && p.isBot && p.id >= BOT_ID_BASE && safe(p.id))
+        ?? this.players.find((p) => p.team === team && p.isBot && safe(p.id));
       if (bot) {
         sim.removePlayer(bot.id);
         this.players = this.players.filter((p) => p.id !== bot.id);
@@ -163,12 +171,12 @@ export class Room {
     const m = this.members.get(clientId);
     if (!m) return;
     m.client.profile = profile;
-    if (this.phase === 'lobby') this.broadcastState();
+    if (this.phase === 'lobby') this.dirty = true;
   }
 
   setTeam(clientId: number, team: Team | -1): void {
     const m = this.members.get(clientId);
-    if (!m || this.phase !== 'lobby') return;
+    if (!m || this.phase !== 'lobby' || m.team === team) return;
     if (team !== -1) {
       let n = 0;
       for (const x of this.members.values()) if (x.team === team && x !== m) n++;
@@ -176,7 +184,8 @@ export class Room {
     }
     m.team = team;
     m.ready = false;
-    this.broadcastState();
+    this.lastActivity = Date.now();
+    this.dirty = true;
   }
 
   setConfig(clientId: number, config: MatchConfig): void {
@@ -188,14 +197,16 @@ export class Room {
       for (let i = config.teamSize; i < onTeam.length; i++) onTeam[i].team = -1;
     }
     for (const m of this.members.values()) m.ready = false;
-    this.broadcastState();
+    this.lastActivity = Date.now();
+    this.dirty = true;
   }
 
   setReady(clientId: number, ready: boolean): void {
     const m = this.members.get(clientId);
-    if (!m || this.phase !== 'lobby') return;
+    if (!m || this.phase !== 'lobby' || m.ready === ready) return;
     m.ready = ready;
-    this.broadcastState();
+    this.lastActivity = Date.now();
+    this.dirty = true;
   }
 
   // ------------------------------------------------------------------------------------------
@@ -227,7 +238,7 @@ export class Room {
     this.ended = false;
     this.endTimer = 0;
     for (const m of this.members.values()) m.client.send({ t: 'start', m: this.matchStart(m.client.id) });
-    this.broadcastState();
+    this.dirty = true;
     return null;
   }
 
@@ -290,6 +301,10 @@ export class Room {
 
   /** Advance one tick and send each member its own view. */
   tick(): void {
+    if (this.dirty) {
+      this.dirty = false;
+      this.broadcastState();
+    }
     const sim = this.sim;
     if (!sim || this.phase !== 'match') return;
     sim.step();
@@ -318,7 +333,8 @@ export class Room {
     this.phase = 'lobby';
     this.players = [];
     for (const m of this.members.values()) m.ready = false;
-    this.broadcastState();
+    this.lastActivity = Date.now(); // a fresh idle window after every match
+    this.dirty = true;
   }
 
   // ------------------------------------------------------------------------------------------
@@ -360,6 +376,7 @@ export class Room {
     const data = JSON.stringify(msg);
     for (const o of this.members.values()) {
       if (teamOnly && o.team !== m.team) continue;
+      if (this.phase === 'match' && m.team === -1 && o.team !== -1) continue;
       o.client.sendRaw(data, false);
     }
   }

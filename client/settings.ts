@@ -60,7 +60,9 @@ export function loadProfile(): Profile {
   if (p) return p;
   const family: FamilyId = FAMILIES[Math.floor(Math.random() * FAMILIES.length)];
   const name = `${FUNNY[Math.floor(Math.random() * FUNNY.length)]}${Math.floor(Math.random() * 90 + 10)}`.slice(0, MAX_NAME_LEN);
-  return { name, family, cosmetics: { hat: 0, accent: 0, face: 0 } };
+  const fresh: Profile = { name, family, cosmetics: { hat: 0, accent: 0, face: 0 } };
+  write(KEY_PROFILE, fresh);
+  return fresh;
 }
 
 export function saveProfile(p: Profile): void {

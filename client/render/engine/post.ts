@@ -13,6 +13,7 @@ import {
   BlendFunction,
   BloomEffect,
   EdgeDetectionMode,
+  FXAAEffect,
   Effect,
   EffectComposer,
   EffectPass,
@@ -275,8 +276,7 @@ export class ScenePass extends Pass {
 // ---------------------------------------------------------------------------------------------
 
 interface TierPost {
-  smaa: SMAAPreset;
-  edges: EdgeDetectionMode;
+  aa: { kind: 'fxaa' } | { kind: 'smaa'; preset: SMAAPreset; edges: EdgeDetectionMode };
   /** resolution scale of the bloom threshold pass (the mip chain starts at half res anyway) */
   bloomLumScale: number;
   bloomLevels: number;
@@ -286,9 +286,9 @@ interface TierPost {
 }
 
 const TIERS: Record<Exclude<Quality, 'low'>, TierPost> = {
-  medium: { smaa: SMAAPreset.LOW, edges: EdgeDetectionMode.LUMA, bloomLumScale: 0.5, bloomLevels: 4, bloomScale: 0.85, ao: null, grade: true },
-  high: { smaa: SMAAPreset.HIGH, edges: EdgeDetectionMode.COLOR, bloomLumScale: 0.5, bloomLevels: 6, bloomScale: 1, ao: { samples: 12, denoise: 4, halfRes: true }, grade: true },
-  ultra: { smaa: SMAAPreset.ULTRA, edges: EdgeDetectionMode.COLOR, bloomLumScale: 1, bloomLevels: 7, bloomScale: 1, ao: { samples: 16, denoise: 8, halfRes: false }, grade: true },
+  medium: { aa: { kind: 'fxaa' }, bloomLumScale: 0.5, bloomLevels: 4, bloomScale: 0.85, ao: null, grade: true },
+  high: { aa: { kind: 'smaa', preset: SMAAPreset.HIGH, edges: EdgeDetectionMode.COLOR }, bloomLumScale: 0.5, bloomLevels: 6, bloomScale: 1, ao: { samples: 12, denoise: 4, halfRes: true }, grade: true },
+  ultra: { aa: { kind: 'smaa', preset: SMAAPreset.ULTRA, edges: EdgeDetectionMode.COLOR }, bloomLumScale: 1, bloomLevels: 7, bloomScale: 1, ao: { samples: 16, denoise: 8, halfRes: false }, grade: true },
 };
 
 export class PostPipeline {
@@ -323,7 +323,9 @@ export class PostPipeline {
       ao.setDepthTexture(targets.depth);
       this.scenePass.ao = ao;
     }
-    const smaa = new SMAAEffect({ preset: this.tier.smaa, edgeDetectionMode: this.tier.edges });
+    // AA must stay the first effect: on edge pixels FXAA returns raw input samples and ignores chained colour
+    const tierAa = this.tier.aa;
+    const smaa = tierAa.kind === 'fxaa' ? new FXAAEffect() : new SMAAEffect({ preset: tierAa.preset, edgeDetectionMode: tierAa.edges });
     this.bloom = new BloomEffect({
       mipmapBlur: true,
       luminanceThreshold: 1.0,

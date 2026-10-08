@@ -75,6 +75,8 @@ class HookEngine implements Engine {
   private fastFor = 0;
   private lastDropAt = -1e9;
   private shadowEvery = 1;
+  /** the shadow update rate this tier starts at and recovers to (medium: every other frame) */
+  private baseShadowEvery = 1;
   // ambient animation
   private readonly hemiBase = new THREE.Color();
   private readonly tmpColor = new THREE.Color();
@@ -174,7 +176,8 @@ class HookEngine implements Engine {
       this.post = new PostPipeline(this.renderer, this.scene, this.camera, this.targets, q);
       this.post.apply(this.atmo);
       this.post.scenePass.sun = this.sun;
-      this.shadowEvery = 1;
+      this.baseShadowEvery = q === 'medium' ? 2 : 1;
+      this.setShadowEvery(this.baseShadowEvery);
     } else {
       if (this.targets) this.targets.release();
       this.renderer.autoClear = true;
@@ -370,7 +373,7 @@ class HookEngine implements Engine {
         this.dynScale = 1;
         this.applySize();
       }
-      if (this.shadowEvery !== 1) this.setShadowEvery(1);
+      if (this.shadowEvery !== this.baseShadowEvery) this.setShadowEvery(this.baseShadowEvery);
       return;
     }
     if (d <= 0 || d > 0.1) return;
@@ -399,7 +402,7 @@ class HookEngine implements Engine {
       if (this.dynScale < 1) {
         this.dynScale = Math.min(1, this.dynScale / 0.85);
         this.applySize();
-      } else if (this.shadowEvery !== 1) this.setShadowEvery(1);
+      } else if (this.shadowEvery !== this.baseShadowEvery) this.setShadowEvery(this.baseShadowEvery);
     }
   }
 

@@ -50,7 +50,11 @@ export class Predictor {
   apply(input: PlayerInput): void {
     this.prev.x = this.body.x;
     this.prev.z = this.body.z;
-    if (!this.active) return;
+    if (!this.active) {
+      this.pending.push({ input, mm: this.mm });
+      if (this.pending.length > 90) this.pending.shift();
+      return;
+    }
     const mm = this.slowTicks > 0 ? this.mm * this.slowMul : this.mm;
     if (this.slowTicks > 0) this.slowTicks--;
     this.pending.push({ input, mm });
@@ -74,7 +78,6 @@ export class Predictor {
     this.body.vz = you.vz;
     if (!controllable) {
       this.active = false;
-      this.pending.length = 0;
       this.slowTicks = 0;
       this.prev.x = me.x;
       this.prev.z = me.z;

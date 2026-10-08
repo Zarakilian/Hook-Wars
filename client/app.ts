@@ -161,7 +161,10 @@ export class App {
   private toggleMenu(open?: boolean): void {
     this.menuOpen = open ?? !this.menuOpen;
     this.ui.hud.toggleMenu(this.menuOpen);
-    if (this.session instanceof LocalSession) this.session.setPaused(this.menuOpen);
+    if (this.session instanceof LocalSession) {
+      this.session.setPaused(this.menuOpen);
+      this.game?.setPaused(this.menuOpen);
+    }
   }
 
   private endGame(): void {

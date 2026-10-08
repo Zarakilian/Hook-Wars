@@ -15,7 +15,7 @@ http.requestTimeout = 30_000;
 http.keepAliveTimeout = 5_000;
 
 const game = new GameServer(cfg);
-game.attach(http);
+game.attach(http, { exclusive: true }); // refuse upgrades on any path but /ws
 
 http.listen(cfg.port, cfg.host, () => {
   console.log(`Hook Wars ${GAME_VERSION} listening on http://${cfg.host}:${cfg.port}`);

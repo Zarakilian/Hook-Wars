@@ -6,7 +6,9 @@
 //   MAX_CLIENTS     total websocket connections (default 200)
 //   MAX_PER_IP      connections per IP address (default 6)
 //   MAX_ROOMS       concurrent rooms (default 24)
-//   TRUST_PROXY     "1" to read the client IP from X-Forwarded-For (only behind your own reverse proxy)
+//   TRUST_PROXY     "1" if your reverse proxy runs on this machine, or a comma list of proxy IPs.
+//                   X-Forwarded-For is only read from those addresses (the right-most entry).
+//   MAX_ROOMS_PER_IP rooms one IP address can have open at once (default 2)
 //   ALLOWED_ORIGINS comma separated list of extra browser origins allowed to connect (default: same host only)
 //   STATIC_DIR      folder with the built client (default ./dist)
 
@@ -32,7 +34,8 @@ export interface ServerConfig {
   maxClients: number;
   maxPerIp: number;
   maxRooms: number;
-  trustProxy: boolean;
+  trustedProxies: string[];
+  maxRoomsPerIp: number;
   allowedOrigins: string[];
   staticDir: string;
 }
@@ -46,7 +49,13 @@ export function loadConfig(): ServerConfig {
     maxClients: intEnv('MAX_CLIENTS', 200, 1, 5000),
     maxPerIp: intEnv('MAX_PER_IP', 6, 1, 100),
     maxRooms: intEnv('MAX_ROOMS', 24, 1, 500),
-    trustProxy: process.env.TRUST_PROXY === '1',
+    trustedProxies: (() => {
+      const raw = (process.env.TRUST_PROXY ?? '').trim();
+      if (!raw) return [];
+      if (raw === '1') return ['127.0.0.1', '::1']; // a proxy on this machine
+      return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    })(),
+    maxRoomsPerIp: intEnv('MAX_ROOMS_PER_IP', 2, 1, 500),
     allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '')
       .split(',')
       .map((s) => s.trim())

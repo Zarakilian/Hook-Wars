@@ -23,6 +23,8 @@ import { updateBots } from './bots.ts';
 const HOOK_SUBSTEP = 0.35;
 const MAX_BEND_PTS = 64; // numbers, i.e. 32 points
 const BUFFER_TIME = 0.3;
+/** Ticks with no input before a human's held movement is dropped (jitter is fine, a hidden tab is not). */
+const STALE_INPUT_TICKS = 15;
 const tmpPos = { x: 0, z: 0, hit: false };
 
 export class GameSim {
@@ -94,7 +96,7 @@ export class GameSim {
       gold: BAL.startGold, up: { damage: 0, range: 0, speed: 0, width: 0 }, items: [null, null, null, null],
       stats: { k: 0, d: 0, a: 0, hh: 0, ht: 0, bs: 0, dr: 0, sv: 0, dmg: 0, g: 0 },
       streak: 0, multi: 0, lastKillT: -99,
-      input: { seq: 0, mx: 0, mz: 0, ax: sp.x + (p.team === 0 ? 5 : -5), az: sp.z, b: 0 }, queue: [], ack: 0, moveMul: 1,
+      input: { seq: 0, mx: 0, mz: 0, ax: sp.x + (p.team === 0 ? 5 : -5), az: sp.z, b: 0 }, queue: [], ack: 0, idleTicks: 0, moveMul: 1,
       healAcc: 0, hazardT: 0, bristleCd: 0, inHazard: false, surface: 'ground',
       brain: null,
     };
@@ -265,8 +267,10 @@ export class GameSim {
     const q = u.queue;
     if (q.length === 0) {
       u.input.b = 0; // hold last movement and aim, but never repeat a press
+      if (!u.isBot && ++u.idleTicks > STALE_INPUT_TICKS) u.input.mx = u.input.mz = 0;
       return;
     }
+    u.idleTicks = 0;
     let inp = q.shift()!;
     // Keep latency low: if the client got ahead, collapse the backlog into one input.
     while (q.length > this.inputSlack) {
@@ -1532,7 +1536,8 @@ export class GameSim {
     const spectator = !viewer;
     const units: UnitSnap[] = [];
     for (const u of this.units) {
-      if (!spectator && !this.visibleTo(u, team)) continue;
+      // a spectator sees a unit only when both teams can (a second tab must not be a wallhack)
+      if (!this.visibleTo(u, spectator ? otherTeam(u.team) : team)) continue;
       units.push(this.unitSnap(u));
     }
     const hooks: HookSnap[] = this.hooks.map((h) => ({
@@ -1541,9 +1546,9 @@ export class GameSim {
     }));
     const runes: RuneSnap[] = this.runes.map((r) => ({ i: r.id, t: r.type, x: q2(r.x), z: q2(r.z), d: r.dragged ? 1 : 0 }));
     const mines: MineSnap[] = this.mines
-      .filter((m) => spectator || m.team === team)
+      .filter((m) => !spectator && m.team === team)
       .map((m) => ({ i: m.id, o: m.owner, x: q2(m.x), z: q2(m.z), a: m.armT <= 0 ? 1 : 0 }));
-    const ev = spectator ? this.events : this.events.filter((e) => this.eventVisible(e, team));
+    const ev = spectator ? this.events.filter((e) => this.eventVisible(e, 0) && this.eventVisible(e, 1)) : this.events.filter((e) => this.eventVisible(e, team));
     const snap: Snapshot = {
       t: this.tick,
       ph: this.phase,
@@ -1634,7 +1639,7 @@ export class GameSim {
       buffs,
       drown: u.state === UnitState.Drowning ? q2(Math.max(0, BAL.drownTime - u.drownT)) : 0,
       hookRange: HOOK_LEVELS.range[u.up.range] * (u.longshot > 0 ? BAL.longshotRangeMul : 1),
-      mm: q3m(u.moveMul),
+      mm: q3m(this.moveMultiplier(u)),
       vx: q2(u.vx),
       vz: q2(u.vz),
     };

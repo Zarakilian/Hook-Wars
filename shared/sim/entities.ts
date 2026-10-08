@@ -94,6 +94,7 @@ export interface Unit {
   input: PlayerInput;
   queue: PlayerInput[];
   ack: number;
+  idleTicks: number; // ticks without a fresh input
   moveMul: number; // last computed movement multiplier, sent to the owner for prediction
 
   healAcc: number; // visible healing (pie, fountain) waiting to be shown as a number

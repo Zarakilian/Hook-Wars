@@ -110,6 +110,7 @@ export class GameClient {
   private readonly tmpV = new THREE.Vector3();
   private readonly tmpV2 = new THREE.Vector3();
   private disposed = false;
+  private paused = false;
   private clockNow = 0;
   private wheelFn: (e: WheelEvent) => void;
 
@@ -214,6 +215,7 @@ export class GameClient {
   /** Instant local feedback the moment a button goes down (the server confirms later). */
   private localPress(btn: number): void {
     this.deps.audio.unlock();
+    if (this.paused) return;
     const you = this.you;
     const me = this.me;
     if (!you || !me || this.frameRef?.newer.ph !== 'playing') return; // presses outside play are dropped by the sim
@@ -292,14 +294,19 @@ export class GameClient {
     this.time += dt;
     this.fps = this.fps * 0.95 + (dt > 0 ? 1 / dt : 60) * 0.05;
 
-    this.tickAcc += dt;
     let n = 0;
-    while (this.tickAcc >= TICK_DT && n < 5) {
-      this.tickAcc -= TICK_DT;
-      this.localTick();
-      n++;
+    if (this.paused) {
+      this.input.takePressed(); // solo pause: drop presses and send nothing while the sim is frozen
+      this.input.takePressAim();
+    } else {
+      this.tickAcc += dt;
+      while (this.tickAcc >= TICK_DT && n < 5) {
+        this.tickAcc -= TICK_DT;
+        this.localTick();
+        n++;
+      }
+      if (n === 5) this.tickAcc = 0;
     }
-    if (n === 5) this.tickAcc = 0;
     // solo: step the sim after this frame's input was queued, so nothing waits a tick
     this.session.pump(now);
     const alpha = this.tickAcc / TICK_DT;
@@ -1029,6 +1036,13 @@ export class GameClient {
     };
   }
 
+  /** Solo pause menu: freeze our own input together with the local sim. */
+  setPaused(p: boolean): void {
+    this.paused = p;
+    this.input.takePressed();
+    this.input.takePressAim();
+  }
+
   /** Apply changed settings mid-match: controls, shake and the range ring take effect at once. */
   setSettings(s: Settings): void {
     if (s.controls !== this.input.scheme) {
@@ -1057,6 +1071,11 @@ export class GameClient {
     for (const c of this.chains.values()) c.dispose();
     for (const r of this.runes.values()) r.dispose();
     for (const h of this.hazards) h.dispose();
+    for (const m of [this.rangeRing, this.aimLine, this.destMarker]) {
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    this.ghost?.chain?.dispose();
     this.world.dispose();
     this.water.dispose();
     this.fx.dispose();

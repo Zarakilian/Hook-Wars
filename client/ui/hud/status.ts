@@ -22,7 +22,7 @@ export class StatusLayers {
   private readonly drHint: HTMLElement;
   private wasDead = false;
   private rtMax = 5;
-  private lastCause: KillCause = 'hook';
+  private lastCause: KillCause | null = null;
   private lastKiller: string | null = null;
 
   constructor() {
@@ -45,6 +45,8 @@ export class StatusLayers {
 
   reset(): void {
     this.wasDead = false;
+    this.lastCause = null;
+    this.lastKiller = null;
     this.respawn.classList.add('hidden');
     this.drown.classList.add('hidden');
     setClass(this.vignette, 'low', false);
@@ -67,15 +69,17 @@ export class StatusLayers {
     if (dead && !this.wasDead) {
       this.rtMax = Math.max(1, me.rt ?? 5);
       setText(this.rsTitle, DEATH_TITLES[Math.floor(Math.random() * DEATH_TITLES.length)]);
-      setText(this.rsLine, deathLine(this.lastCause, this.lastKiller));
       setText(this.rsTip, `Tip: ${TIPS[Math.floor(Math.random() * TIPS.length)]}`);
       this.respawn.classList.remove('hidden');
       pulse(this.respawn, 'in');
     } else if (!dead && this.wasDead) {
       this.respawn.classList.add('hidden');
+      this.lastCause = null;
+      this.lastKiller = null;
     }
     this.wasDead = dead;
     if (dead && me) {
+      setText(this.rsLine, this.lastCause ? deathLine(this.lastCause, this.lastKiller) : '\u00a0');
       const rt = Math.max(0, me.rt ?? 0);
       setText(this.rsSecs, String(Math.ceil(rt)));
       setVar(this.rsRing, '--p', Math.max(0, Math.min(1, rt / this.rtMax)).toFixed(3));
