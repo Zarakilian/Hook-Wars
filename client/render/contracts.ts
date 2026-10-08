@@ -201,8 +201,11 @@ export type DamageKind = 'hook' | 'melee' | 'bash' | 'drown' | 'mine' | 'burn' |
 
 export interface FxSystem {
   update(dt: number, time: number, camera: THREE.Camera): void;
-  /** radius = hook head radius (HookSnap.r), scales the head with the Width upgrade */
-  createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number, radius?: number): ChainView;
+  /**
+   * radius = hook head radius (HookSnap.r), scales the head with the Width upgrade.
+   * skin = the thrower's hands cosmetic id (shared/cosmetics.ts), so the flying hook matches the held one.
+   */
+  createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number, radius?: number, skin?: string): ChainView;
   hookHit(p: THREE.Vector3, bullseye: boolean, ally: boolean): void;
   hookClash(p: THREE.Vector3): void;
   hookWall(p: THREE.Vector3): void;
@@ -231,7 +234,8 @@ export type SfxId =
   | 'bash' | 'melee' | 'hurt' | 'death' | 'corpse' | 'splash' | 'drown' | 'drownSave' | 'respawn'
   | 'rune' | 'runeSpawn' | 'mineArm' | 'mineBoom' | 'buy' | 'deny' | 'pie' | 'puff'
   | 'tideHorn' | 'iceCrack' | 'hazardBurst' | 'countdown' | 'go' | 'victory' | 'defeat'
-  | 'uiClick' | 'uiHover' | 'uiOpen' | 'chat' | 'footstep';
+  | 'uiClick' | 'uiHover' | 'uiOpen' | 'chat' | 'footstep'
+  | 'purchase' | 'equip' | 'listingSold' | 'walletLinked' | 'powerHook';
 
 export type MusicMood = 'menu' | 'match' | 'tense' | 'victory' | 'defeat' | 'none';
 

@@ -137,7 +137,7 @@ export function inCircles(circles: Circle[], x: number, z: number, pad = 0): boo
 }
 
 /** Signed distance into the channel (> 0 inside water area), islands excluded. */
-export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<Pick<MapDef, 'channels' | 'pools' | 'platforms'>>, x: number, z: number): number {
+export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<Pick<MapDef, 'channels' | 'pools' | 'platforms'>>, x: number, z: number, skipPlatforms = false): number {
   const r = riverAt(map.river.points, z);
   let c = r.hw - Math.abs(x - r.x);
   // braided side channels: only inside their own z range
@@ -164,8 +164,8 @@ export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<
       if (cc > c) c = cc;
     }
   }
-  // decks over the water are dry ground
-  if (map.platforms) {
+  // decks over the water are dry ground (waterDepthAt skips this: the water is still under them)
+  if (map.platforms && !skipPlatforms) {
     for (const p of map.platforms) {
       const dx = x - p.x;
       const dz = z - p.z;
@@ -184,4 +184,24 @@ export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<
     if (d < c) c = d;
   }
   return c;
+}
+
+/** Like channelDepthAt but ignoring platforms: where water (and the river bed) actually is. Use for rendering water and carving terrain. */
+export function waterDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<Pick<MapDef, 'channels' | 'pools' | 'platforms'>>, x: number, z: number): number {
+  return channelDepthAt(map, x, z, true);
+}
+
+/** If (x,z) is on a platform deck, that platform (decks sit at groundY(map), the bank top). */
+export function platformAt(map: Partial<Pick<MapDef, 'platforms'>>, x: number, z: number): import('./types.ts').Platform | null {
+  if (!map.platforms) return null;
+  for (const p of map.platforms) {
+    const dx = x - p.x;
+    const dz = z - p.z;
+    const cs = Math.cos(p.rot);
+    const sn = Math.sin(p.rot);
+    const lx = dx * cs - dz * sn;
+    const lz = dx * sn + dz * cs;
+    if (Math.abs(lx) <= p.w / 2 && Math.abs(lz) <= p.d / 2) return p;
+  }
+  return null;
 }

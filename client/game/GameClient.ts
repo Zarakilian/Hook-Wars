@@ -551,7 +551,7 @@ export class GameClient {
       g.ox = b.x + dx * BAL.hookHand;
       g.oz = b.z + dz * BAL.hookHand;
       const info = this.players.get(this.youId);
-      g.chain = this.fx.createChain(0, info?.family ?? 'brawler', info?.team ?? 0, g.fx, g.radius);
+      g.chain = this.fx.createChain(0, info?.family ?? 'brawler', info?.team ?? 0, g.fx, g.radius, info?.loadout.hands);
     }
     const travel = Math.min(g.range, g.speed * (this.time - g.start));
     const v = this.views.get(this.youId);
@@ -603,7 +603,7 @@ export class GameClient {
       let c = this.chains.get(h.i);
       const owner = this.players.get(h.o);
       if (!c) {
-        c = this.fx.createChain(h.k, owner?.family ?? 'brawler', owner?.team ?? 0, h.fx, h.r);
+        c = this.fx.createChain(h.k, owner?.family ?? 'brawler', owner?.team ?? 0, h.fx, h.r, owner?.loadout.hands);
         this.chains.set(h.i, c);
       }
       let pool = this.chainPts.get(h.i);

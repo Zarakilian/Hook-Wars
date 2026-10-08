@@ -698,6 +698,42 @@ export const SFX: Record<SfxId, SfxDef> = {
       else if (fam === 'ogre') noiseHit(s, { ft: 'bandpass', f: 520, q: 2, a: 0.004, d: 0.06, v: 0.18 });
     },
   },
+  // store and power-up cues (first pass; the fx-audio pass refines these)
+  purchase: {
+    v: 1.6, prio: 2, cap: 1, rev: 0.12, vary: 0.02, gap: 0.1,
+    fn: (s) => {
+      bell(s, { f: 1320, d: 0.35, v: 0.12, partials: STEEL });
+      bell(s, { t: s.t + 0.09, f: 1760, d: 0.45, v: 0.1, partials: STEEL });
+      noiseHit(s, { ft: 'highpass', f: 5200, a: 0.001, d: 0.12, v: 0.08 });
+    },
+  },
+  equip: {
+    v: 2.0, prio: 2, cap: 2, rev: 0.03, vary: 0.04, gap: 0.05,
+    fn: (s) => {
+      noiseHit(s, { ft: 'bandpass', f: 620, q: 3, a: 0.001, d: 0.05, v: 0.3 });
+      tone(s, { type: 'triangle', f: 330, f1: 520, sw: 0.06, a: 0.001, d: 0.08, v: 0.12 });
+    },
+  },
+  listingSold: {
+    v: 1.5, prio: 2, cap: 1, rev: 0.1, vary: 0.02, gap: 0.2,
+    fn: (s) => {
+      for (let i = 0; i < 3; i++) bell(s, { t: s.t + i * 0.07, f: 1100 + i * 330, d: 0.3, v: 0.09, partials: STEEL });
+    },
+  },
+  walletLinked: {
+    v: 1.6, prio: 2, cap: 1, rev: 0.08, vary: 0.0, gap: 0.3,
+    fn: (s) => {
+      tone(s, { f: 520, f1: 780, sw: 0.08, a: 0.002, d: 0.12, v: 0.12 });
+      tone(s, { t: s.t + 0.11, f: 780, f1: 1040, sw: 0.08, a: 0.002, d: 0.16, v: 0.1 });
+    },
+  },
+  powerHook: {
+    v: 1.8, prio: 3, cap: 1, rev: 0.1, vary: 0.03, gap: 0.15,
+    fn: (s) => {
+      tone(s, { type: 'sawtooth', f: 180, f1: 720, sw: 0.25, a: 0.004, d: 0.3, v: 0.08 });
+      bell(s, { t: s.t + 0.18, f: 1480, d: 0.3, v: 0.08, partials: STEEL });
+    },
+  },
 };
 
 function foghorn(s: Snd, t: number, f: number, d: number, v: number, wave: OscillatorType | PeriodicWave): void {

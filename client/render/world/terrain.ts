@@ -9,7 +9,7 @@ import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { bedY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
-import { buildDecor, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
+import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
 import { HeightField, newCell } from './terrain/field.ts';
@@ -227,6 +227,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   group.add(propsGroup);
   const decorGroup = buildDecor(decorForMode(map, config, biome), map, height, () => waterY(map, level), quality);
   group.add(decorGroup);
+  const platformGroup = map.platforms?.length ? buildPlatforms(map.platforms, map, quality) : null;
+  if (platformGroup) group.add(platformGroup);
   const fountains: AnimatedView[] = [0, 1].map((t) => {
     const c = map.fountains[t];
     const v = createFountainView(t as 0 | 1, c, map, height);
