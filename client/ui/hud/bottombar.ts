@@ -21,14 +21,19 @@ const BUFF_MAX: Record<BuffSnap['t'], number> = {
   puffball: BAL.puffTime,
   burn: BAL.emberTime,
   spawn: BAL.spawnProt,
+  bendy: BAL.powerHookTime,
+  bouncy: BAL.powerHookTime,
+  longshot: BAL.powerHookTime,
 };
 const BUFF_NAME: Record<BuffSnap['t'], string> = {
   haste: 'Haste', double: 'Double Damage', ironskin: 'Iron Skin', ghost: 'Ghost', bounty: 'Bounty',
   pie: 'Healing Pie', puffball: 'Puffball', burn: 'Burning', spawn: 'Spawn shield',
+  bendy: 'Bendy Eel', bouncy: 'Boing Barb', longshot: 'Long Line',
 };
 const BUFF_ICON: Record<BuffSnap['t'], IconId> = {
   haste: 'haste', double: 'double', ironskin: 'ironskin', ghost: 'ghost', bounty: 'bounty',
   pie: 'pie', puffball: 'puffball', burn: 'burn', spawn: 'spawn',
+  bendy: 'bendy', bouncy: 'bouncy', longshot: 'longshot',
 };
 const BUFF_BAD: Partial<Record<BuffSnap['t'], boolean>> = { burn: true };
 

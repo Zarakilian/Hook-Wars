@@ -35,6 +35,9 @@ export const RUNE_FX_COLORS: Record<RuneType, number> = {
   ironskin: 0xffc030,
   ghost: 0xbdf4ff,
   bounty: 0xffe060,
+  bendy: 0x3fd6a0,
+  bouncy: 0xff70d0,
+  longshot: 0xffa030,
 };
 
 type Surface = 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud';

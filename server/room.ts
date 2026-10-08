@@ -129,6 +129,18 @@ export class Room {
 
   private joinMidMatch(c: RoomClient, team: Team | -1): void {
     const sim = this.sim!;
+    // Coming back to a unit we left (a bot has been driving it): take it back with its progress.
+    const own = this.players.find((p) => p.id === c.id);
+    if (own) {
+      sim.setController(c.id, false, c.profile.name);
+      own.isBot = false;
+      own.name = c.profile.name;
+      delete own.botDifficulty;
+      this.members.get(c.id)!.team = own.team;
+      this.broadcast({ t: 'players', players: this.players });
+      c.send({ t: 'start', m: this.matchStart(c.id) });
+      return;
+    }
     if (team !== -1) {
       // take over a bot on that team if there is one, else add a fresh unit if a slot is free
       const bot = this.players.find((p) => p.team === team && p.isBot);

@@ -67,6 +67,9 @@ export interface Unit {
 
   haste: number;
   double: number;
+  bendy: number; // hook power-up timers (seconds)
+  bouncy: number;
+  longshot: number;
   shield: number;
   shieldT: number;
   ghost: number;
@@ -122,6 +125,8 @@ export interface Hook {
   ru: number;
   ember: boolean;
   ricochet: boolean;
+  steer: boolean; // Bendy Eel: curves toward the thrower's cursor while flying out
+  longshot: boolean;
   dmg: number;
   anchorUnit: number; // grapple attached to a unit
   flightT: number;

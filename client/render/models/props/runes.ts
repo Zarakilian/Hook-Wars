@@ -11,6 +11,9 @@ export const RUNE_STYLE: Record<RuneType, { main: number; light: number; dark: n
   ironskin: { main: 0xff9a2a, light: 0xffe0a0, dark: 0x6a5a50 },
   ghost: { main: 0xb0f0ff, light: 0xffffff, dark: 0x4a8aa0 },
   bounty: { main: 0xffd23a, light: 0xfff2a0, dark: 0xa8761a },
+  bendy: { main: 0x2fd69a, light: 0xb8ffe0, dark: 0x0f6a4a },
+  bouncy: { main: 0xff5ac8, light: 0xffd0f0, dark: 0x8a1a6a },
+  longshot: { main: 0xff9a2a, light: 0xffe0a0, dark: 0x8a4a10 },
 };
 
 type Mask = (x: number, y: number) => number; // 0 empty, 1 frame, 2 core, 3 detail (dark)
@@ -36,6 +39,37 @@ function framed(inside: (x: number, y: number) => boolean, detail?: (x: number, 
 }
 
 const SHAPES: Record<RuneType, { mask: Mask; depth: number }> = {
+  bendy: {
+    // an S-curved eel line with a hook head
+    mask: framed((x, y) => {
+      const cx = x + 0.5;
+      const cy = y + 0.5;
+      const wave = 10 + Math.sin((cy - 2) * 0.33) * 5.5;
+      return cy > 1 && cy < 19 && Math.abs(cx - wave) < 2.2;
+    }, (x, y) => y === 17 && (x === 9 || x === 10)),
+    depth: 4,
+  },
+  bouncy: {
+    // a zig-zag spring
+    mask: framed((x, y) => {
+      const cy = y + 0.5;
+      const cx = x + 0.5;
+      const t = ((cy - 2) / 4) % 2;
+      const zig = t < 1 ? 4 + t * 12 : 16 - (t - 1) * 12;
+      return cy > 1 && cy < 19 && Math.abs(cx - zig) < 2;
+    }),
+    depth: 4,
+  },
+  longshot: {
+    // a long arrow
+    mask: framed((x, y) => {
+      const cx = x + 0.5;
+      const cy = y + 0.5;
+      if (cy < 7) return Math.abs(cx - 10) < cy * 0.9;
+      return cy < 19 && Math.abs(cx - 10) < 1.6;
+    }),
+    depth: 4,
+  },
   haste: {
     // lightning bolt
     mask: framed((x, y) => pointInPoly(x + 0.5, y + 0.5, [[12, 20], [4, 9.5], [9, 9.5], [6, 0], [16, 12], [11, 12], [15, 20]])),

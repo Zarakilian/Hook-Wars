@@ -50,7 +50,8 @@ export const BAL = {
   hookCooldown: 4,
   hookWindup: 0.12,
   hookRetractMul: 1.15,
-  hookMoveSlow: 0.55, // caster speed while own hook is out
+  hookMoveSlow: 0.85, // caster speed while own hook is out: you keep walking while it flies
+  castMoveMul: 0.85, // walking speed during the Hook / Grapple wind-up (they no longer root you)
   hookHand: 0.95, // hand offset from unit centre
   hookDeliver: 1.7, // release distance in front of the caster
 
@@ -101,6 +102,12 @@ export const BAL = {
   ironskinShield: 300,
   ironskinTime: 10,
   ghostTime: 8,
+  // hook power-up runes
+  powerHookTime: 15,
+  bendyTurn: 3.4, // radians per second the Bendy Eel hook can curve toward the cursor
+  bouncyBounces: 4,
+  longshotRangeMul: 1.5,
+  longshotSpeedMul: 1.15,
 
   // Items
   ricochetBounces: 2,
@@ -177,6 +184,9 @@ export const RUNE_NAMES: Record<RuneType, string> = {
   ironskin: 'Iron Skin',
   ghost: 'Ghost',
   bounty: 'Bounty',
+  bendy: 'Bendy Eel',
+  bouncy: 'Boing Barb',
+  longshot: 'Long Line',
 };
 
 /** Per-difficulty bot tuning. Read by shared/sim/bots.ts. */

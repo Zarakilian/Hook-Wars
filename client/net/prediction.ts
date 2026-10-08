@@ -21,16 +21,29 @@ export class Predictor {
   active = false;
   private pending: Pending[] = [];
   private mm = 1;
-  private rootTicks = 0;
+  private slowTicks = 0;
+  private slowMul = 1;
+  private lastDrawnX = NaN;
+  private lastDrawnZ = NaN;
   private initialised = false;
 
   constructor(map: MapDef) {
     this.world = new World(map);
   }
 
-  /** Locally root the unit for a cast wind-up so prediction does not drift then snap back. */
-  rootFor(seconds: number): void {
-    this.rootTicks = Math.max(this.rootTicks, Math.ceil(seconds / TICK_DT));
+  /**
+   * Predict the server's wind-up speed locally (mul 0 = rooted, e.g. Belly Bash; Hook and Grapple keep
+   * walking at a reduced speed) so prediction does not drift and then snap back.
+   */
+  slowFor(seconds: number, mul: number): void {
+    this.slowTicks = Math.max(this.slowTicks, Math.ceil(seconds / TICK_DT));
+    this.slowMul = mul;
+  }
+
+  /** Where the own unit was last drawn, so re-activation after a forced move blends instead of popping. */
+  noteRendered(x: number, z: number): void {
+    this.lastDrawnX = x;
+    this.lastDrawnZ = z;
   }
 
   /** Apply one locally generated input (one tick). */
@@ -38,8 +51,8 @@ export class Predictor {
     this.prev.x = this.body.x;
     this.prev.z = this.body.z;
     if (!this.active) return;
-    const mm = this.rootTicks > 0 ? 0 : this.mm;
-    if (this.rootTicks > 0) this.rootTicks--;
+    const mm = this.slowTicks > 0 ? this.mm * this.slowMul : this.mm;
+    if (this.slowTicks > 0) this.slowTicks--;
     this.pending.push({ input, mm });
     if (this.pending.length > 90) this.pending.shift();
     stepMove(this.world, this.river, this.body, input.mx, input.mz, mm, TICK_DT);
@@ -62,7 +75,7 @@ export class Predictor {
     if (!controllable) {
       this.active = false;
       this.pending.length = 0;
-      this.rootTicks = 0;
+      this.slowTicks = 0;
       this.prev.x = me.x;
       this.prev.z = me.z;
       this.err.x = this.err.z = 0;
@@ -75,7 +88,11 @@ export class Predictor {
     if (!this.initialised || !wasActive) {
       this.prev.x = this.body.x;
       this.prev.z = this.body.z;
-      this.err.x = this.err.z = 0;
+      // blend from where we were last drawn (end of a grapple, drag or knock) instead of popping
+      const ok = this.initialised && Number.isFinite(this.lastDrawnX);
+      this.err.x = ok ? this.lastDrawnX - this.body.x : 0;
+      this.err.z = ok ? this.lastDrawnZ - this.body.z : 0;
+      if (this.err.x * this.err.x + this.err.z * this.err.z > 9) this.err.x = this.err.z = 0;
       this.initialised = true;
       return;
     }

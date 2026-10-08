@@ -1,5 +1,5 @@
 // How to Play: a tabbed field guide (goal, controls, moves, river, hazards, runes and shop).
-import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS } from '../../shared/constants.ts';
+import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS, RUNE_NAMES } from '../../shared/constants.ts';
 import { HAZARD_INFO } from '../../shared/sim/hazards.ts';
 import type { ControlScheme, HazardKind, RuneType } from '../../shared/types.ts';
 import type { UiCtx } from './ctx.ts';
@@ -39,6 +39,9 @@ const RUNE_LINES: Record<RuneType, string> = {
   ironskin: `A ${BAL.ironskinShield} HP shield for ${BAL.ironskinTime} s`,
   ghost: `Invisible to enemies for ${BAL.ghostTime} s`,
   bounty: `+${BAL.goldBounty} gold, right now`,
+  bendy: `Your hook curves toward your cursor for ${BAL.powerHookTime} s`,
+  bouncy: `Your hook ricochets off everything for ${BAL.powerHookTime} s`,
+  longshot: `+${Math.round((BAL.longshotRangeMul - 1) * 100)}% hook range for ${BAL.powerHookTime} s`,
 };
 
 export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el: HTMLElement } {
@@ -118,7 +121,7 @@ export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el:
       icon: 'coin',
       body: () => h('div', { class: 'ht-page' },
         h('p', { class: 'ht-lead', text: `Runes appear on river spots every ${BAL.runeEvery} s. Hook one to drag it home, or walk over it when the bed is dry.` }),
-        h('div', { class: 'ht-runes' }, ...(Object.keys(RUNE_LINES) as RuneType[]).map((r) => card(r, r === 'double' ? 'Double Damage' : r === 'ironskin' ? 'Iron Skin' : r[0].toUpperCase() + r.slice(1), RUNE_LINES[r], 'mini'))),
+        h('div', { class: 'ht-runes' }, ...(Object.keys(RUNE_LINES) as RuneType[]).map((r) => card(r, RUNE_NAMES[r], RUNE_LINES[r], 'mini'))),
         h('p', { class: 'ht-lead', text: `Press B for the shop. Gold comes from kills, hook hits and time. Upgrade your hook (damage up to ${HOOK_LEVELS.damage[5]}, range up to ${HOOK_LEVELS.range[5]} m) or buy items. With the shop open, right-click an item slot to sell it.` }),
         h('div', { class: 'ht-items' }, ...ITEM_IDS.map((id) => h('span', { class: 'ht-item', title: `${ITEMS[id].name}: ${ITEMS[id].blurb}` }, icon(id), h('span', { text: ITEMS[id].name })))),
       ),

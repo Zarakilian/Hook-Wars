@@ -73,6 +73,7 @@ export class LocalSession implements MatchSession {
     }
     const seed = (Math.random() * 2 ** 31) | 0;
     this.sim = new GameSim(config, players, seed);
+    this.sim.inputSlack = 0; // solo: never keep a standing input backlog
     this.start = { config, seed, players, hazards: this.sim.hazards, you: this.you, tick: 0 };
   }
 

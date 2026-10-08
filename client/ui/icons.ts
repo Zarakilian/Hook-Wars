@@ -192,6 +192,23 @@ const ICONS = {
     circ(32, 40, 10, GOLD),
     ['text', { x: 32, y: 45.5, 'text-anchor': 'middle', 'font-family': 'Lilita One, sans-serif', 'font-size': 15, fill: '#8a5a10' }],
   ],
+  bendy: [
+    ...stroke2('M10 52 C 22 52 18 30 30 28 C 42 26 40 10 54 10', '#3fd6a0', 6),
+    path('M50 4 L60 9 L52 17 Z', METAL),
+    dot(12, 52, 3.4, '#1f7a5a'),
+    hl('M24 40 C 26 34 28 31 32 30', 2, 0.7),
+  ],
+  bouncy: [
+    ...stroke2('M8 50 L22 18 L36 46 L50 14', '#ff70d0', 5),
+    path('M46 10 L58 8 L54 20 Z', METAL),
+    circ(22, 18, 4, '#ffd0f0'),
+    circ(36, 46, 4, '#ffd0f0'),
+  ],
+  longshot: [
+    ...stroke2('M6 32 H50', ROPE, 5),
+    path('M48 22 L62 32 L48 42 Z', METAL),
+    ...stroke2('M10 22 H28 M10 42 H28', '#ffa030', 3),
+  ],
   // ------------------------------------------------------------------ status / causes
   burn: [
     path('M32 5 C 41 17 51 23 48 40 C 46 53 38 59 31 59 C 22 59 14 53 15 42 C 16 32 23 28 25 18 C 29 24 30 28 32 30 C 35 22 35 13 32 5Z', FIRE),

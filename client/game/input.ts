@@ -58,8 +58,36 @@ export class InputController {
   }
 
   private press(btn: number): void {
+    if (btn & (Btn.Hook | Btn.Grapple | Btn.Bash)) {
+      // lock the aim to the exact pixel under the cursor at the moment of the press
+      this.reproject();
+      this.pressAim = { x: this.aim.x, z: this.aim.z };
+    }
     this.pressed |= btn;
     this.onPress?.(btn);
+  }
+
+  /** Aim captured at the last ability press, sent with the tick that carries the press. */
+  private pressAim: { x: number; z: number } | null = null;
+
+  peekPressAim(): { x: number; z: number } | null {
+    return this.pressAim;
+  }
+
+  takePressAim(): { x: number; z: number } | null {
+    const a = this.pressAim;
+    this.pressAim = null;
+    return a;
+  }
+
+  // camera and ground used by the last updateAim, so presses can re-project between ticks
+  private aimCam: THREE.Camera | null = null;
+  private aimHeight: ((x: number, z: number) => number) | null = null;
+  private aimTop = 0;
+  private aimBottom = 0;
+
+  private reproject(): void {
+    if (this.aimCam && this.aimHeight) this.updateAim(this.aimCam, this.aimHeight, this.aimTop, this.aimBottom);
   }
 
   private keyDown(e: KeyboardEvent): void {
@@ -121,6 +149,7 @@ export class InputController {
   private pointerDown(e: PointerEvent): void {
     this.pointerMove(e);
     if (this.cmd.typing()) return;
+    this.reproject(); // the click point, not where the cursor was on the previous tick
     if (this.scheme === 'modern') {
       if (e.button === 0) this.press(Btn.Hook);
       if (e.button === 2) this.press(Btn.Grapple);
@@ -130,15 +159,59 @@ export class InputController {
     }
   }
 
-  /** Project the mouse onto the ground plane at height y. */
-  updateAim(camera: THREE.Camera, y: number): void {
+  /**
+   * Find the ground point under the cursor. The ground is not flat (river bed, ice, water surface),
+   * so march the cursor ray from the bank top down to the bed and stop where it meets height(x,z).
+   */
+  updateAim(camera: THREE.Camera, height: (x: number, z: number) => number, top: number, bottom: number, lift = 0.2): void {
+    this.aimCam = camera;
+    this.aimHeight = height;
+    this.aimTop = top;
+    this.aimBottom = bottom;
     if (!this.hasMouse) return;
-    this.plane.constant = -y;
     this.ray.setFromCamera(this.mouseNdc, camera);
-    if (this.ray.ray.intersectPlane(this.plane, this.hit)) {
-      this.aim.x = this.hit.x;
-      this.aim.z = this.hit.z;
+    const r = this.ray.ray;
+    const flatHit = (y: number): THREE.Vector3 | null => {
+      this.plane.constant = -y;
+      return r.intersectPlane(this.plane, this.hit);
+    };
+    const fallback = () => {
+      const p = flatHit(top - 3 + lift); // the bank top (callers pass top = bank + 3)
+      if (p) {
+        this.aim.x = p.x;
+        this.aim.z = p.z;
+      }
+    };
+    if (r.direction.y >= -1e-4) return fallback();
+    const tA = (top + lift - r.origin.y) / r.direction.y;
+    const tB = (bottom + lift - r.origin.y) / r.direction.y;
+    if (tA < 0 || tB <= tA) return fallback();
+    const at = (t: number) => ({ x: r.origin.x + r.direction.x * t, y: r.origin.y + r.direction.y * t, z: r.origin.z + r.direction.z * t });
+    const above = (t: number) => {
+      const p = at(t);
+      return p.y > height(p.x, p.z) + lift;
+    };
+    if (!above(tA)) return fallback();
+    const horiz = Math.hypot(r.direction.x, r.direction.z) || 1e-3;
+    const dt = Math.min(0.25 / horiz, (tB - tA) / 4);
+    let lo = tA;
+    let hi = -1;
+    for (let t = tA + dt; t <= tB + 1e-6; t += dt) {
+      if (!above(t)) {
+        hi = t;
+        break;
+      }
+      lo = t;
     }
+    if (hi < 0) return fallback();
+    for (let i = 0; i < 6; i++) {
+      const mid = (lo + hi) / 2;
+      if (above(mid)) lo = mid;
+      else hi = mid;
+    }
+    const p = at(hi);
+    this.aim.x = p.x;
+    this.aim.z = p.z;
   }
 
   /** Movement direction for this tick. Classic mode walks toward the last right-click. */

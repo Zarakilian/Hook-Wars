@@ -5,7 +5,7 @@ import {
 } from '../constants.ts';
 import { getMap } from '../maps/index.ts';
 import type { MapDef } from '../maps/types.ts';
-import { clamp, dist, dist2, q2, Rng, sweepCircle } from '../math.ts';
+import { angleDelta, clamp, dist, dist2, q2, Rng, sweepCircle } from '../math.ts';
 import {
   Btn, BTN_ITEM, HookKind, HookPhase, otherTeam, UFlag, UnitState,
   type AnnounceKey, type BuffSnap, type CastKind, type GameEvent, type HookSnap, type ItemId, type KillCause, type MatchConfig,
@@ -72,6 +72,7 @@ export class GameSim {
   // ------------------------------------------------------------------------------------------
 
   addPlayer(p: PlayerInfo): Unit {
+    if (this.unitById.has(p.id)) this.removePlayer(p.id);
     const fam = FAMILY_DEFS[p.family] ?? FAMILY_DEFS.brawler;
     const used = new Set(this.units.filter((u) => u.team === p.team).map((u) => u.spawnIndex));
     let spawnIndex = 0;
@@ -88,7 +89,7 @@ export class GameSim {
       knockVx: 0, knockVz: 0, knockT: 0, knockDur: 0, knockH: 0,
       hookedBy: -1, activeHook: -1, activeGrapple: -1,
       drownT: 0, respawnT: 0, spawnProt: BAL.spawnProt,
-      haste: 0, double: 0, shield: 0, shieldT: 0, ghost: 0, puff: 0, pieT: 0, burnT: 0, burnDps: 0, burnSrc: -1,
+      haste: 0, double: 0, bendy: 0, bouncy: 0, longshot: 0, shield: 0, shieldT: 0, ghost: 0, puff: 0, pieT: 0, burnT: 0, burnDps: 0, burnSrc: -1,
       lastDamageT: -99, damagers: new Map(),
       gold: BAL.startGold, up: { damage: 0, range: 0, speed: 0, width: 0 }, items: [null, null, null, null],
       stats: { k: 0, d: 0, a: 0, hh: 0, ht: 0, bs: 0, dr: 0, sv: 0, dmg: 0, g: 0 },
@@ -170,11 +171,15 @@ export class GameSim {
     const slot = u.items[slotIndex];
     if (!slot) return false;
     const def = ITEMS[slot.id];
+    const alive = u.state !== UnitState.Dead;
+    // Iron Gut gave +irongutHp on purchase; selling takes it back. Refuse when that would kill,
+    // so a sell/buy loop can never act as a free heal.
+    if (slot.id === 'irongut' && alive && u.hp <= BAL.irongutHp) return false;
     const refund = def.consumable ? Math.floor((def.cost / 2) * (slot.charges / Math.max(1, def.charges))) : Math.floor(def.cost / 2);
     if (slot.id === 'irongut') {
       u.maxHp -= BAL.irongutHp;
+      if (alive) u.hp -= BAL.irongutHp;
       u.hp = Math.min(u.hp, u.maxHp);
-      if (u.state !== UnitState.Dead) u.hp = Math.max(1, u.hp);
     }
     u.items[slotIndex] = null;
     u.gold += refund;
@@ -243,9 +248,14 @@ export class GameSim {
       updateRunes(this, dt);
       this.updateMines(dt);
       if (this.tick % 30 === 0) for (const u of this.units) this.giveGold(u, BAL.goldPerSec);
+      // every kill source of this tick has run: decide the match once, so same-tick kills are fair
+      this.checkWin();
       this.checkTime();
     }
   }
+
+  /** Inputs allowed to stay queued after a consume. Solo sets 0 so a frame hitch never adds lag. */
+  inputSlack = 2;
 
   // ------------------------------------------------------------------------------------------
   // Input and actions
@@ -259,7 +269,7 @@ export class GameSim {
     }
     let inp = q.shift()!;
     // Keep latency low: if the client got ahead, collapse the backlog into one input.
-    while (q.length > 2) {
+    while (q.length > this.inputSlack) {
       const n = q.shift()!;
       n.b |= inp.b;
       inp = n;
@@ -271,11 +281,8 @@ export class GameSim {
   private handleActions(u: Unit, dt: number): void {
     const inp = u.input;
     const b = inp.b;
-    if (u.state === UnitState.Casting) {
-      // aim keeps tracking the cursor until release
-      u.castAx = inp.ax;
-      u.castAz = inp.az;
-    }
+    // The aim is locked at the press: the throw goes where you clicked, even while you keep walking.
+    // (Bendy Eel steers toward the live cursor after release; see steerHook.)
     if (b & Btn.Hook) this.tryCast(u, 'hook', inp.ax, inp.az);
     if (b & Btn.Grapple) this.tryCast(u, 'grapple', inp.ax, inp.az);
     if (b & Btn.Bash) this.tryCast(u, 'bash', inp.ax, inp.az);
@@ -300,9 +307,9 @@ export class GameSim {
   tryCast(u: Unit, kind: 'hook' | 'grapple' | 'bash', ax: number, az: number, fromBuffer = false): boolean {
     if (this.phase !== 'playing') return false;
     const cd = kind === 'hook' ? u.cdHook : kind === 'grapple' ? u.cdGrapple : u.cdBash;
-    const busy = (kind === 'hook' && u.activeHook >= 0) || (kind === 'grapple' && u.activeGrapple >= 0);
+    const busy = (kind === 'hook' && u.activeHook >= 0) || (kind === 'grapple' && u.activeGrapple >= 0) || u.castKind !== null;
     if (!this.canStartCast(u, kind) || cd > 0 || busy) {
-      if (!fromBuffer && u.state !== UnitState.Dead && (cd <= BUFFER_TIME || u.state === UnitState.Casting)) {
+      if (!fromBuffer && u.state !== UnitState.Dead && (cd <= BUFFER_TIME || u.state === UnitState.Casting || u.castKind !== null)) {
         u.buffered = { kind, ax, az, t: BUFFER_TIME };
       }
       return false;
@@ -323,9 +330,11 @@ export class GameSim {
       this.launch(u, kind);
       return true;
     }
-    u.state = UnitState.Casting;
     u.castKind = kind;
     u.castT = kind === 'hook' ? BAL.hookWindup : kind === 'grapple' ? BAL.grappleWindup : BAL.bashWindup;
+    // Hook and Grapple are thrown on the move: the unit keeps walking through the wind-up.
+    // Belly Bash plants your feet for its short lunge.
+    if (kind === 'bash') u.state = UnitState.Casting;
     return true;
   }
 
@@ -372,6 +381,9 @@ export class GameSim {
     u.double = Math.max(0, u.double - dt);
     u.ghost = Math.max(0, u.ghost - dt);
     u.puff = Math.max(0, u.puff - dt);
+    u.bendy = Math.max(0, u.bendy - dt);
+    u.bouncy = Math.max(0, u.bouncy - dt);
+    u.longshot = Math.max(0, u.longshot - dt);
     u.bristleCd = Math.max(0, u.bristleCd - dt);
     if (u.shieldT > 0) {
       u.shieldT -= dt;
@@ -436,6 +448,16 @@ export class GameSim {
     u.y = u.state === UnitState.Drowning ? -0.55 - Math.min(1, u.drownT / BAL.drownTime) * 0.5 : 0;
     const sp2 = u.vx * u.vx + u.vz * u.vz;
     if (sp2 > 0.25) u.face = Math.atan2(u.vx, u.vz);
+    // Hook / Grapple wind-up runs while walking; the throw leaves from wherever the hand is now.
+    if (u.castKind && u.state === UnitState.Alive) {
+      u.castT -= dt;
+      if (u.castT <= 0) {
+        const kind = u.castKind;
+        u.castKind = null;
+        u.castT = 0;
+        this.launch(u, kind);
+      }
+    }
     this.updateMelee(u, dt);
   }
 
@@ -444,6 +466,7 @@ export class GameSim {
     let m = fam.speedMul;
     if (u.items.some((s) => s && s.id === 'wellies')) m *= BAL.welliesMul;
     if (u.haste > 0) m *= BAL.hasteMul;
+    if (u.castKind && u.state === UnitState.Alive) m *= BAL.castMoveMul;
     if (u.activeHook >= 0) m *= BAL.hookMoveSlow;
     if (u.meleeT > 0) m *= 0.75;
     if (u.inHazard) m *= this.hazardSlow(u);
@@ -507,7 +530,8 @@ export class GameSim {
       }
       return;
     }
-    if (u.cdMelee > 0 || this.isStealthed(u)) return;
+    // no wallop while winding up a throw, while stealthed, or while spawn-protected (immune units do not hit)
+    if (u.cdMelee > 0 || u.castKind || u.spawnProt > 0 || this.isStealthed(u)) return;
     let best: Unit | null = null;
     let bd = BAL.meleeRange * BAL.meleeRange;
     for (const e of this.units) {
@@ -536,24 +560,26 @@ export class GameSim {
     if (free) {
       if (inWaterZone && this.river.deep) {
         if (u.state !== UnitState.Drowning) {
+          // drownT is NOT reset here: a unit knocked about while drowning keeps its clock
           this.interrupt(u);
           u.state = UnitState.Drowning;
-          u.drownT = 0;
           u.stateT = 0;
           this.emit({ e: 'drownStart', u: u.id, x: q2(u.x), z: q2(u.z) });
-          this.emit({ e: 'splash', x: q2(u.x), z: q2(u.z), s: 1 });
+          this.emit({ e: 'splash', u: u.id, x: q2(u.x), z: q2(u.z), s: 1 });
         } else {
-          u.drownT += dt;
+          if (this.phase !== 'ended') u.drownT += dt;
           if (u.drownT >= BAL.drownTime) {
             this.kill(u, -1, 'drown');
             return;
           }
         }
-      } else if (u.state === UnitState.Drowning) {
-        u.state = UnitState.Alive;
-        u.drownT = 0;
-        u.y = 0;
-        this.emit({ e: 'drownSave', u: u.id });
+      } else {
+        u.drownT = 0; // any free unit out of deep water starts the next swim with a clean timer
+        if (u.state === UnitState.Drowning) {
+          u.state = UnitState.Alive;
+          u.y = 0;
+          this.emit({ e: 'drownSave', u: u.id });
+        }
       }
     }
     // fountains
@@ -623,26 +649,40 @@ export class GameSim {
     dz /= l;
     u.face = Math.atan2(dx, dz);
     const isHook = kind === HookKind.Hook;
-    const ricochet = isHook && u.items.some((s) => s && s.id === 'ricochet');
+    // power-up runes: Boing Barb (bouncy), Long Line (longshot), Bendy Eel (steer toward the cursor)
+    const bouncy = isHook && u.bouncy > 0;
+    const longshot = isHook && u.longshot > 0;
+    const ricochet = isHook && (bouncy || u.items.some((s) => s && s.id === 'ricochet'));
+    const r = isHook ? HOOK_LEVELS.width[u.up.width] : BAL.grappleRadius;
+    let hx = u.x + dx * BAL.hookHand;
+    let hz = u.z + dz * BAL.hookHand;
+    // hugging a wall or post: never spawn the head on the far side of it
+    const wall = this.world.sweep(u.x, u.z, hx, hz, r);
+    if (wall && wall.what !== 'bounds') {
+      hx = u.x + (hx - u.x) * Math.max(0, wall.t - 0.02);
+      hz = u.z + (hz - u.z) * Math.max(0, wall.t - 0.02);
+    }
     const h: Hook = {
       id: this.nextId++,
       owner: u.id,
       kind,
       phase: HookPhase.Out,
-      x: u.x + dx * BAL.hookHand,
-      z: u.z + dz * BAL.hookHand,
+      x: hx,
+      z: hz,
       dx,
       dz,
-      speed: isHook ? HOOK_LEVELS.speed[u.up.speed] : BAL.grappleSpeed,
-      r: isHook ? HOOK_LEVELS.width[u.up.width] : BAL.grappleRadius,
-      range: isHook ? HOOK_LEVELS.range[u.up.range] : BAL.grappleRange,
+      speed: isHook ? HOOK_LEVELS.speed[u.up.speed] * (longshot ? BAL.longshotSpeedMul : 1) : BAL.grappleSpeed,
+      r,
+      range: isHook ? HOOK_LEVELS.range[u.up.range] * (longshot ? BAL.longshotRangeMul : 1) : BAL.grappleRange,
       traveled: 0,
       pts: [],
-      bounces: ricochet ? BAL.ricochetBounces : 0,
+      bounces: ricochet ? (bouncy ? Math.max(BAL.ricochetBounces, BAL.bouncyBounces) : BAL.ricochetBounces) : 0,
       tg: -1,
       ru: -1,
       ember: isHook && u.items.some((s) => s && s.id === 'ember'),
       ricochet,
+      steer: isHook && u.bendy > 0,
+      longshot,
       dmg: isHook ? HOOK_LEVELS.damage[u.up.damage] * (u.double > 0 ? 2 : 1) : 0,
       anchorUnit: -1,
       flightT: 0,
@@ -655,6 +695,14 @@ export class GameSim {
       u.stats.ht++;
     } else u.activeGrapple = h.id;
     this.emit({ e: 'hookLaunch', u: u.id, h: h.id, k: kind, x: q2(h.x), z: q2(h.z), dx: q2(dx), dz: q2(dz) });
+    if (wall && wall.what !== 'bounds') {
+      // the head is already against the wall: it clinks and comes straight back
+      if (h.kind === HookKind.Grapple) this.grappleLatch(h, u, h.x, h.z, -1);
+      else {
+        this.emit({ e: 'hookWall', u: u.id, x: q2(h.x), z: q2(h.z) });
+        this.startRetract(h);
+      }
+    }
   }
 
   hookById(id: number): Hook | undefined {
@@ -683,6 +731,7 @@ export class GameSim {
     while (remaining > 1e-6 && h.phase === HookPhase.Out && !h.dead) {
       const step = Math.min(remaining, HOOK_SUBSTEP);
       remaining -= step;
+      if (h.steer) this.steerHook(h, owner, step);
       if (wp) {
         const d = dist(h.x, h.z, wp.x, wp.z);
         if (d < wp.r) {
@@ -752,7 +801,11 @@ export class GameSim {
         this.startRetract(h);
       } else if (c) {
         if (h.kind === HookKind.Grapple) {
-          this.grappleLatch(h, owner, h.x, h.z, -1);
+          if (c.what === 'mover' && this.river.deep) {
+            // a log or barge floating in deep water is no anchor: latching would drop you in the river
+            this.emit({ e: 'hookWall', u: owner.id, x: q2(h.x), z: q2(h.z) });
+            this.startRetract(h);
+          } else this.grappleLatch(h, owner, h.x, h.z, -1);
         } else if (c.bouncy || h.bounces > 0) {
           if (!c.bouncy) h.bounces--;
           const dot = h.dx * c.nx + h.dz * c.nz;
@@ -770,6 +823,26 @@ export class GameSim {
           this.startRetract(h);
         }
       }
+    }
+  }
+
+  /** Bendy Eel: the flying hook curves toward the thrower's live cursor at a limited turn rate. */
+  private steerHook(h: Hook, owner: Unit, step: number): void {
+    const tx = owner.input.ax - h.x;
+    const tz = owner.input.az - h.z;
+    if (tx * tx + tz * tz < 1) return; // cursor on top of the head: keep going straight
+    const cur = Math.atan2(h.dx, h.dz);
+    let d = angleDelta(cur, Math.atan2(tx, tz));
+    if (Math.abs(d) > 2.6) return; // never loop back on itself
+    const maxTurn = BAL.bendyTurn * (step / h.speed);
+    d = clamp(d, -maxTurn, maxTurn);
+    const a = cur + d;
+    h.dx = Math.sin(a);
+    h.dz = Math.cos(a);
+    h.bendAcc += Math.abs(d);
+    if (h.bendAcc > 0.07 && h.pts.length < MAX_BEND_PTS) {
+      h.pts.push(q2(h.x), q2(h.z));
+      h.bendAcc = 0;
     }
   }
 
@@ -799,8 +872,9 @@ export class GameSim {
         }
       }
     }
-    // the target loses control: break its own hook, grapple, cast
+    // the target loses control: break its own hook, grapple, cast; the chain on it gives it away
     this.interrupt(t);
+    this.breakStealth(t);
     if (t.state !== UnitState.Dead) {
       t.state = UnitState.Hooked;
       t.stateT = 0;
@@ -842,6 +916,10 @@ export class GameSim {
     h.x = x;
     h.z = z;
     h.anchorUnit = unitId;
+    if (unitId >= 0) {
+      const a = this.unitById.get(unitId);
+      if (a) this.breakStealth(a);
+    }
     h.pts.length = 0;
     h.flightT = 0;
     this.interruptCastOnly(owner);
@@ -1036,10 +1114,12 @@ export class GameSim {
     for (let i = 0; i < hs.length; i++) {
       const a = hs[i];
       if (a.dead || a.kind !== HookKind.Hook || a.phase !== HookPhase.Out) continue;
+      const aTeam = this.unitById.get(a.owner)?.team;
       for (let j = 0; j < hs.length; j++) {
         if (i === j) continue;
         const b = hs[j];
         if (b.dead || b.kind !== HookKind.Hook || b.owner === a.owner) continue;
+        if (this.unitById.get(b.owner)?.team === aTeam) continue; // allies' hooks pass through each other
         if (b.phase === HookPhase.Back && b.tg >= 0) continue;
         const rr = a.r + b.r + 0.1;
         if (dist2(a.x, a.z, b.x, b.z) < rr * rr) {
@@ -1121,11 +1201,9 @@ export class GameSim {
   }
 
   private interruptCastOnly(u: Unit): void {
-    if (u.state === UnitState.Casting) {
-      u.state = UnitState.Alive;
-      u.castKind = null;
-      u.castT = 0;
-    }
+    if (u.state === UnitState.Casting) u.state = UnitState.Alive;
+    u.castKind = null;
+    u.castT = 0;
     u.meleeT = 0;
     u.buffered = null;
   }
@@ -1163,13 +1241,14 @@ export class GameSim {
         this.emit({ e: 'dmg', tg: t.id, src, amt: Math.round(absorbed), kind: 'shield' });
       }
     }
+    // credit and combat timer first: a shield that soaks a bash must not erase the drowning credit
+    t.lastDamageT = this.time;
+    const s = src >= 0 ? this.unitById.get(src) : undefined;
+    if (s && s.team !== t.team) t.damagers.set(s.id, this.time);
     if (amt <= 0) return 0;
     t.hp -= amt;
-    t.lastDamageT = this.time;
     t.pieT = 0;
-    const s = src >= 0 ? this.unitById.get(src) : undefined;
     if (s && s.team !== t.team) {
-      t.damagers.set(s.id, this.time);
       s.stats.dmg += amt;
     }
     const dot = cause === 'burn' || cause === 'fountain' || cause === 'hazard';
@@ -1214,7 +1293,7 @@ export class GameSim {
   }
 
   kill(v: Unit, src: number, cause: KillCause): void {
-    if (v.state === UnitState.Dead) return;
+    if (v.state === UnitState.Dead || this.phase === 'ended') return;
     const killer = this.creditKiller(v, src);
     const wasHooked = v.hookedBy >= 0;
     // Cancel what the victim was doing but keep it attached if a hook is dragging the corpse.
@@ -1233,6 +1312,7 @@ export class GameSim {
     v.burnT = 0;
     v.pieT = 0;
     v.haste = v.double = v.ghost = v.puff = 0;
+    v.bendy = v.bouncy = v.longshot = 0;
     v.shield = v.shieldT = 0;
     v.drownT = 0;
     v.stats.d++;
@@ -1275,7 +1355,19 @@ export class GameSim {
     if (!wasHooked) this.emit({ e: 'corpse', v: v.id, x: q2(v.x), z: q2(v.z) });
     const scorer = otherTeam(v.team);
     this.score[scorer]++;
-    if (this.phase === 'playing' && (this.score[scorer] >= this.config.killsToWin || this.overtime)) this.endMatch(scorer);
+  }
+
+  /** Called once per tick after every kill source ran. A same-tick tie at the target goes to overtime. */
+  private checkWin(): void {
+    const [s0, s1] = this.score;
+    if (s0 === s1) {
+      if (s0 >= this.config.killsToWin && !this.overtime) {
+        this.overtime = true;
+        this.announce('overtime', -1, 0);
+      }
+      return;
+    }
+    if (this.overtime || s0 >= this.config.killsToWin || s1 >= this.config.killsToWin) this.endMatch(s0 > s1 ? 0 : 1);
   }
 
   private respawn(u: Unit): void {
@@ -1319,6 +1411,15 @@ export class GameSim {
         break;
       case 'ghost':
         u.ghost = BAL.ghostTime;
+        break;
+      case 'bendy':
+        u.bendy = BAL.powerHookTime;
+        break;
+      case 'bouncy':
+        u.bouncy = BAL.powerHookTime;
+        break;
+      case 'longshot':
+        u.longshot = BAL.powerHookTime;
         break;
       case 'bounty':
         this.giveGold(u, BAL.goldBounty);
@@ -1404,6 +1505,7 @@ export class GameSim {
     this.phase = 'ended';
     this.winner = winner;
     for (const h of this.hooks) if (!h.dead) this.breakHook(h);
+    for (const u of this.units) this.interruptCastOnly(u);
     this.emit({ e: 'phase', ph: 'ended' });
     this.emit({ e: 'end', winner });
   }
@@ -1435,7 +1537,7 @@ export class GameSim {
     }
     const hooks: HookSnap[] = this.hooks.map((h) => ({
       i: h.id, o: h.owner, k: h.kind, p: h.phase, x: q2(h.x), z: q2(h.z), r: h.r, pts: h.pts.slice(), tg: h.tg, ru: h.ru,
-      fx: (h.ember ? 1 : 0) | (h.ricochet ? 2 : 0),
+      fx: (h.ember ? 1 : 0) | (h.ricochet ? 2 : 0) | (h.steer ? 4 : 0) | (h.longshot ? 8 : 0),
     }));
     const runes: RuneSnap[] = this.runes.map((r) => ({ i: r.id, t: r.type, x: q2(r.x), z: q2(r.z), d: r.dragged ? 1 : 0 }));
     const mines: MineSnap[] = this.mines
@@ -1463,13 +1565,24 @@ export class GameSim {
     return snap;
   }
 
+  private hiddenFrom(id: number, team: Team): boolean {
+    const u = this.unitById.get(id);
+    return !!u && !this.visibleTo(u, team);
+  }
+
+  /** Never tell a team where a stealthed enemy is, or about enemy mines and purchases. */
   private eventVisible(e: GameEvent, team: Team): boolean {
     if (e.e === 'mineArm') return this.unitById.get(e.o)?.team === team;
     if (e.e === 'buy') return this.unitById.get(e.u)?.team === team;
     if (e.e === 'useItem') {
       const u = this.unitById.get(e.u);
-      return !u || u.team === team || e.item !== 'mine';
+      if (!u || u.team === team) return true;
+      if (e.item === 'mine') return false;
+      return e.item === 'puffball' || this.visibleTo(u, team);
     }
+    if (e.e === 'drownStart' || e.e === 'drownSave' || e.e === 'splash') return !this.hiddenFrom(e.u, team);
+    if (e.e === 'heal') return !this.hiddenFrom(e.tg, team);
+    if (e.e === 'dmg') return !this.hiddenFrom(e.tg, team) || this.unitById.get(e.src)?.team === team;
     return true;
   }
 
@@ -1486,8 +1599,11 @@ export class GameSim {
     if (u.pieT > 0) fl |= UFlag.Healing;
     if (u.inHazard) fl |= UFlag.InHazard;
     if (u.state === UnitState.Drowning) fl |= UFlag.Swimming;
+    if (u.bendy > 0) fl |= UFlag.Bendy;
+    if (u.bouncy > 0) fl |= UFlag.Bouncy;
+    if (u.longshot > 0) fl |= UFlag.Longshot;
     const s: UnitSnap = { i: u.id, x: q2(u.x), z: q2(u.z), y: q2(u.y), f: q2(u.face), hp: Math.ceil(u.hp), mhp: u.maxHp, st: u.state, fl };
-    if (u.state === UnitState.Casting && u.castKind) s.ck = u.castKind;
+    if (u.castKind) s.ck = u.castKind;
     else if (u.meleeT > 0) s.ck = 'melee';
     if (u.state === UnitState.Dead) s.rt = q2(Math.max(0, u.respawnT));
     return s;
@@ -1504,6 +1620,9 @@ export class GameSim {
     if (u.pieT > 0) buffs.push({ t: 'pie', left: q2(u.pieT) });
     if (u.burnT > 0) buffs.push({ t: 'burn', left: q2(u.burnT) });
     if (u.spawnProt > 0) buffs.push({ t: 'spawn', left: q2(u.spawnProt) });
+    if (u.bendy > 0) buffs.push({ t: 'bendy', left: q2(u.bendy) });
+    if (u.bouncy > 0) buffs.push({ t: 'bouncy', left: q2(u.bouncy) });
+    if (u.longshot > 0) buffs.push({ t: 'longshot', left: q2(u.longshot) });
     return {
       id: u.id,
       ack: u.ack,
@@ -1514,7 +1633,7 @@ export class GameSim {
       up: { ...u.up },
       buffs,
       drown: u.state === UnitState.Drowning ? q2(Math.max(0, BAL.drownTime - u.drownT)) : 0,
-      hookRange: HOOK_LEVELS.range[u.up.range],
+      hookRange: HOOK_LEVELS.range[u.up.range] * (u.longshot > 0 ? BAL.longshotRangeMul : 1),
       mm: q3m(u.moveMul),
       vx: q2(u.vx),
       vz: q2(u.vz),

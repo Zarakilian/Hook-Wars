@@ -87,7 +87,8 @@ export function riverStateAt(map: MapDef, config: MatchConfig, time: number, out
     setPhase(s, 'falling', period - c);
     s.level = 1 - (1 - LOW_LEVEL) * smooth(k);
   }
-  s.deep = s.level >= DEEP_AT;
+  // The river only turns lethal when 'high' begins, exactly when the HUD countdown hits zero.
+  s.deep = s.phase !== 'rising' && s.level >= DEEP_AT;
   s.shallow = !s.deep && s.level >= SHALLOW_AT;
   return s;
 }

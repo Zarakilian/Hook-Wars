@@ -1,7 +1,7 @@
 // One running match on the client: input -> session, snapshots -> interpolated views,
 // events -> effects, audio and HUD. Owns every per-match render object.
 import * as THREE from 'three';
-import { BAL, TICK_DT } from '../../shared/constants.ts';
+import { BAL, HOOK_LEVELS, TICK_DT } from '../../shared/constants.ts';
 import { channelDepthAt } from '../../shared/maps/helpers.ts';
 import { getMap } from '../../shared/maps/index.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
@@ -17,7 +17,7 @@ import { SnapshotBuffer } from '../net/interp.ts';
 import { Predictor } from '../net/prediction.ts';
 import type { MatchSession } from '../net/session.ts';
 import {
-  TEAM_COLORS, groundY, waterY, type AnimatedView, type AudioSystem, type ChainView, type DamageKind, type Engine, type FxSystem,
+  TEAM_COLORS, bedY, groundY, waterY, type AnimatedView, type AudioSystem, type ChainView, type DamageKind, type Engine, type FxSystem,
   type HazardView, type WaterView, type WorldView,
 } from '../render/contracts.ts';
 import { createFx } from '../render/fx/fx.ts';
@@ -95,7 +95,14 @@ export class GameClient {
   private hitstop = 0;
   private fps = 60;
   private lastCountdown = -1;
-  private predictedCastAt = -10;
+  private readonly predictedAt = { hook: -10, grapple: -10, bash: -10 };
+  /** Online only: a client-side hook drawn from the moment of release until the server's hook arrives. */
+  private ghost: {
+    start: number; deadline: number; speed: number; radius: number; range: number; fx: number;
+    aimX: number; aimZ: number; dx: number; dz: number; ox: number; oz: number; chain: ChainView | null;
+  } | null = null;
+  /** After the hand-over, the real head is drawn with a shrinking offset so it does not jump back. */
+  private ghostBlend: { id: number; ox: number; oz: number; t: number; dur: number } | null = null;
   private lastBull = new Map<number, number>();
   private ended: MatchEnd | null = null;
   private frameRef: Frame | null = null;
@@ -209,32 +216,63 @@ export class GameClient {
     this.deps.audio.unlock();
     const you = this.you;
     const me = this.me;
-    if (!you || !me || me.st !== UnitState.Alive) return;
+    if (!you || !me || this.frameRef?.newer.ph !== 'playing') return; // presses outside play are dropped by the sim
+    const alive = me.st === UnitState.Alive;
+    if (!alive && !(me.st === UnitState.Drowning && btn & Btn.Grapple)) return;
     const elapsed = (performance.now() - this.youAt) / 1000;
     const v = this.views.get(this.youId);
-    if (btn & Btn.Hook && you.cd[0] - elapsed <= 0.03) {
-      this.predictor.rootFor(BAL.hookWindup);
+    const family = this.players.get(this.youId)?.family;
+    if (alive && btn & Btn.Hook && you.cd[0] - elapsed <= 0.03) {
+      this.predictor.slowFor(BAL.hookWindup, BAL.castMoveMul);
       v?.pudgy.play('throw');
-      this.deps.audio.play('hookThrow', { family: this.players.get(this.youId)?.family });
-      this.predictedCastAt = this.time;
-    } else if (btn & Btn.Bash && you.cd[2] - elapsed <= 0.03) {
-      this.predictor.rootFor(BAL.bashWindup);
+      this.deps.audio.play('hookThrow', { family });
+      this.predictedAt.hook = this.time;
+      if (!this.session.local) this.startGhost(you);
+    } else if (alive && btn & Btn.Bash && you.cd[2] - elapsed <= 0.03) {
+      this.predictor.slowFor(BAL.bashWindup, 0);
       v?.pudgy.play('bash');
-      this.predictedCastAt = this.time;
+      this.predictedAt.bash = this.time;
     } else if (btn & Btn.Grapple && you.cd[1] - elapsed <= 0.03) {
-      this.predictor.rootFor(BAL.grappleWindup);
+      if (alive) this.predictor.slowFor(BAL.grappleWindup, BAL.castMoveMul);
       v?.pudgy.play('grapple');
       this.deps.audio.play('grappleThrow');
-      this.predictedCastAt = this.time;
+      this.predictedAt.grapple = this.time;
     }
+  }
+
+  private startGhost(you: YouSnap): void {
+    const aim = this.input.peekPressAim() ?? this.input.aim;
+    const items = you.items;
+    const fx = (items.some((s) => s && s.id === 'ember') ? 1 : 0) | (items.some((s) => s && s.id === 'ricochet') ? 2 : 0);
+    this.ghost?.chain?.dispose();
+    const start = this.time + BAL.hookWindup;
+    this.ghost = {
+      start,
+      deadline: start + this.session.rtt() / 1000 + (this.buffer.delay + 1) * TICK_DT + 0.1,
+      speed: HOOK_LEVELS.speed[you.up.speed],
+      radius: HOOK_LEVELS.width[you.up.width],
+      range: you.hookRange,
+      fx,
+      aimX: aim.x,
+      aimZ: aim.z,
+      dx: 0,
+      dz: 0,
+      ox: 0,
+      oz: 0,
+      chain: null,
+    };
   }
 
   private localTick(): void {
     if (this.youId < 0) return;
-    this.input.updateAim(this.engine.camera, groundY(this.map) + 0.2);
+    this.input.updateAim(this.engine.camera, this.aimHeight, groundY(this.map) + 3, bedY(this.map));
     const b = this.predictor.body;
     const mv = this.input.moveDir(b.x, b.z);
-    const inp = { seq: ++this.seq, mx: mv.x, mz: mv.z, ax: this.input.aim.x, az: this.input.aim.z, b: this.input.takePressed() };
+    const pressed = this.input.takePressed();
+    const pa = this.input.takePressAim();
+    const ax = pressed && pa ? pa.x : this.input.aim.x;
+    const az = pressed && pa ? pa.z : this.input.aim.z;
+    const inp = { seq: ++this.seq, mx: mv.x, mz: mv.z, ax, az, b: pressed };
     this.session.sendInput(inp);
     this.predictor.apply(inp);
   }
@@ -254,7 +292,6 @@ export class GameClient {
     this.time += dt;
     this.fps = this.fps * 0.95 + (dt > 0 ? 1 / dt : 60) * 0.05;
 
-    this.session.pump(now);
     this.tickAcc += dt;
     let n = 0;
     while (this.tickAcc >= TICK_DT && n < 5) {
@@ -263,6 +300,8 @@ export class GameClient {
       n++;
     }
     if (n === 5) this.tickAcc = 0;
+    // solo: step the sim after this frame's input was queued, so nothing waits a tick
+    this.session.pump(now);
     const alpha = this.tickAcc / TICK_DT;
 
     const renderTick = this.buffer.advance(now, dtMs);
@@ -346,6 +385,7 @@ export class GameClient {
     for (const h of f.hooks) if (h.tg >= 0) hooked.add(h.tg);
     const hookOwners = new Set<number>();
     for (const h of f.hooks) hookOwners.add(h.o);
+    if (this.ghost?.chain) hookOwners.add(this.youId);
     const units = new Map(f.units);
     // the local unit is drawn where prediction says it is
     const meSnap = this.me;
@@ -372,6 +412,7 @@ export class GameClient {
         x = p.x;
         z = p.z;
       }
+      if (id === this.youId) this.predictor.noteRendered(x, z);
       if (st === UnitState.Dead && hooked.has(id)) st = UnitState.Hooked; // corpse being reeled in
       if (st !== v.state) {
         v.state = st;
@@ -462,12 +503,94 @@ export class GameClient {
     this.water.disturb(x, z, 0.25, 0.45);
   }
 
+  /** Online: draw our own hook from the moment of release until the server's hook shows up. */
+  private updateGhost(f: Frame, y: number): void {
+    const g = this.ghost;
+    if (!g) return;
+    const own = f.hooks.find((h) => h.o === this.youId && h.k === 0);
+    const st = this.me?.st;
+    if (own) {
+      if (g.chain) {
+        const t = Math.max(0, this.time - g.start);
+        const travel = Math.min(g.range, g.speed * t);
+        const gx = g.ox + g.dx * travel;
+        const gz = g.oz + g.dz * travel;
+        if (own.p === 0 && own.tg < 0 && own.ru < 0) {
+          const ox = gx - own.x;
+          const oz = gz - own.z;
+          this.ghostBlend = { id: own.i, ox, oz, t: 0, dur: 0.06 + Math.hypot(ox, oz) / g.speed };
+        }
+        this.chains.get(own.i)?.dispose();
+        this.chains.set(own.i, g.chain); // hand the same chain over: no flicker
+      }
+      this.ghost = null;
+      return;
+    }
+    if (this.time > g.deadline || st === UnitState.Knocked || st === UnitState.Hooked || st === UnitState.Dead) {
+      g.chain?.dispose();
+      this.ghost = null;
+      return;
+    }
+    if (this.time < g.start) return;
+    if (!g.chain) {
+      const b = this.predictor.body;
+      let dx = g.aimX - b.x;
+      let dz = g.aimZ - b.z;
+      const l = Math.hypot(dx, dz) || 1;
+      dx /= l;
+      dz /= l;
+      g.dx = dx;
+      g.dz = dz;
+      g.ox = b.x + dx * BAL.hookHand;
+      g.oz = b.z + dz * BAL.hookHand;
+      const info = this.players.get(this.youId);
+      g.chain = this.fx.createChain(0, info?.family ?? 'brawler', info?.team ?? 0, g.fx, g.radius);
+    }
+    const travel = Math.min(g.range, g.speed * (this.time - g.start));
+    const v = this.views.get(this.youId);
+    const hand = v ? v.pudgy.getHandWorld(this.tmpV2) : this.tmpV2.set(g.ox, y, g.oz);
+    this.ghostPts[0].copy(hand);
+    this.ghostPts[1].set(g.ox + g.dx * travel, y, g.oz + g.dz * travel);
+    g.chain.setVisible(true);
+    g.chain.update(this.ghostPts, 1 / 60, { retracting: false, carrying: false, time: this.time });
+  }
+
+  private readonly ghostPts = [new THREE.Vector3(), new THREE.Vector3()];
+
+  /** Where a span crosses the channel edge, add one point on the bank side so the chain drapes over the lip. */
+  private chainEdges(a: THREE.Vector3, bx: number, by: number, bz: number, edgeY: number, next: () => THREE.Vector3): void {
+    if (by >= edgeY && a.y >= edgeY) return;
+    const steps = Math.max(2, Math.min(64, Math.ceil(Math.hypot(bx - a.x, bz - a.z) / 0.25)));
+    const ax = a.x;
+    const az = a.z;
+    let prevIn = channelDepthAt(this.map, ax, az) > 0;
+    let px = ax;
+    let pz = az;
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      const x = ax + (bx - ax) * t;
+      const z = az + (bz - az) * t;
+      const inCh = channelDepthAt(this.map, x, z) > 0;
+      if (inCh !== prevIn) {
+        if (prevIn) next().set(x, edgeY, z);
+        else next().set(px, edgeY, pz);
+      }
+      prevIn = inCh;
+      px = x;
+      pz = z;
+    }
+  }
+
+  /** Height the cursor ray should meet: the bed, the ice or the water surface, whatever is there. */
+  private readonly aimHeight = (x: number, z: number): number => this.baseY(x, z);
+
   /** Reused point arrays per hook, so chains do not allocate every frame. */
   private readonly chainPts = new Map<number, THREE.Vector3[]>();
 
   private updateHooks(f: Frame, vdt: number): void {
     const seen = new Set<number>();
     const y = groundY(this.map) + HOOK_Y;
+    this.updateGhost(f, y);
     for (const h of f.hooks) {
       seen.add(h.i);
       let c = this.chains.get(h.i);
@@ -490,7 +613,21 @@ export class GameClient {
       if (ov && ov.visible) ov.pudgy.getHandWorld(next());
       for (let i = 0; i + 1 < h.pts.length; i += 2) next().set(h.pts[i], y, h.pts[i + 1]);
       // the head; a latched grapple (phase 2) sits on whatever it hit
-      next().set(h.x, y, h.z);
+      let hx = h.x;
+      let hz = h.z;
+      const bl = this.ghostBlend;
+      if (bl && bl.id === h.i) {
+        bl.t += vdt;
+        const k = Math.max(0, 1 - bl.t / bl.dur);
+        hx += bl.ox * k;
+        hz += bl.oz * k;
+        if (k <= 0) this.ghostBlend = null;
+      }
+      // a carried body rides the bed or the water, so the chain end drops onto it
+      const carrying = h.tg >= 0 || h.ru >= 0;
+      const hy = carrying ? this.baseY(hx, hz) + HOOK_Y : y;
+      if (carrying && n > 0) this.chainEdges(pool[n - 1], hx, hy, hz, y, next);
+      next().set(hx, hy, hz);
       if (n < 2) next().copy(pool[0]);
       pool.length = n;
       if (h.tg >= 0 || h.p === 0) this.hookRipple(h.i, h.x, h.z);
@@ -598,7 +735,9 @@ export class GameClient {
       const len = Math.min(l, r);
       const pos = this.aimLine.geometry.attributes.position as THREE.BufferAttribute;
       pos.setXYZ(0, v.x + (dx / l) * 0.9, y + 0.9, v.z + (dz / l) * 0.9);
-      pos.setXYZ(1, v.x + (dx / l) * len, y + 0.9, v.z + (dz / l) * len);
+      const ex = v.x + (dx / l) * len;
+      const ez = v.z + (dz / l) * len;
+      pos.setXYZ(1, ex, this.baseY(ex, ez) + 0.96, ez);
       pos.needsUpdate = true;
       (this.rangeRing.material as THREE.MeshBasicMaterial).opacity = this.you.cd[0] > 0 ? 0.08 : 0.2;
     }
@@ -632,8 +771,10 @@ export class GameClient {
     const me = this.youId;
     switch (ev.e) {
       case 'cast': {
-        if (ev.u === me && this.time - this.predictedCastAt < 0.6) break;
+        if (ev.u === me && ev.k !== 'melee' && this.time - this.predictedAt[ev.k] < 0.6) break;
         const v = this.views.get(ev.u);
+        if (ev.u === me && ev.k === 'hook') a.play('hookThrow', { family: this.players.get(me)?.family });
+        else if (ev.u === me && ev.k === 'grapple') a.play('grappleThrow');
         if (ev.k === 'hook') v?.pudgy.play('throw');
         else if (ev.k === 'bash') v?.pudgy.play('bash');
         else if (ev.k === 'grapple') v?.pudgy.play('grapple');

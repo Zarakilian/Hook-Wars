@@ -6,15 +6,15 @@ export class CameraRig {
   readonly camera: THREE.PerspectiveCamera;
   private focus = new THREE.Vector3();
   private target = new THREE.Vector3();
-  private zoom = 1;
-  private zoomTarget = 1;
+  private zoom = 1.25;
+  private zoomTarget = 1.25;
   private trauma = 0;
   private kick = new THREE.Vector3();
   private t = 0;
   shakeScale = 1;
   /** world-space distance multiplier range */
   minZoom = 0.7;
-  maxZoom = 1.45;
+  maxZoom = 1.8;
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -55,8 +55,10 @@ export class CameraRig {
     this.zoom += (this.zoomTarget - this.zoom) * (1 - Math.exp(-dt * 10));
     const dist = 34 * this.zoom;
     const pitch = 0.95; // radians above the horizon
+    // look a little past the player toward the camera, so the HUD bar does not cover the near half of the hook range
+    const biasZ = this.focus.z + 0.11 * dist;
     const cam = this.camera;
-    cam.position.set(this.focus.x, this.focus.y + Math.sin(pitch) * dist, this.focus.z + Math.cos(pitch) * dist);
+    cam.position.set(this.focus.x, this.focus.y + Math.sin(pitch) * dist, biasZ + Math.cos(pitch) * dist);
     // shake
     const s = this.trauma * this.trauma;
     const sx = (Math.sin(this.t * 47.3) + Math.sin(this.t * 31.1) * 0.5) * s * 0.35;
@@ -64,7 +66,7 @@ export class CameraRig {
     cam.position.x += sx + this.kick.x;
     cam.position.y += sy;
     cam.position.z += this.kick.z;
-    cam.lookAt(this.focus.x + this.kick.x * 0.5, this.focus.y, this.focus.z + this.kick.z * 0.5);
+    cam.lookAt(this.focus.x + this.kick.x * 0.5, this.focus.y, biasZ + this.kick.z * 0.5);
     cam.updateMatrixWorld();
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
     this.kick.multiplyScalar(Math.exp(-dt * 12));

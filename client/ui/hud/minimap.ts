@@ -15,6 +15,9 @@ const RUNE_COLOR: Record<RuneType, string> = {
   ironskin: '#b8c8d8',
   ghost: '#eef4ff',
   bounty: '#ffd25a',
+  bendy: '#3fd6a0',
+  bouncy: '#ff70d0',
+  longshot: '#ffa030',
 };
 
 interface TrackedRune {

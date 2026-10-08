@@ -91,6 +91,9 @@ export const UFlag = {
   InHazard: 512,
   Swimming: 1024, // in deep water (drowning)
   Overtime: 2048,
+  Bendy: 4096, // hook power-ups, visible to everyone
+  Bouncy: 8192,
+  Longshot: 16384,
 } as const;
 
 export const HookKind = { Hook: 0, Grapple: 1 } as const;
@@ -111,8 +114,13 @@ export type ItemId =
 export type UpgradeStat = 'damage' | 'range' | 'speed' | 'width';
 export const UPGRADE_STATS: readonly UpgradeStat[] = ['damage', 'range', 'speed', 'width'];
 
-export type RuneType = 'haste' | 'double' | 'ironskin' | 'ghost' | 'bounty';
-export const RUNE_TYPES: readonly RuneType[] = ['haste', 'double', 'ironskin', 'ghost', 'bounty'];
+/**
+ * Runes float on the river; hook one (or walk over it on a dry bed) to claim it.
+ * The last three are hook power-ups: bendy (the flying hook curves toward your cursor),
+ * bouncy (ricochets off everything it hits), longshot (much longer, faster hook).
+ */
+export type RuneType = 'haste' | 'double' | 'ironskin' | 'ghost' | 'bounty' | 'bendy' | 'bouncy' | 'longshot';
+export const RUNE_TYPES: readonly RuneType[] = ['haste', 'double', 'ironskin', 'ghost', 'bounty', 'bendy', 'bouncy', 'longshot'];
 
 export type HazardKind =
   | 'thorns'
@@ -273,7 +281,7 @@ export type GameEvent =
   | { e: 'respawn'; u: number; x: number; z: number }
   | { e: 'drownStart'; u: number; x: number; z: number }
   | { e: 'drownSave'; u: number }
-  | { e: 'splash'; x: number; z: number; s: number } // s = strength 0..1
+  | { e: 'splash'; u: number; x: number; z: number; s: number } // s = strength 0..1, u = who splashed
   | { e: 'runeSpawn'; r: number; t: RuneType; x: number; z: number }
   | { e: 'rune'; u: number; t: RuneType }
   | { e: 'mineArm'; o: number; m: number; x: number; z: number }
