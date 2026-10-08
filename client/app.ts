@@ -383,9 +383,9 @@ export class App {
         app.menuOpen = false;
         app.set({ screen: app.state.room ? 'lobby' : 'online', match: null });
       },
-      uiSound(kind: 'click' | 'hover' | 'open') {
+      uiSound(kind) {
         app.audio.unlock();
-        app.audio.play(kind === 'click' ? 'uiClick' : kind === 'hover' ? 'uiHover' : 'uiOpen');
+        app.audio.play(kind === 'click' ? 'uiClick' : kind === 'hover' ? 'uiHover' : kind === 'open' ? 'uiOpen' : kind);
       },
     };
   }

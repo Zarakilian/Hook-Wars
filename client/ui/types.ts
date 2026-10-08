@@ -71,7 +71,7 @@ export interface AppActions {
   /** Online, after a match ends: close the end screen and wait in the room's lobby (stays in the room). */
   backToLobby(): void;
   /** UI sound hooks */
-  uiSound(kind: 'click' | 'hover' | 'open'): void;
+  uiSound(kind: 'click' | 'hover' | 'open' | 'purchase' | 'equip' | 'listingSold' | 'walletLinked'): void;
 }
 
 /** Everything the HUD needs for one frame. */
