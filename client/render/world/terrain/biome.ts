@@ -6,7 +6,7 @@
 //   land (sim channel c <= 0)  stays at or above top - bankDrop, always above waterY(map, 1)
 //   the drop into the channel starts at c = LIP so units parked on the edge never stand on a lowered column
 //   plazas sit exactly at groundY(map)
-import { channelDepthAt } from '../../../../shared/maps/helpers.ts';
+import { waterDepthAt } from '../../../../shared/maps/helpers.ts';
 import type { MapDef } from '../../../../shared/maps/types.ts';
 import { fbm2, valueNoise2 } from '../../../../shared/math.ts';
 import { tidalActive } from '../../../../shared/sim/river.ts';
@@ -176,9 +176,12 @@ export abstract class BaseBiome implements Biome {
   abstract sample(x: number, z: number, ix: number, iz: number, cellSize: number, out: Cell): void;
   abstract sideColor(side: number, tag: number, ix: number, iy: number, iz: number, dir: number, y0: number, y1: number, top: number, cellSize: number, out: SideOut): void;
 
-  /** Sim channel offset. Biomes override to reshape the river outside the map. */
+  /**
+   * Channel offset where the water (and so the carved bed) is: the sim channel without platforms, so
+   * the river runs on under docks and bridges. Biomes override to reshape the river outside the map.
+   */
   channel(x: number, z: number): number {
-    return channelDepthAt(this.map, x, z);
+    return waterDepthAt(this.map, x, z);
   }
 
   /** True when the nearest channel boundary at (x,z) is an island shore. */

@@ -1,73 +1,224 @@
 // Voxel grid for Pudgy parts. Same VoxelGrid / meshVoxels pipeline as every other model, plus a
-// per-voxel surface channel (skin, cloth, rubber, iron, brass, wet, glow, pulse-glow).
-// The channel lives in the lowest 3 bits of each voxel colour, so the greedy mesher never merges
-// faces across channels, and after meshing each quad looks its channel up again to write a
-// `surf` vertex attribute (roughness, metalness, glow A weight, glow B weight).
+// per-voxel surface channel (skin, cloth, rubber, iron, brass, wet, glow, pulse-glow) and a premium
+// flag (gilded, chrome, pearl, amethyst: shinier and sparkling, used by Limited items).
+// Voxel value layout: bits 0-2 channel, bit 3 premium, bits 4-23 colour (the lowest blue nibble is
+// dropped). The greedy mesher never merges faces across channels, and after meshing each quad looks
+// its voxel up again to write a `surf` vertex attribute (roughness, metalness, glow A, glow B).
 // One shared shader reads `surf`, so every part is a single draw call whatever it is made of.
+//
+// Resolution: grids are authored in skeleton units (VOX metres) but can be sampled finer
+// (res = fine voxels per unit, 2 for the showcase detail). Coarse calls (set, box, paint, add)
+// cover whole unit cells so details keep their physical size; shape helpers (blob, shell, cyl, tube)
+// sample at the fine resolution so curves get smoother; dot()/setF() paint single fine voxels for
+// showcase-only extras. Colour and test callbacks always receive integer unit-cell coordinates;
+// hv() gives per-fine-voxel noise inside them, and P holds the precise centre of the voxel.
 import * as THREE from 'three';
 import { hashVox, meshVoxels, mix, shade, VoxelGrid } from '../../voxel/voxel.ts';
 
-/** metres per voxel for every Pudgy part */
-export const VOX = 0.06;
+/** metres per skeleton unit (one voxel at 'game' detail) */
+export const VOX = 0.05;
 
 /** Surface channels. */
 export const CH = {
   cloth: 0, // fabric, hair, moss, wood: very rough
   skin: 1, // skin, leather: soft sheen
-  rubber: 2, // rubber apron, wellies, gloss paint, plates
+  rubber: 2, // rubber, oilskin, gloss paint, plates
   iron: 3, // iron, steel
   brass: 4, // brass, gold, copper
-  wet: 5, // eyes, teeth, slime: glossy
+  wet: 5, // eyes, teeth, slime, bone gloss
   glow: 6, // emissive, steady (visor, lamps) scaled by the glowA uniform
-  pulse: 7, // emissive, pulsing (steam vents, glow spots, fireflies) scaled by glowB
+  pulse: 7, // emissive, pulsing (steam vents, glow spots, fireflies, cigar ember) scaled by glowB
 } as const;
 export type Channel = (typeof CH)[keyof typeof CH];
 
-// roughness, metalness, glowA, glowB per channel. Metalness stays moderate: the scene may not
-// have an environment map, and full metal reads as black without one.
+// roughness, metalness, glowA, glowB per channel. The engine always sets a sky environment map,
+// so metals can be properly metallic.
 const SURF: readonly (readonly [number, number, number, number])[] = [
-  [0.9, 0, 0, 0],
-  [0.6, 0, 0, 0],
-  [0.32, 0, 0, 0],
-  [0.36, 0.55, 0, 0],
-  [0.28, 0.65, 0, 0],
-  [0.12, 0, 0, 0],
+  [0.92, 0, 0, 0],
+  [0.62, 0, 0, 0],
+  [0.3, 0, 0, 0],
+  [0.42, 0.72, 0, 0],
+  [0.3, 0.85, 0, 0],
+  [0.14, 0, 0, 0],
   [0.5, 0, 1, 0],
   [0.5, 0, 0, 1],
+];
+// premium variants; roughness + 2 marks the sparkle (decoded in material.ts)
+const SURF_PREMIUM: readonly (readonly [number, number, number, number])[] = [
+  [2.7, 0, 0, 0],
+  [2.4, 0.1, 0, 0],
+  [2.12, 0.2, 0, 0],
+  [2.05, 1, 0, 0], // mirror chrome
+  [2.12, 1, 0, 0], // gilded
+  [2.06, 0.15, 0, 0], // pearl
+  [2.2, 0.1, 1, 0], // amethyst, ruby lamps
+  [2.3, 0, 0, 1],
 ];
 
 export type ColorFn = (x: number, y: number, z: number) => number;
 export type Paint = number | ColorFn;
+export type Test = (x: number, y: number, z: number) => boolean;
+
+// ---------------------------------------------------------------------------------------------
+// Build resolution and the paint context
+// ---------------------------------------------------------------------------------------------
+
+let BUILD_RES = 1;
+
+/** Run fn with every new RGrid sampled at `res` fine voxels per unit. */
+export function atRes<T>(res: number, fn: () => T): T {
+  const prev = BUILD_RES;
+  BUILD_RES = res;
+  try {
+    return fn();
+  } finally {
+    BUILD_RES = prev;
+  }
+}
+
+/** Resolution of grids built right now (1 = game, 2 = showcase). */
+export function buildRes(): number {
+  return BUILD_RES;
+}
+
+/** Precise centre (unit coordinates) of the voxel being painted; valid inside colour / test callbacks. */
+export const P = { x: 0, y: 0, z: 0 };
+let CR = 1;
+let CX = 0;
+let CY = 0;
+let CZ = 0;
+let FI = 0;
+let FJ = 0;
+let FK = 0;
+
+function ctx(res: number, fi: number, fj: number, fk: number): void {
+  CR = res;
+  FI = fi;
+  FJ = fj;
+  FK = fk;
+  CX = Math.floor(fi / res);
+  CY = Math.floor(fj / res);
+  CZ = Math.floor(fk / res);
+  P.x = (fi + 0.5) / res;
+  P.y = (fj + 0.5) / res;
+  P.z = (fk + 0.5) / res;
+}
+
+/** Hash noise 0..1 that varies per fine voxel when called with the cell being painted. */
+export function hv(x: number, y: number, z: number, seed: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  if (CR > 1 && xi === CX && yi === CY && zi === CZ) return hashVox(FI, FJ, FK, seed);
+  return hashVox(xi, yi, zi, seed);
+}
+
+function pick(c: Paint, x: number, y: number, z: number): number {
+  return typeof c === 'function' ? c(x, y, z) : c;
+}
+
+const KEEP = 0xf; // channel + premium bits
+const RGB = 0xfffff0;
 
 /**
- * Grid painted in "skeleton" voxel coordinates: (0,0,0) is the ground under the character's centre,
- * +x is the character's left, +y up, +z forward. The grid covers [ox, ox+nx) etc. Inherited
- * VoxelGrid shape helpers (box, ellipsoid, cylinder, line) also paint in skeleton coordinates because
- * they all go through set(); get()/solid() stay local for the mesher.
+ * Grid painted in skeleton unit coordinates: (0,0,0) is the ground under the character's centre,
+ * +x is the character's left, +y up, +z forward. The grid covers [ox, ox+nx) units etc.
  */
 export class RGrid extends VoxelGrid {
-  /** channel written by every set() */
+  /** channel written by every paint call */
   ch: Channel = CH.cloth;
+  /** premium flag written by every paint call (0 | 1) */
+  prem = 0;
+  readonly res: number;
+  /** size in units */
+  readonly ux: number;
+  readonly uy: number;
+  readonly uz: number;
   readonly ox: number;
   readonly oy: number;
   readonly oz: number;
 
-  constructor(nx: number, ny: number, nz: number, ox = -nx / 2, oy = 0, oz = -nz / 2) {
-    super(nx, ny, nz);
+  constructor(nx: number, ny: number, nz: number, ox = -nx / 2, oy = 0, oz = -nz / 2, res = BUILD_RES) {
+    super(nx * res, ny * res, nz * res);
+    this.res = res;
+    this.ux = nx;
+    this.uy = ny;
+    this.uz = nz;
     this.ox = Math.floor(ox);
     this.oy = Math.floor(oy);
     this.oz = Math.floor(oz);
   }
 
+  private code(color: number): number {
+    return (color & RGB) | (this.prem << 3) | this.ch;
+  }
+
+  /** local fine index of absolute fine coords, -1 outside */
+  private li(fi: number, fj: number, fk: number): number {
+    const i = fi - this.ox * this.res;
+    const j = fj - this.oy * this.res;
+    const k = fk - this.oz * this.res;
+    if (i < 0 || j < 0 || k < 0 || i >= this.nx || j >= this.ny || k >= this.nz) return -1;
+    return i + this.nx * (j + this.ny * k);
+  }
+
+  private emit(fi: number, fj: number, fk: number, c: Paint): void {
+    const i = this.li(fi, fj, fk);
+    if (i < 0) return;
+    let col: number;
+    if (typeof c === 'function') {
+      ctx(this.res, fi, fj, fk);
+      col = c(CX, CY, CZ);
+    } else col = c;
+    this.data[i] = col < 0 ? -1 : this.code(col);
+  }
+
+  /** Paint one fine voxel (absolute fine coordinates). */
+  setF(fi: number, fj: number, fk: number, color: Paint): void {
+    this.emit(fi, fj, fk, color);
+  }
+
+  hasF(fi: number, fj: number, fk: number): boolean {
+    const i = this.li(fi, fj, fk);
+    return i >= 0 && this.data[i] >= 0;
+  }
+
+  /** Paint the fine voxel containing a point (unit coordinates). At res 1 this is a whole cell. */
+  dot(x: number, y: number, z: number, color: Paint): void {
+    const r = this.res;
+    this.emit(Math.floor(x * r), Math.floor(y * r), Math.floor(z * r), color);
+  }
+
+  /** Fill a whole unit cell. */
   override set(x: number, y: number, z: number, color: number): void {
-    super.set(Math.floor(x) - this.ox, Math.floor(y) - this.oy, Math.floor(z) - this.oz, color < 0 ? color : (color & 0xfffff8) | this.ch);
+    this.put(x, y, z, color);
   }
 
-  /** Colour at skeleton coordinates (-1 when empty). */
+  /** Fill a whole unit cell with a paint. */
+  put(x: number, y: number, z: number, color: Paint): void {
+    const r = this.res;
+    const bx = Math.floor(x) * r;
+    const by = Math.floor(y) * r;
+    const bz = Math.floor(z) * r;
+    for (let k = 0; k < r; k++) for (let j = 0; j < r; j++) for (let i = 0; i < r; i++) this.emit(bx + i, by + j, bz + k, color);
+  }
+
+  /** Colour at a unit cell (first filled fine voxel, -1 when empty). */
   sget(x: number, y: number, z: number): number {
-    return this.get(Math.floor(x) - this.ox, Math.floor(y) - this.oy, Math.floor(z) - this.oz);
+    const r = this.res;
+    const bx = Math.floor(x) * r;
+    const by = Math.floor(y) * r;
+    const bz = Math.floor(z) * r;
+    for (let k = 0; k < r; k++)
+      for (let j = 0; j < r; j++)
+        for (let i = 0; i < r; i++) {
+          const li = this.li(bx + i, by + j, bz + k);
+          if (li >= 0 && this.data[li] >= 0) return this.data[li];
+        }
+    return -1;
   }
 
+  /** Any fine voxel filled in this unit cell. */
   has(x: number, y: number, z: number): boolean {
     return this.sget(x, y, z) >= 0;
   }
@@ -81,161 +232,281 @@ export class RGrid extends VoxelGrid {
     return this;
   }
 
-  /** Set only where a voxel already exists. */
-  paint(x: number, y: number, z: number, color: number): void {
-    if (this.has(x, y, z)) this.set(x, y, z, color);
+  /** Paint premium (gilded / chrome / pearl / amethyst, sparkling) inside fn. */
+  premium(fn: () => void): this {
+    const prev = this.prem;
+    this.prem = 1;
+    fn();
+    this.prem = prev;
+    return this;
   }
 
-  /** Set only where the cell is empty. */
-  add(x: number, y: number, z: number, color: number): void {
-    if (!this.has(x, y, z)) this.set(x, y, z, color);
+  /** Recolour the filled fine voxels of a unit cell. */
+  paint(x: number, y: number, z: number, color: Paint): void {
+    this.cell(x, y, z, (filled) => filled, color);
   }
 
-  /** True when at least one of the 6 neighbours is empty. */
-  surface(x: number, y: number, z: number): boolean {
-    return (
-      this.has(x, y, z) &&
-      (!this.has(x + 1, y, z) || !this.has(x - 1, y, z) || !this.has(x, y + 1, z) || !this.has(x, y - 1, z) || !this.has(x, y, z + 1) || !this.has(x, y, z - 1))
-    );
+  /** Fill the empty fine voxels of a unit cell. */
+  add(x: number, y: number, z: number, color: Paint): void {
+    this.cell(x, y, z, (filled) => !filled, color);
   }
 
-  /** Mirror the half with skeleton x < 0 onto x >= 0, keeping channels (grid must be centred: ox = -nx/2). */
+  private cell(x: number, y: number, z: number, want: (filled: boolean) => boolean, color: Paint): void {
+    const r = this.res;
+    const bx = Math.floor(x) * r;
+    const by = Math.floor(y) * r;
+    const bz = Math.floor(z) * r;
+    for (let k = 0; k < r; k++)
+      for (let j = 0; j < r; j++)
+        for (let i = 0; i < r; i++) {
+          const li = this.li(bx + i, by + j, bz + k);
+          if (li < 0 || !want(this.data[li] >= 0)) continue;
+          this.emit(bx + i, by + j, bz + k, color);
+        }
+  }
+
+  private surfF(fi: number, fj: number, fk: number): boolean {
+    return !this.hasF(fi + 1, fj, fk) || !this.hasF(fi - 1, fj, fk) || !this.hasF(fi, fj + 1, fk) || !this.hasF(fi, fj - 1, fk) || !this.hasF(fi, fj, fk + 1) || !this.hasF(fi, fj, fk - 1);
+  }
+
+  /** Mirror the half with skeleton x < 0 onto x >= 0 (grid must be centred: ox = -nx/2). */
   mirror(): void {
-    for (let z = 0; z < this.nz; z++)
-      for (let y = 0; y < this.ny; y++)
-        for (let x = 0; x < Math.floor(this.nx / 2); x++) {
-          const c = this.data[this.index(x, y, z)];
-          this.data[this.index(this.nx - 1 - x, y, z)] = c;
-        }
+    for (let k = 0; k < this.nz; k++)
+      for (let j = 0; j < this.ny; j++)
+        for (let i = 0; i < Math.floor(this.nx / 2); i++) this.data[this.index(this.nx - 1 - i, j, k)] = this.data[this.index(i, j, k)];
   }
 
-  /** Visit every solid voxel. fn returns a new colour (channel kept unless it returns a channel too). */
+  /** Visit every filled fine voxel. fn returns a new colour (channel and premium kept). */
   each(fn: (c: number, x: number, y: number, z: number) => number | void, onlySurface = false): void {
-    for (let z = 0; z < this.nz; z++)
-      for (let y = 0; y < this.ny; y++)
-        for (let x = 0; x < this.nx; x++) {
-          const i = this.index(x, y, z);
-          const c = this.data[i];
+    const r = this.res;
+    const fo = this.ox * r;
+    const fp = this.oy * r;
+    const fq = this.oz * r;
+    const touched: number[] = [];
+    for (let k = 0; k < this.nz; k++)
+      for (let j = 0; j < this.ny; j++)
+        for (let i = 0; i < this.nx; i++) {
+          const li = i + this.nx * (j + this.ny * k);
+          const c = this.data[li];
           if (c < 0) continue;
-          const sx = x + this.ox;
-          const sy = y + this.oy;
-          const sz = z + this.oz;
-          if (onlySurface && !this.surface(sx, sy, sz)) continue;
-          const r = fn(c, sx, sy, sz);
-          if (r !== undefined) this.data[i] = (r & 0xfffff8) | (c & 7);
+          if (onlySurface && !this.surfF(i + fo, j + fp, k + fq)) continue;
+          ctx(r, i + fo, j + fp, k + fq);
+          const out = fn(c, CX, CY, CZ);
+          if (out !== undefined) touched.push(li, (out & RGB) | (c & KEEP));
         }
+    // write after the scan so surface tests see the original shape
+    for (let n = 0; n < touched.length; n += 2) this.data[touched[n]] = touched[n + 1];
   }
 
-  /** Visit every solid voxel and repaint it with a new colour and channel. */
-  repaint(test: (x: number, y: number, z: number) => boolean, ch: Channel, color: Paint, onlySurface = false): void {
-    for (let z = 0; z < this.nz; z++)
-      for (let y = 0; y < this.ny; y++)
-        for (let x = 0; x < this.nx; x++) {
-          const i = this.index(x, y, z);
-          if (this.data[i] < 0) continue;
-          const sx = x + this.ox;
-          const sy = y + this.oy;
-          const sz = z + this.oz;
-          if (!test(sx, sy, sz)) continue;
-          if (onlySurface && !this.surface(sx, sy, sz)) continue;
-          this.data[i] = (pick(color, sx, sy, sz) & 0xfffff8) | ch;
+  /** Repaint filled fine voxels passing a test with a new colour and channel. */
+  repaint(test: Test, ch: Channel, color: Paint, onlySurface = false): void {
+    const r = this.res;
+    const fo = this.ox * r;
+    const fp = this.oy * r;
+    const fq = this.oz * r;
+    const touched: number[] = [];
+    for (let k = 0; k < this.nz; k++)
+      for (let j = 0; j < this.ny; j++)
+        for (let i = 0; i < this.nx; i++) {
+          const li = i + this.nx * (j + this.ny * k);
+          if (this.data[li] < 0) continue;
+          ctx(r, i + fo, j + fp, k + fq);
+          if (!test(CX, CY, CZ)) continue;
+          if (onlySurface && !this.surfF(i + fo, j + fp, k + fq)) continue;
+          ctx(r, i + fo, j + fp, k + fq);
+          touched.push(li, (pick(color, CX, CY, CZ) & RGB) | (this.prem << 3) | ch);
         }
+    for (let n = 0; n < touched.length; n += 2) this.data[touched[n]] = touched[n + 1];
+  }
+
+  /** Iterate fine voxels whose centres lie in [x0,x1]x[y0,y1]x[z0,z1] (unit coords). */
+  private scan(x0: number, x1: number, y0: number, y1: number, z0: number, z1: number, fn: (fi: number, fj: number, fk: number, px: number, py: number, pz: number) => void): void {
+    const r = this.res;
+    const i0 = Math.max(this.ox * r, Math.floor(x0 * r));
+    const i1 = Math.min((this.ox + this.ux) * r - 1, Math.ceil(x1 * r));
+    const j0 = Math.max(this.oy * r, Math.floor(y0 * r));
+    const j1 = Math.min((this.oy + this.uy) * r - 1, Math.ceil(y1 * r));
+    const k0 = Math.max(this.oz * r, Math.floor(z0 * r));
+    const k1 = Math.min((this.oz + this.uz) * r - 1, Math.ceil(z1 * r));
+    for (let k = k0; k <= k1; k++)
+      for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) fn(i, j, k, (i + 0.5) / r, (j + 0.5) / r, (k + 0.5) / r);
+  }
+
+  private fineTest(test: Test | undefined, fi: number, fj: number, fk: number): boolean {
+    if (!test) return true;
+    ctx(this.res, fi, fj, fk);
+    return test(CX, CY, CZ);
   }
 
   /** Ellipsoid shell between an inner and outer radius offset, filtered. */
-  shell(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, outer: number, inner: number, test: (x: number, y: number, z: number) => boolean, color: Paint): void {
+  shell(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, outer: number, inner: number, test: Test, color: Paint): void {
     const ox = rx + outer;
     const oy = ry + outer;
     const oz = rz + outer;
     const ix = Math.max(0.1, rx - inner);
     const iy = Math.max(0.1, ry - inner);
     const iz = Math.max(0.1, rz - inner);
-    for (let z = Math.floor(cz - oz); z <= Math.ceil(cz + oz); z++)
-      for (let y = Math.floor(cy - oy); y <= Math.ceil(cy + oy); y++)
-        for (let x = Math.floor(cx - ox); x <= Math.ceil(cx + ox); x++) {
-          const dx = x + 0.5 - cx;
-          const dy = y + 0.5 - cy;
-          const dz = z + 0.5 - cz;
-          const o = (dx / ox) ** 2 + (dy / oy) ** 2 + (dz / oz) ** 2;
-          if (o > 1) continue;
-          const n = (dx / ix) ** 2 + (dy / iy) ** 2 + (dz / iz) ** 2;
-          if (n < 1) continue;
-          if (!test(x, y, z)) continue;
-          this.set(x, y, z, pick(color, x, y, z));
-        }
+    this.scan(cx - ox, cx + ox, cy - oy, cy + oy, cz - oz, cz + oz, (fi, fj, fk, px, py, pz) => {
+      const dx = px - cx;
+      const dy = py - cy;
+      const dz = pz - cz;
+      if ((dx / ox) ** 2 + (dy / oy) ** 2 + (dz / oz) ** 2 > 1) return;
+      if ((dx / ix) ** 2 + (dy / iy) ** 2 + (dz / iz) ** 2 < 1) return;
+      if (!this.fineTest(test, fi, fj, fk)) return;
+      this.emit(fi, fj, fk, color);
+    });
   }
 
   /** Filled ellipsoid, filtered. */
-  blob(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, color: Paint, test?: (x: number, y: number, z: number) => boolean): void {
-    for (let z = Math.floor(cz - rz); z <= Math.ceil(cz + rz); z++)
-      for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)
-        for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
-          const dx = (x + 0.5 - cx) / rx;
-          const dy = (y + 0.5 - cy) / ry;
-          const dz = (z + 0.5 - cz) / rz;
-          if (dx * dx + dy * dy + dz * dz > 1) continue;
-          if (test && !test(x, y, z)) continue;
-          this.set(x, y, z, pick(color, x, y, z));
-        }
+  blob(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, color: Paint, test?: Test): void {
+    this.scan(cx - rx, cx + rx, cy - ry, cy + ry, cz - rz, cz + rz, (fi, fj, fk, px, py, pz) => {
+      const dx = (px - cx) / rx;
+      const dy = (py - cy) / ry;
+      const dz = (pz - cz) / rz;
+      if (dx * dx + dy * dy + dz * dz > 1) return;
+      if (!this.fineTest(test, fi, fj, fk)) return;
+      this.emit(fi, fj, fk, color);
+    });
   }
 
-  /** Cylinder along an axis ('x' | 'y' | 'z') through centre (a, b) on the other two axes, from t0 to t1 inclusive. */
-  cyl(axis: 'x' | 'y' | 'z', a: number, b: number, r: number, t0: number, t1: number, color: Paint, rb = r): void {
-    for (let t = Math.min(t0, t1); t <= Math.max(t0, t1); t++)
-      for (let j = Math.floor(b - rb); j <= Math.ceil(b + rb); j++)
-        for (let i = Math.floor(a - r); i <= Math.ceil(a + r); i++) {
-          const di = (i + 0.5 - a) / r;
-          const dj = (j + 0.5 - b) / rb;
-          if (di * di + dj * dj > 1) continue;
-          if (axis === 'y') this.set(i, t, j, pick(color, i, t, j));
-          else if (axis === 'x') this.set(t, i, j, pick(color, t, i, j));
-          else this.set(i, j, t, pick(color, i, j, t));
-        }
+  /** Superellipsoid (boxier blob, power p > 2), filtered. */
+  sblob(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, p: number, color: Paint, test?: Test): void {
+    this.scan(cx - rx, cx + rx, cy - ry, cy + ry, cz - rz, cz + rz, (fi, fj, fk, px, py, pz) => {
+      const dx = Math.abs((px - cx) / rx);
+      const dy = Math.abs((py - cy) / ry);
+      const dz = Math.abs((pz - cz) / rz);
+      if (dx ** p + dy ** p + dz ** p > 1) return;
+      if (!this.fineTest(test, fi, fj, fk)) return;
+      this.emit(fi, fj, fk, color);
+    });
   }
 
-  /** Thick line between two points (radius in voxels, may be fractional). */
-  tube(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, r: number, color: Paint): void {
+  override ellipsoid(cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, color: Paint): void {
+    this.blob(cx, cy, cz, rx, ry, rz, color);
+  }
+
+  /**
+   * Cylinder along an axis through centre (a, b) on the other two axes (x,z for 'y'; y,z for 'x';
+   * x,y for 'z'), covering unit cells t0..t1 inclusive along the axis.
+   */
+  cyl(axis: 'x' | 'y' | 'z', a: number, b: number, r: number, t0: number, t1: number, color: Paint, rb = r, test?: Test): void {
+    const lo = Math.min(t0, t1);
+    const hi = Math.max(t0, t1) + 0.999;
+    const inside = (u: number, v: number) => {
+      const du = (u - a) / r;
+      const dv = (v - b) / rb;
+      return du * du + dv * dv <= 1;
+    };
+    if (axis === 'y')
+      this.scan(a - r, a + r, lo, hi, b - rb, b + rb, (fi, fj, fk, px, _py, pz) => {
+        if (inside(px, pz) && this.fineTest(test, fi, fj, fk)) this.emit(fi, fj, fk, color);
+      });
+    else if (axis === 'x')
+      this.scan(lo, hi, a - r, a + r, b - rb, b + rb, (fi, fj, fk, _px, py, pz) => {
+        if (inside(py, pz) && this.fineTest(test, fi, fj, fk)) this.emit(fi, fj, fk, color);
+      });
+    else
+      this.scan(a - r, a + r, b - rb, b + rb, lo, hi, (fi, fj, fk, px, py) => {
+        if (inside(px, py) && this.fineTest(test, fi, fj, fk)) this.emit(fi, fj, fk, color);
+      });
+  }
+
+  /** Thick line between two points (radius in units). Thin lines fill whole cells. */
+  tube(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, r: number, color: Paint, r1 = r): void {
     const len = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
-    const steps = Math.max(1, Math.ceil(len * 2));
+    const steps = Math.max(1, Math.ceil(len * 2 * this.res));
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       const x = x0 + (x1 - x0) * t;
       const y = y0 + (y1 - y0) * t;
       const z = z0 + (z1 - z0) * t;
-      if (r <= 0.55) {
-        const xi = Math.floor(x);
-        const yi = Math.floor(y);
-        const zi = Math.floor(z);
-        this.set(xi, yi, zi, pick(color, xi, yi, zi));
-      } else this.blob(x, y, z, r, r, r, color);
+      const rr = r + (r1 - r) * t;
+      if (rr <= 0.55) this.put(x, y, z, color);
+      else this.blob(x, y, z, rr, rr, rr, color);
     }
   }
 
-  /** Inclusive box with a paint (function or colour). */
+  /** Thin line of single fine voxels (showcase hairlines, stitching). */
+  fineLine(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: Paint): void {
+    const len = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+    const steps = Math.max(1, Math.ceil(len * 2 * this.res));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.dot(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t, color);
+    }
+  }
+
+  /** Inclusive box of unit cells. */
+  override box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: Paint): void {
+    const ax = Math.floor(Math.min(x0, x1));
+    const bx = Math.floor(Math.max(x0, x1));
+    const ay = Math.floor(Math.min(y0, y1));
+    const by = Math.floor(Math.max(y0, y1));
+    const az = Math.floor(Math.min(z0, z1));
+    const bz = Math.floor(Math.max(z0, z1));
+    const r = this.res;
+    for (let k = az * r; k < (bz + 1) * r; k++) for (let j = ay * r; j < (by + 1) * r; j++) for (let i = ax * r; i < (bx + 1) * r; i++) this.emit(i, j, k, color);
+  }
+
   fill(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: Paint): void {
     this.box(x0, y0, z0, x1, y1, z1, color);
   }
 
-  /** Remove voxels matching a test. */
-  carve(test: (x: number, y: number, z: number) => boolean): void {
-    for (let z = 0; z < this.nz; z++)
-      for (let y = 0; y < this.ny; y++)
-        for (let x = 0; x < this.nx; x++) if (test(x + this.ox, y + this.oy, z + this.oz)) this.data[this.index(x, y, z)] = -1;
+  /** Remove fine voxels whose cell matches a test. */
+  carve(test: Test): void {
+    const r = this.res;
+    const fo = this.ox * r;
+    const fp = this.oy * r;
+    const fq = this.oz * r;
+    for (let k = 0; k < this.nz; k++)
+      for (let j = 0; j < this.ny; j++)
+        for (let i = 0; i < this.nx; i++) {
+          const li = i + this.nx * (j + this.ny * k);
+          if (this.data[li] < 0) continue;
+          ctx(r, i + fo, j + fp, k + fq);
+          if (test(CX, CY, CZ)) this.data[li] = -1;
+        }
+  }
+
+  /** Remove fine voxels by their precise centre (smooth carving). */
+  carveP(test: (px: number, py: number, pz: number) => boolean): void {
+    const r = this.res;
+    const fo = this.ox * r;
+    const fp = this.oy * r;
+    const fq = this.oz * r;
+    for (let k = 0; k < this.nz; k++)
+      for (let j = 0; j < this.ny; j++)
+        for (let i = 0; i < this.nx; i++) {
+          const li = i + this.nx * (j + this.ny * k);
+          if (this.data[li] < 0) continue;
+          if (test((i + fo + 0.5) / r, (j + fp + 0.5) / r, (k + fq + 0.5) / r)) this.data[li] = -1;
+        }
+  }
+
+  /** Copy every filled voxel of another grid (same res) into this one. */
+  merge(o: RGrid): void {
+    if (o.res !== this.res) throw new Error('RGrid.merge: resolution mismatch');
+    const r = this.res;
+    for (let k = 0; k < o.nz; k++)
+      for (let j = 0; j < o.ny; j++)
+        for (let i = 0; i < o.nx; i++) {
+          const c = o.data[i + o.nx * (j + o.ny * k)];
+          if (c < 0) continue;
+          const li = this.li(i + o.ox * r, j + o.oy * r, k + o.oz * r);
+          if (li >= 0) this.data[li] = c;
+        }
   }
 }
 
-function pick(c: Paint, x: number, y: number, z: number): number {
-  return typeof c === 'function' ? c(x, y, z) : c;
-}
-
 // ---------------------------------------------------------------------------------------------
-// Colour helpers
+// Colour helpers (all use hv, so they get finer in the showcase)
 // ---------------------------------------------------------------------------------------------
 
 /** Palette pick with per-voxel hash and a gentle top-lit gradient. */
 export function tone(palette: readonly number[], seed: number, grad = 0, y0 = 0, y1 = 1): ColorFn {
   return (x, y, z) => {
-    const h = hashVox(x, y, z, seed);
+    const h = hv(x, y, z, seed);
     const c = palette[Math.floor(h * palette.length) % palette.length];
     if (grad === 0) return c;
     const t = Math.max(0, Math.min(1, (y - y0) / Math.max(1, y1 - y0)));
@@ -246,7 +517,7 @@ export function tone(palette: readonly number[], seed: number, grad = 0, y0 = 0,
 /** Base colour with brightness noise and an optional vertical gradient (lighter towards y1). */
 export function jitter(base: number, amount: number, seed: number, grad = 0, y0 = 0, y1 = 1): ColorFn {
   return (x, y, z) => {
-    const h = hashVox(x, y, z, seed) - 0.5;
+    const h = hv(x, y, z, seed) - 0.5;
     const t = Math.max(0, Math.min(1, (y - y0) / Math.max(1, y1 - y0)));
     return shade(base, 1 + h * 2 * amount + (t - 0.5) * 2 * grad);
   };
@@ -266,16 +537,18 @@ export { hashVox, mix, shade };
 
 /**
  * Greedy-mesh a part with voxel.ts meshVoxels (baked AO), then add the `surf` attribute by looking
- * each quad's channel up in the grid. `joint` is the part's pivot in skeleton voxel coordinates.
+ * each quad's voxel up in the grid. `joint` is the part's pivot in skeleton unit coordinates.
  */
 export function meshPart(g: RGrid, joint: readonly [number, number, number], aoStrength = 0.52): THREE.BufferGeometry {
-  const pivot: [number, number, number] = [joint[0] - g.ox, joint[1] - g.oy, joint[2] - g.oz];
-  const geo = meshVoxels(g, { size: VOX, pivot, aoStrength });
+  const r = g.res;
+  const pivot: [number, number, number] = [(joint[0] - g.ox) * r, (joint[1] - g.oy) * r, (joint[2] - g.oz) * r];
+  const size = VOX / r;
+  const geo = meshVoxels(g, { size, pivot, aoStrength });
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const nrm = geo.getAttribute('normal') as THREE.BufferAttribute;
   const n = pos.count;
   const surf = new Float32Array(n * 4);
-  const inv = 1 / VOX;
+  const inv = 1 / size;
   for (let q = 0; q + 3 < n; q += 4) {
     let cx = 0;
     let cy = 0;
@@ -288,11 +561,11 @@ export function meshPart(g: RGrid, joint: readonly [number, number, number], aoS
     cx *= 0.25;
     cy *= 0.25;
     cz *= 0.25;
-    const vx = Math.floor((cx - nrm.getX(q) * VOX * 0.5) * inv + pivot[0] + 1e-4);
-    const vy = Math.floor((cy - nrm.getY(q) * VOX * 0.5) * inv + pivot[1] + 1e-4);
-    const vz = Math.floor((cz - nrm.getZ(q) * VOX * 0.5) * inv + pivot[2] + 1e-4);
+    const vx = Math.floor((cx - nrm.getX(q) * size * 0.5) * inv + pivot[0] + 1e-4);
+    const vy = Math.floor((cy - nrm.getY(q) * size * 0.5) * inv + pivot[1] + 1e-4);
+    const vz = Math.floor((cz - nrm.getZ(q) * size * 0.5) * inv + pivot[2] + 1e-4);
     const c = g.get(vx, vy, vz);
-    const s = SURF[c < 0 ? 0 : c & 7];
+    const s = c < 0 ? SURF[0] : (c & 8 ? SURF_PREMIUM : SURF)[c & 7];
     for (let k = 0; k < 4; k++) {
       const o = (q + k) * 4;
       surf[o] = s[0];

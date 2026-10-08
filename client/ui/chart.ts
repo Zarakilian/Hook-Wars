@@ -1,8 +1,10 @@
-// Draws a map as a little nautical chart: banks, channel, islands, props, fountains, hazards.
-// Used for the in-match minimap (static layer) and the map cards in the menus.
-import { riverAt } from '../../shared/maps/helpers.ts';
+// Draws a map as a little nautical chart: banks, every water channel, pools, islands, decks over
+// the water, props, fountains, hazards. Used for the in-match minimap (static layers per water
+// state) and the map cards in the menus. Water is rasterized from waterDepthAt(), so braided side
+// channels, lagoons and islands always match the sim; platforms are drawn on top as decks.
+import { waterDepthAt } from '../../shared/maps/helpers.ts';
 import { getMap } from '../../shared/maps/index.ts';
-import type { MapDef, PropKind } from '../../shared/maps/types.ts';
+import type { MapDef, Platform, PropKind } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
 import type { HazardKind, MapId } from '../../shared/types.ts';
 import { TEAM_COLORS } from '../render/contracts.ts';
@@ -30,13 +32,20 @@ function avg(list: number[]): number {
   return (Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n);
 }
 
-const PROP_COLOR: Partial<Record<PropKind, number>> = {
+const PROP_COLOR: Record<PropKind, number> = {
   cypress: 0x2f4a22, deadtree: 0x4a3a2a, mossrock: 0x5a6250, stump: 0x6a4a2a,
   pine: 0x1f3a2c, icerock: 0x9fb8c8, icepillar: 0xcde9f6, runestone: 0x6a7080,
   palm: 0x3a6a2a, coralrock: 0xd07a6a, reefpost: 0xff8fb0, tikitotem: 0x8a5a2a,
   crate: 0x8a6034, barrel: 0x6a4424, bollard: 0x3a3f46, lamppost: 0x2e3238, pipe: 0x8a6a3a,
+  stilthut: 0x6a4a2a, swampstump: 0x5a4028, lanternpost: 0x5a3e24,
+  watchtower: 0x7a5a3a, snowpine: 0x2a4a3a, iceshelf: 0xcfe9f6,
+  seastack: 0x6a6258, shipwreck: 0x5a3a22, cratepile: 0x8a6034,
+  crane: 0x7a5530, warehouse: 0x8a4a3a, gaslamp: 0x2e3238, bridgepier: 0x7a7a72,
   wall_wood: 0x7a5530, wall_stone: 0x7a7a72, wall_ice: 0xbfe0f0, wall_brick: 0x8a4a3a, wall_hedge: 0x2f5a2a,
 };
+
+/** Props that carry a lit lamp: drawn with a warm glow on the chart. */
+const LIT: Partial<Record<PropKind, boolean>> = { lanternpost: true, lamppost: true, gaslamp: true, watchtower: true, stilthut: true };
 
 export const HAZARD_COLOR: Record<HazardKind, number> = {
   thorns: 0x5ea040,
@@ -62,10 +71,110 @@ export function waterColor(map: MapDef, water: WaterClass): { edge: number; mid:
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Depth field: waterDepthAt sampled on a 0.25 m grid, once per map, reused for every size and class
+// ---------------------------------------------------------------------------------------------
+
+const CELL = 0.25;
+interface Field {
+  nx: number;
+  nz: number;
+  d: Float32Array;
+}
+const fields = new Map<MapId, Field>();
+
+function depthField(map: MapDef): Field {
+  const hit = fields.get(map.id);
+  if (hit) return hit;
+  const nx = Math.ceil(map.w / CELL) + 1;
+  const nz = Math.ceil(map.d / CELL) + 1;
+  const d = new Float32Array(nx * nz);
+  for (let j = 0; j < nz; j++) {
+    const z = -map.d / 2 + j * CELL;
+    for (let i = 0; i < nx; i++) d[j * nx + i] = waterDepthAt(map, -map.w / 2 + i * CELL, z);
+  }
+  const f = { nx, nz, d };
+  fields.set(map.id, f);
+  return f;
+}
+
+function sampleField(f: Field, gx: number, gz: number): number {
+  const i0 = Math.max(0, Math.min(f.nx - 2, Math.floor(gx)));
+  const j0 = Math.max(0, Math.min(f.nz - 2, Math.floor(gz)));
+  const tx = Math.max(0, Math.min(1, gx - i0));
+  const tz = Math.max(0, Math.min(1, gz - j0));
+  const a = f.d[j0 * f.nx + i0];
+  const b = f.d[j0 * f.nx + i0 + 1];
+  const c = f.d[(j0 + 1) * f.nx + i0];
+  const e = f.d[(j0 + 1) * f.nx + i0 + 1];
+  return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + e * tx) * tz;
+}
+
+function hash(x: number, y: number): number {
+  let h = (x * 374761393 + y * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+
 export interface ChartOpts {
   hazards?: readonly HazardInst[];
   /** draw props, rune spots, fountains rings in full detail */
   detail?: boolean;
+}
+
+function platformPath(ctx: CanvasRenderingContext2D, p: Platform, sx: (x: number) => number, sz: (z: number) => number): void {
+  const c = Math.cos(p.rot);
+  const s = Math.sin(p.rot);
+  // local (lx, lz) -> world: inverse of the rotation in platformAt()
+  const pt = (lx: number, lz: number): [number, number] => [sx(p.x + lx * c + lz * s), sz(p.z - lx * s + lz * c)];
+  const hw = p.w / 2;
+  const hd = p.d / 2;
+  const corners = [pt(-hw, -hd), pt(hw, -hd), pt(hw, hd), pt(-hw, hd)];
+  ctx.beginPath();
+  ctx.moveTo(corners[0][0], corners[0][1]);
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+  ctx.closePath();
+}
+
+function drawPlatforms(ctx: CanvasRenderingContext2D, map: MapDef, k: number, sx: (x: number) => number, sz: (z: number) => number): void {
+  if (!map.platforms) return;
+  for (const p of map.platforms) {
+    const col = p.kind === 'bridge' ? 0x8a8478 : p.kind === 'floe' ? 0xe4f4fb : p.kind === 'raftdeck' ? 0x9a6a3a : 0x86603a;
+    platformPath(ctx, p, sx, sz);
+    ctx.fillStyle = 'rgba(10,6,2,0.45)';
+    ctx.save();
+    ctx.translate(Math.max(1, k * 0.25), Math.max(1, k * 0.3));
+    ctx.fill();
+    ctx.restore();
+    platformPath(ctx, p, sx, sz);
+    ctx.fillStyle = hex(col);
+    ctx.fill();
+    // planks across the short side (or stone courses on bridges)
+    ctx.save();
+    platformPath(ctx, p, sx, sz);
+    ctx.clip();
+    ctx.strokeStyle = p.kind === 'floe' ? 'rgba(120,170,200,0.45)' : 'rgba(30,16,6,0.38)';
+    ctx.lineWidth = Math.max(0.6, k * 0.07);
+    const c = Math.cos(p.rot);
+    const s = Math.sin(p.rot);
+    const along = p.w >= p.d;
+    const len = along ? p.w : p.d;
+    const span = along ? p.d : p.w;
+    const step = p.kind === 'bridge' ? 1.1 : 0.6;
+    for (let t = -len / 2; t <= len / 2; t += step) {
+      const a = along ? [t, -span / 2] : [-span / 2, t];
+      const b = along ? [t, span / 2] : [span / 2, t];
+      ctx.beginPath();
+      ctx.moveTo(sx(p.x + a[0] * c + a[1] * s), sz(p.z - a[0] * s + a[1] * c));
+      ctx.lineTo(sx(p.x + b[0] * c + b[1] * s), sz(p.z - b[0] * s + b[1] * c));
+      ctx.stroke();
+    }
+    ctx.restore();
+    platformPath(ctx, p, sx, sz);
+    ctx.strokeStyle = p.kind === 'floe' ? 'rgba(255,255,255,0.8)' : 'rgba(20,10,4,0.7)';
+    ctx.lineWidth = Math.max(0.8, k * 0.1);
+    ctx.stroke();
+  }
 }
 
 /** Paint the chart into ctx (W x H pixels). Static: call once per map and water class. */
@@ -92,83 +201,80 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
   const speck = Math.round((W * H) / 90);
   for (let i = 0; i < speck; i++) {
     ctx.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.07)';
-    const s = Math.max(1, k * (0.3 + rnd() * 0.5));
-    ctx.fillRect(rnd() * W, rnd() * H, s, s);
+    const sp = Math.max(1, k * (0.3 + rnd() * 0.5));
+    ctx.fillRect(rnd() * W, rnd() * H, sp, sp);
   }
 
-  // channel (bank band, then water)
-  const z0 = -map.d / 2 - 1;
-  const z1 = map.d / 2 + 1;
-  const channel = (scale: number, pad = 0) => {
-    ctx.beginPath();
-    for (let z = z0; z <= z1; z += 0.5) {
-      const r = riverAt(map.river.points, z);
-      const x = sx(r.x - r.hw * scale - pad);
-      if (z === z0) ctx.moveTo(x, sz(z));
-      else ctx.lineTo(x, sz(z));
-    }
-    for (let z = z1; z >= z0; z -= 0.5) {
-      const r = riverAt(map.river.points, z);
-      ctx.lineTo(sx(r.x + r.hw * scale + pad), sz(z));
-    }
-    ctx.closePath();
-  };
-  // sloped bank band outside the water line
-  channel(1, map.river.bank * 0.55);
-  ctx.fillStyle = hex(mixc(bank, land, 0.35));
-  ctx.fill();
+  // water, banks and islands from the depth field, written straight into the pixels
+  const f = depthField(map);
   const wc = waterColor(map, water);
-  channel(1);
-  ctx.fillStyle = hex(wc.edge);
-  ctx.fill();
-  channel(0.55);
-  ctx.fillStyle = hex(wc.mid);
-  ctx.fill();
-  // water texture
-  ctx.save();
-  channel(1);
-  ctx.clip();
-  if (water === 'deep' || water === 'shallow') {
-    ctx.strokeStyle = 'rgba(255,255,255,0.13)';
-    ctx.lineWidth = Math.max(1, k * 0.18);
-    for (let z = -map.d / 2; z < map.d / 2; z += 3.2) {
-      const r = riverAt(map.river.points, z);
-      ctx.beginPath();
-      ctx.moveTo(sx(r.x - r.hw * 0.5), sz(z));
-      ctx.quadraticCurveTo(sx(r.x), sz(z + 0.9), sx(r.x + r.hw * 0.4), sz(z + 0.2));
-      ctx.stroke();
-    }
-  } else if (water === 'ice') {
-    ctx.strokeStyle = 'rgba(80,140,180,0.45)';
-    ctx.lineWidth = Math.max(1, k * 0.12);
-    for (let i = 0; i < 26; i++) {
-      const z = -map.d / 2 + rnd() * map.d;
-      const r = riverAt(map.river.points, z);
-      const x = r.x + (rnd() - 0.5) * r.hw * 1.6;
-      ctx.beginPath();
-      ctx.moveTo(sx(x), sz(z));
-      ctx.lineTo(sx(x + (rnd() - 0.5) * 3), sz(z + (rnd() - 0.5) * 3));
-      ctx.stroke();
-    }
-  } else {
-    ctx.strokeStyle = 'rgba(40,25,10,0.28)';
-    ctx.lineWidth = Math.max(1, k * 0.1);
-    for (let i = 0; i < 40; i++) {
-      const z = -map.d / 2 + rnd() * map.d;
-      const r = riverAt(map.river.points, z);
-      const x = r.x + (rnd() - 0.5) * r.hw * 1.7;
-      ctx.beginPath();
-      ctx.moveTo(sx(x), sz(z));
-      ctx.lineTo(sx(x + (rnd() - 0.5) * 2.2), sz(z + (rnd() - 0.5) * 2.2));
-      ctx.stroke();
+  const bankBand = Math.max(0.6, map.river.bank * 0.55);
+  const bankCol = mixc(bank, land, 0.35);
+  const img = ctx.getImageData(0, 0, W, H);
+  const px = img.data;
+  const er = (wc.edge >> 16) & 255;
+  const eg = (wc.edge >> 8) & 255;
+  const eb = wc.edge & 255;
+  const mr = (wc.mid >> 16) & 255;
+  const mg = (wc.mid >> 8) & 255;
+  const mb = wc.mid & 255;
+  const br = (bankCol >> 16) & 255;
+  const bg = (bankCol >> 8) & 255;
+  const bb = bankCol & 255;
+  const foam = water === 'ice' ? 255 : water === 'dry' ? 60 : 225;
+  for (let y = 0; y < H; y++) {
+    const z = ((y + 0.5) / H) * map.d;
+    const gz = z / CELL;
+    for (let x = 0; x < W; x++) {
+      const wx = ((x + 0.5) / W) * map.w;
+      const d = sampleField(f, wx / CELL, gz);
+      if (d < -bankBand) continue;
+      const i = (y * W + x) * 4;
+      if (d <= 0) {
+        // sloped bank outside the water line
+        const t = 0.35 + 0.65 * (1 + d / bankBand);
+        px[i] = px[i] + (br - px[i]) * t;
+        px[i + 1] = px[i + 1] + (bg - px[i + 1]) * t;
+        px[i + 2] = px[i + 2] + (bb - px[i + 2]) * t;
+        continue;
+      }
+      const t = Math.min(1, d / 2.4);
+      let r = er + (mr - er) * t;
+      let gg = eg + (mg - eg) * t;
+      let b = eb + (mb - eb) * t;
+      const n = hash(x, y);
+      if (water === 'deep' || water === 'shallow') {
+        // flow streaks along z
+        const streak = Math.sin(z * 2.1 + Math.sin(wx * 0.9) * 1.4);
+        if (streak > 0.93 && d > 0.5) {
+          r += 26;
+          gg += 30;
+          b += 30;
+        }
+      } else if (water === 'dry') {
+        if (n > 0.93) {
+          r -= 28;
+          gg -= 24;
+          b -= 20;
+        }
+      } else if (n > 0.965) {
+        r -= 40;
+        gg -= 20;
+        b -= 8;
+      }
+      // shore line
+      if (d < 0.22) {
+        const s = 1 - d / 0.22;
+        r += (foam - r) * s * 0.55;
+        gg += (foam + (water === 'dry' ? -10 : 18) - gg) * s * 0.55;
+        b += (foam + (water === 'dry' ? -20 : 25) - b) * s * 0.55;
+      }
+      px[i] = r;
+      px[i + 1] = gg;
+      px[i + 2] = b;
     }
   }
-  ctx.restore();
-  // shore line
-  channel(1);
-  ctx.strokeStyle = water === 'ice' ? 'rgba(255,255,255,0.6)' : 'rgba(230,250,255,0.35)';
-  ctx.lineWidth = Math.max(1, k * 0.16);
-  ctx.stroke();
+  ctx.putImageData(img, 0, 0);
 
   // whirlpool
   if (map.whirlpool && water !== 'dry') {
@@ -177,26 +283,17 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
     ctx.lineWidth = Math.max(1, k * 0.2);
     ctx.beginPath();
     for (let a = 0; a < Math.PI * 6; a += 0.2) {
-      const rr = (wp.r * (1 - a / (Math.PI * 6))) * k;
-      const px = sx(wp.x) + Math.cos(a) * rr;
-      const py = sz(wp.z) + Math.sin(a) * rr;
-      if (a === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+      const rr = wp.r * (1 - a / (Math.PI * 6)) * k;
+      const x = sx(wp.x) + Math.cos(a) * rr;
+      const y = sz(wp.z) + Math.sin(a) * rr;
+      if (a === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
     ctx.stroke();
   }
 
-  // islands
-  for (const isl of map.islands) {
-    ctx.beginPath();
-    ctx.arc(sx(isl.x), sz(isl.z), (isl.r + 0.5) * k, 0, Math.PI * 2);
-    ctx.fillStyle = hex(mixc(bank, land, 0.35));
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(sx(isl.x), sz(isl.z), isl.r * k, 0, Math.PI * 2);
-    ctx.fillStyle = hex(land);
-    ctx.fill();
-  }
+  // decks over the water
+  drawPlatforms(ctx, map, k, sx, sz);
 
   // hazards
   if (o.hazards) {
@@ -216,6 +313,7 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
   }
 
   // props
+  const lit: [number, number][] = [];
   for (const ob of map.obstacles) {
     const c = PROP_COLOR[ob.kind] ?? 0x555555;
     if (ob.shape === 'circle') {
@@ -232,6 +330,7 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
         ctx.fillStyle = 'rgba(255,255,255,0.18)';
         ctx.fill();
       }
+      if (LIT[ob.kind]) lit.push([sx(ob.x), sz(ob.z)]);
     } else {
       ctx.beginPath();
       ctx.moveTo(sx(ob.ax), sz(ob.az));
@@ -244,6 +343,18 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
       ctx.lineWidth = Math.max(1.5, ob.r * 2 * k);
       ctx.stroke();
     }
+  }
+  // lantern glows
+  for (const [x, y] of lit) {
+    const r = Math.max(3, k * 2.2);
+    const gl = ctx.createRadialGradient(x, y, 0, x, y, r);
+    gl.addColorStop(0, 'rgba(255,214,120,0.9)');
+    gl.addColorStop(0.35, 'rgba(255,170,60,0.35)');
+    gl.addColorStop(1, 'rgba(255,150,40,0)');
+    ctx.fillStyle = gl;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // rune spots
@@ -266,17 +377,17 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
 
   // fountains
   for (const t of [0, 1] as const) {
-    const f = map.fountains[t];
+    const fo = map.fountains[t];
     const tc = TEAM_COLORS[t];
-    const x = sx(f.x);
-    const y = sz(f.z);
-    const gr = ctx.createRadialGradient(x, y, 0, x, y, f.r * k);
+    const x = sx(fo.x);
+    const y = sz(fo.z);
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, fo.r * k);
     gr.addColorStop(0, rgba(tc.light, 0.55));
     gr.addColorStop(0.6, rgba(tc.main, 0.28));
     gr.addColorStop(1, rgba(tc.main, 0));
     ctx.fillStyle = gr;
     ctx.beginPath();
-    ctx.arc(x, y, f.r * k, 0, Math.PI * 2);
+    ctx.arc(x, y, fo.r * k, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
     ctx.arc(x, y, Math.max(2.5, k * 1.1), 0, Math.PI * 2);
@@ -298,7 +409,7 @@ export function drawChart(ctx: CanvasRenderingContext2D, map: MapDef, W: number,
 const thumbs = new Map<string, string>();
 
 /** Data-URL thumbnail of a map chart (cached), for map cards and room rows. */
-export function mapThumb(id: MapId, water: WaterClass = 'deep', W = 240): string {
+export function mapThumb(id: MapId, water: WaterClass = 'deep', W = 288): string {
   const key = `${id}:${water}:${W}`;
   const hit = thumbs.get(key);
   if (hit) return hit;
@@ -307,7 +418,7 @@ export function mapThumb(id: MapId, water: WaterClass = 'deep', W = 240): string
   const c = document.createElement('canvas');
   c.width = W;
   c.height = H;
-  const ctx = c.getContext('2d');
+  const ctx = c.getContext('2d', { willReadFrequently: true });
   if (!ctx) return '';
   drawChart(ctx, map, W, H, water, { detail: true });
   let url = '';
@@ -324,4 +435,19 @@ export function mapThumb(id: MapId, water: WaterClass = 'deep', W = 240): string
 export function moodGradient(map: MapDef): string {
   const a = map.atmosphere;
   return `linear-gradient(160deg, ${hex(a.skyTop)} 0%, ${hex(a.skyHorizon)} 48%, ${hex(a.waterShallow)} 72%, ${hex(a.waterDeep)} 100%)`;
+}
+
+/** Four mood colours (sky, horizon, sun, water) for a small swatch strip. */
+export function moodSwatch(map: MapDef): string[] {
+  const a = map.atmosphere;
+  return [hex(a.skyTop), hex(a.skyHorizon), hex(a.sunColor), hex(a.waterDeep)];
+}
+
+/** Time-of-day label for map cards. */
+export function moodLabel(map: MapDef): string {
+  const t = map.atmosphere.timeOfDay;
+  const w = map.atmosphere.weather;
+  const tod = t === 'dawn' ? 'Dawn' : t === 'day' ? 'Day' : t === 'dusk' ? 'Dusk' : 'Night';
+  const wx = w === 'rain' ? ' · rain' : w === 'snow' ? ' · snow' : w === 'fireflies' ? ' · fireflies' : w === 'pollen' ? ' · pollen' : '';
+  return `${tod}${map.atmosphere.aurora ? ' · aurora' : ''}${wx}`;
 }

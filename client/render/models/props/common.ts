@@ -81,6 +81,8 @@ export interface MatOpts {
   float?: boolean;
   /** underwater plant: height scales with water depth above the instance base */
   kelp?: boolean;
+  /** moored boat: rests on the ground, floats and rocks once the water rises above its keel */
+  boat?: boolean;
   transparent?: boolean;
   opacity?: number;
   doubleSide?: boolean;
@@ -158,6 +160,7 @@ function makeMat(o: MatOpts): THREE.MeshStandardMaterial {
   if (o.wobble) flags.push('WOBBLE');
   if (o.float) flags.push('FLOAT');
   if (o.kelp) flags.push('KELP');
+  if (o.boat) flags.push('BOAT');
   const pu: PropUniforms = {
     uGlow: { value: o.glow ?? 0 },
     uFlicker: { value: o.flicker ?? 0 },
@@ -199,13 +202,17 @@ uniform float uWobble;
 `;
 
 const VERT_MAIN = /* glsl */ `
-#if defined(P_SWAY) || defined(P_WOBBLE) || defined(P_FLOAT) || defined(P_KELP)
+#if defined(P_SWAY) || defined(P_WOBBLE) || defined(P_FLOAT) || defined(P_KELP) || defined(P_BOAT)
 {
   vec3 pIp = vec3(0.0);
   float pSy = 1.0;
   #ifdef USE_INSTANCING
   pIp = instanceMatrix[3].xyz;
   pSy = max(0.001, length(instanceMatrix[1].xyz));
+  #endif
+  #ifdef USE_BATCHING
+  pIp = batchingMatrix[3].xyz;
+  pSy = max(0.001, length(batchingMatrix[1].xyz));
   #endif
   vec3 pWp = (modelMatrix * vec4(pIp, 1.0)).xyz;
   #ifdef P_KELP
@@ -235,6 +242,12 @@ const VERT_MAIN = /* glsl */ `
   float fY = max(pWp.y + 0.03, uWaterY + 0.01) + fBob;
   transformed.y += (fY - pWp.y) / pSy;
   transformed.x += sin(uTime * 0.31 + pWp.z) * 0.04 / pSy;
+  #endif
+  #ifdef P_BOAT
+  float bWet = smoothstep(pWp.y + 0.02, pWp.y + 0.2, uWaterY);
+  float bLift = max(0.0, uWaterY - 0.1 - pWp.y);
+  float bPh = uTime * 1.15 + pWp.x * 0.7 + pWp.z * 0.4;
+  transformed.y += bLift / pSy + (transformed.x * sin(bPh) * 0.05 + transformed.z * sin(bPh * 0.7 + 1.3) * 0.02 + sin(bPh * 1.3) * 0.02) * bWet;
   #endif
 }
 #endif

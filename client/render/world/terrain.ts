@@ -4,15 +4,15 @@
 // 1 m columns for the outer landscape. One sampled array per field drives both the chunked meshes and
 // groundHeight(), so units stand exactly on what is drawn. Each map's look lives in terrain/biomes/*.
 import * as THREE from 'three';
-import { channelDepthAt, riverAt } from '../../../shared/maps/helpers.ts';
+import { channelDepthAt, platformAt, riverAt } from '../../../shared/maps/helpers.ts';
 import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
-import { bedY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
+import { bedY, platformDeckY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
 import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
-import { HeightField, newCell } from './terrain/field.ts';
+import { HeightField, newCell, type Biome } from './terrain/field.ts';
 import { buildFlora, type FloraView } from './terrain/flora.ts';
 import { terrainMaterial, terrainUniforms } from './terrain/material.ts';
 import { meshChunk } from './terrain/mesher.ts';
@@ -24,6 +24,22 @@ export const OUTER = { x0: -112, z0: -96, nx: 224, nz: 160, s: 1 } as const;
 const NEAR_CHUNK = 64;
 const OUTER_CHUNK = 56;
 
+/**
+ * The terrain's WorldView plus extras for other modules.
+ * groundHeight() is where units stand: the deck top on a platform (dock, bridge, pier, floe), the
+ * rendered terrain everywhere else. terrainHeight() is the rendered terrain only, so under a dock or
+ * bridge it is the river bed. Use it for anything about the water (bed depth, shore foam).
+ */
+export interface TerrainWorldView extends WorldView {
+  terrainHeight(x: number, z: number): number;
+}
+
+/** terrainHeight of a WorldView built here, falling back to groundHeight for any other WorldView. */
+export function terrainHeightOf(world: WorldView): (x: number, z: number) => number {
+  const t = (world as Partial<TerrainWorldView>).terrainHeight;
+  return t ? t : (x, z) => world.groundHeight(x, z);
+}
+
 interface Fields {
   biome: MapBiome;
   near: HeightField;
@@ -31,10 +47,33 @@ interface Fields {
   height: (x: number, z: number) => number;
 }
 
+/**
+ * The biome as the near field sees it: under a platform deck the terrain never rises above the deck,
+ * so where docks and bridges reach onto the banks the deck is the visible (and walkable) top.
+ */
+function deckClamped(map: MapDef, biome: MapBiome): Biome {
+  if (!map.platforms?.length) return biome;
+  return {
+    base: biome.base,
+    sample(x, z, ix, iz, cs, out) {
+      biome.sample(x, z, ix, iz, cs, out);
+      const p = platformAt(map, x, z);
+      if (p) {
+        // a little under the deck so the quantised column top never pokes through it
+        const top = platformDeckY(map, p) - 0.05;
+        if (out.h > top) out.h = top;
+      }
+    },
+    sideColor(side, tag, ix, iy, iz, dir, y0, y1, top, cs, out) {
+      biome.sideColor(side, tag, ix, iy, iz, dir, y0, y1, top, cs, out);
+    },
+  };
+}
+
 function buildFields(map: MapDef, config: MatchConfig): Fields {
   const biome = createBiome(map, config);
   const near = new HeightField(NEAR.x0, NEAR.z0, NEAR.nx, NEAR.nz, NEAR.s);
-  near.fill(biome);
+  near.fill(deckClamped(map, biome));
   const outer = new HeightField(OUTER.x0, OUTER.z0, OUTER.nx, OUTER.nz, OUTER.s);
   outer.fill(biome, (x, z) => near.contains(x, z));
   const cell = newCell();
@@ -68,7 +107,7 @@ function decorForMode(map: MapDef, config: MatchConfig, biome: MapBiome): Decor[
   return out.concat(biome.extraDecor().filter((d) => !(d.kind === 'lilypad' && map.id === 'frostfang')));
 }
 
-export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardInst[], engine: Engine): WorldView {
+export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardInst[], engine: Engine): TerrainWorldView {
   const quality: Quality = engine.quality;
   const group = new THREE.Group();
   group.name = 'world';
@@ -223,9 +262,17 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   group.add(details.group);
 
   // ---------------------------------------------------------------- props, decor, fountains
-  const propsGroup = buildProps(map.obstacles, map, height, quality);
+  // units stand on platform decks; so do props and decor placed on them
+  const plats = map.platforms ?? [];
+  const groundHeight = plats.length
+    ? (x: number, z: number): number => {
+        const p = platformAt(map, x, z);
+        return p ? platformDeckY(map, p) : height(x, z);
+      }
+    : height;
+  const propsGroup = buildProps(map.obstacles, map, groundHeight, quality);
   group.add(propsGroup);
-  const decorGroup = buildDecor(decorForMode(map, config, biome), map, height, () => waterY(map, level), quality);
+  const decorGroup = buildDecor(decorForMode(map, config, biome), map, groundHeight, () => waterY(map, level), quality);
   group.add(decorGroup);
   const platformGroup = map.platforms?.length ? buildPlatforms(map.platforms, map, quality) : null;
   if (platformGroup) group.add(platformGroup);
@@ -245,7 +292,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
 
   return {
     group,
-    groundHeight: height,
+    groundHeight,
+    terrainHeight: height,
     update(dt: number, time: number, river: RiverState) {
       level = river.level;
       // wet line: jumps up with the water, dries slowly as it falls

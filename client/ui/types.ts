@@ -8,7 +8,8 @@ import type { MapDef } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
 import type { Settings } from '../settings.ts';
 
-export type Screen = 'menu' | 'solo' | 'online' | 'lobby' | 'match' | 'settings' | 'profile';
+/** 'locker' | 'store' | 'market' | 'career' are the cosmetic economy screens (v2). app.go() routes them generically. */
+export type Screen = 'menu' | 'solo' | 'online' | 'lobby' | 'match' | 'settings' | 'profile' | 'locker' | 'store' | 'market' | 'career';
 
 export interface ChatLine {
   from: string;

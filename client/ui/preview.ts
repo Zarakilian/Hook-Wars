@@ -2,12 +2,31 @@
 // pedestal, a turntable you can drag, and an idle animation. Fully disposed when hidden.
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import type { CosmeticSlot, Loadout } from '../../shared/cosmetics.ts';
 import type { Profile } from '../../shared/protocol.ts';
-import { UnitState, type Team } from '../../shared/types.ts';
+import { UnitState, type FamilyId, type Team } from '../../shared/types.ts';
 import type { PudgyOneShot, PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
 
 const ONE_SHOTS: PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'grapple', 'melee'];
+
+/** Camera framing per slot: look-at height (fraction of the model height) and distance multiplier. */
+const FOCUS: Record<CosmeticSlot | 'all', { y: number; d: number }> = {
+  all: { y: 0.5, d: 1 },
+  head: { y: 0.84, d: 0.56 },
+  face: { y: 0.74, d: 0.5 },
+  body: { y: 0.5, d: 0.78 },
+  hands: { y: 0.52, d: 0.86 },
+  feet: { y: 0.16, d: 0.6 },
+  back: { y: 0.6, d: 0.8 },
+};
+
+export interface PreviewLook {
+  family: FamilyId;
+  loadout: Loadout;
+  team: Team;
+  name?: string;
+}
 
 export class PudgyPreview {
   canvas: HTMLCanvasElement;
@@ -36,6 +55,14 @@ export class PudgyPreview {
   private dist = 5;
   private failed = false;
   private used = false;
+  private focusKey: CosmeticSlot | 'all' = 'all';
+  private modelH = 2.5;
+  private baseDist = 5;
+  private camY = 1.25;
+  private camDist = 0;
+  private idleSpin = true;
+  /** last look shown, so a remount (renderer re-created) restores it */
+  private look: PreviewLook | null = null;
 
   constructor() {
     this.canvas = this.makeCanvas();
@@ -88,6 +115,7 @@ export class PudgyPreview {
     if (this.canvas.parentElement !== parent) parent.append(this.canvas);
     if (!this.renderer) this.init();
     if (!this.renderer) return;
+    if (this.look && this.key === '') this.show(this.look, 'spawn');
     this.resizeObs?.disconnect();
     this.resizeObs = new ResizeObserver(() => this.resize());
     this.resizeObs.observe(this.canvas);
@@ -212,15 +240,24 @@ export class PudgyPreview {
 
   /** Show this profile (rebuilds the model only when family or cosmetics change). */
   set(p: Profile, team: Team): void {
+    this.show({ family: p.family, loadout: p.loadout, team, name: p.name });
+  }
+
+  /**
+   * Show any look (Locker try-on, Store preview). Rebuilds only when family, loadout or team change.
+   * anim: one-shot to play after a rebuild ('celebrate' by default when only the outfit changed).
+   */
+  show(look: PreviewLook, anim?: PudgyOneShot | null): void {
+    this.look = { ...look, loadout: { ...look.loadout } };
     if (!this.renderer || !this.scene) return;
-    const key = `${p.family}|${JSON.stringify(p.loadout)}|${team}`;
+    const key = `${look.family}|${JSON.stringify(look.loadout)}|${look.team}`;
     if (key === this.key) return;
     const firstBuild = this.key === '';
-    const familyChanged = !firstBuild && this.key.split('|')[0] !== p.family;
+    const familyChanged = !firstBuild && this.key.split('|')[0] !== look.family;
     this.key = key;
     this.disposePudgy();
     try {
-      const v = createPudgy({ family: p.family, loadout: p.loadout, team, name: p.name, isLocal: true, quality: 'high' });
+      const v = createPudgy({ family: look.family, loadout: look.loadout, team: look.team, name: look.name ?? 'Pudgy', isLocal: true, quality: 'high', detail: 'showcase' });
       v.root.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) {
@@ -233,12 +270,34 @@ export class PudgyPreview {
       v.update(1 / 60, this.anim(0));
       this.spinner.updateMatrixWorld(true);
       this.frameModel();
-      v.play(familyChanged || firstBuild ? 'spawn' : 'celebrate');
+      const shot = anim === undefined ? (familyChanged || firstBuild ? 'spawn' : 'celebrate') : anim;
+      if (shot) v.play(shot);
     } catch (err) {
       console.warn('[preview] could not build the Pudgy model', err);
       this.pudgy = null;
     }
     this.renderOnce(0);
+  }
+
+  /** Ease the camera onto one cosmetic slot (null = whole body). The back slot turns the model around. */
+  focus(slot: CosmeticSlot | null): void {
+    this.focusKey = slot ?? 'all';
+    this.idleSpin = slot !== 'back';
+    if (slot === 'back') {
+      // shortest turn to face away from the camera
+      const t = Math.PI;
+      const cur = ((this.yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      this.yaw += ((t - cur + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    }
+  }
+
+  /** Play a one-shot (equip feedback). */
+  play(kind: PudgyOneShot): void {
+    try {
+      this.pudgy?.play(kind);
+    } catch {
+      // ignore
+    }
   }
 
   private frameModel(): void {
@@ -259,8 +318,15 @@ export class PudgyPreview {
     const aspect = Math.max(0.6, this.camera.aspect);
     const fitH = (height * 1.4) / 2 / Math.tan(fov / 2);
     const fitW = (width * 1.5) / 2 / Math.tan(fov / 2) / aspect;
-    this.dist = Math.max(fitH, fitW) + width * 0.5;
-    this.target.set(0, height * 0.5, 0);
+    this.baseDist = Math.max(fitH, fitW) + width * 0.5;
+    this.modelH = height;
+    const f = FOCUS[this.focusKey];
+    this.dist = this.baseDist * f.d;
+    this.target.set(0, height * f.y, 0);
+    if (this.camDist <= 0.01 || !Number.isFinite(this.camDist)) {
+      this.camDist = this.dist;
+      this.camY = this.target.y;
+    }
   }
 
   private anim(dt: number) {
@@ -295,8 +361,16 @@ export class PudgyPreview {
     this.time += dt;
     if (!this.dragging) {
       this.yawVel *= Math.exp(-dt * 3);
-      this.yaw += (0.32 + this.yawVel * 0.02) * dt;
+      this.yaw += ((this.idleSpin ? 0.32 : 0) + this.yawVel * 0.02) * dt;
     }
+    const f = FOCUS[this.focusKey];
+    const wantD = this.baseDist * f.d;
+    const wantY = this.modelH * f.y;
+    const k = dt > 0 ? 1 - Math.exp(-dt * 6) : 0;
+    this.camDist += (wantD - this.camDist) * k;
+    this.camY += (wantY - this.camY) * k;
+    this.dist = this.camDist;
+    this.target.y = this.camY;
     this.spinner.rotation.y = this.yaw;
     if (this.pudgy) {
       try {
@@ -366,6 +440,7 @@ export class PudgyPreview {
       this.renderer = null;
     }
     this.key = '';
+    this.camDist = 0;
     this.canvas.remove();
   }
 }

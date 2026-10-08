@@ -1,6 +1,13 @@
 // Procedural icons drawn as inline SVG (createElementNS, never innerHTML). Chunky, outlined,
 // warm nautical palette. Each icon is built once as a template and cloned on use.
+import { RUNE_COLORS } from '../../shared/constants.ts';
 import { s } from './dom.ts';
+
+const RC = RUNE_COLORS;
+/** '#rrggbb' (or rgba with alpha) from a 0xRRGGBB number. */
+function hx(c: number, a = 1): string {
+  return a >= 1 ? `#${c.toString(16).padStart(6, '0')}` : `rgba(${(c >> 16) & 255},${(c >> 8) & 255},${c & 255},${a})`;
+}
 
 const OL = '#2a190d';
 const METAL = '#cfd8de';
@@ -162,52 +169,81 @@ const ICONS = {
     dot(44, 40, 2, '#f2eaff'),
     path('M12 54 q4 -3 8 0 M44 56 q4 -3 8 0', 'none', 2.4),
   ],
-  // ------------------------------------------------------------------ runes
+  // ------------------------------------------------------------------ runes (colours from RUNE_COLORS)
+  // Tailwind: a gust of wind
   haste: [
-    poly('38,3 13,36 29,36 22,61 51,24 35,24 44,3', '#7ff0ff'),
-    flat('M36 7 L18 33 H23 Z', 'rgba(255,255,255,0.6)'),
+    ...stroke2('M6 22 H33 C 44 22 46 9 37 8 C 31 7 29 14 34 16', hx(RC.haste.main), 5),
+    ...stroke2('M4 36 H45 C 58 36 60 53 49 54 C 43 55 41 47 47 45', hx(RC.haste.main), 5),
+    ...stroke2('M12 48 H27', hx(RC.haste.light), 3.6),
+    hl('M10 21 H30', 1.8, 0.75),
   ],
+  // Kraken Ink: an ink drop with a curling tentacle
   double: [
-    circ(32, 32, 26, '#ff6a3a'),
-    circ(32, 32, 19, '#ffb23a', 0),
-    ['text', { x: 32, y: 42, 'text-anchor': 'middle', 'font-family': 'Lilita One, sans-serif', 'font-size': 28, fill: '#fff8e6', stroke: OL, 'stroke-width': 2.5, 'paint-order': 'stroke' }],
+    path('M30 4 C 38 17 48 27 48 39 A18 18 0 0 1 12 39 C 12 27 22 17 30 4 Z', hx(RC.double.main)),
+    flat('M30 11 C 36 21 43 29 43 39 A13 13 0 0 1 30 52 Z', hx(RC.double.dark, 0.55)),
+    hl('M19 37 A11 11 0 0 1 23 26', 3, 0.65),
+    ...stroke2('M40 46 C 52 44 58 52 52 58 C 48 61 43 57 47 54', hx(RC.double.light), 3.4),
+    dot(51, 49.5, 1.4, hx(RC.double.dark)),
+    dot(54.5, 53.5, 1.3, hx(RC.double.dark)),
   ],
+  // Barnacle Hide: a shell shield crusted with barnacles
   ironskin: [
-    path('M32 4 L54 12 V30 C 54 46 44 55 32 60 C 20 55 10 46 10 30 V12 Z', '#8fa3b8'),
-    path('M32 11 L47 16 V30 C 47 41 40 48 32 52 Z', '#c6d4e2', 0),
-    dot(17, 17, 2.4, '#4c5a68'),
-    dot(47, 17, 2.4, '#4c5a68'),
-    dot(32, 44, 2.4, '#4c5a68'),
+    path('M32 4 L54 12 V30 C 54 46 44 55 32 60 C 20 55 10 46 10 30 V12 Z', hx(RC.ironskin.main)),
+    path('M32 11 L47 16 V30 C 47 41 40 48 32 52 Z', hx(RC.ironskin.light, 0.55), 0),
+    circ(22, 24, 5, hx(RC.ironskin.light), 2.2),
+    dot(22, 24, 1.8, hx(RC.ironskin.dark)),
+    circ(38, 36, 6, hx(RC.ironskin.light), 2.2),
+    dot(38, 36, 2.1, hx(RC.ironskin.dark)),
+    circ(26, 42, 3.6, hx(RC.ironskin.light), 2),
+    dot(26, 42, 1.3, hx(RC.ironskin.dark)),
   ],
+  // Sea Fog: a rolling fog bank
   ghost: [
-    path('M14 58 V28 A18 18 0 0 1 50 28 V58 L44 52 L38 58 L32 52 L26 58 L20 52 Z', '#eef4ff'),
-    ell(25, 30, 4, 5.5, OL, 0),
-    ell(39, 30, 4, 5.5, OL, 0),
-    ell(32, 42, 3.5, 4, OL, 0),
-    hl('M20 22 A13 13 0 0 1 28 14', 2.4, 0.9),
+    circ(20, 30, 10, hx(RC.ghost.main)),
+    circ(35, 23, 13, hx(RC.ghost.light)),
+    circ(48, 31, 9, hx(RC.ghost.main)),
+    rect(10, 30, 46, 10, 5, hx(RC.ghost.light), 0),
+    path('M10 40 H56', 'none', 3),
+    ...stroke2('M6 48 H38', hx(RC.ghost.main), 3.6),
+    ...stroke2('M22 57 H58', hx(RC.ghost.main), 3.6),
+    hl('M28 18 A10 10 0 0 1 38 14', 2.4, 0.9),
   ],
+  // Sunken Loot: a chest spilling sea glass and a pearl
   bounty: [
-    path('M20 18 L26 10 H38 L44 18 C 56 26 58 50 46 58 H18 C 6 50 8 26 20 18Z', '#c99a5a'),
-    path('M20 18 H44', 'none', 3),
-    circ(32, 40, 10, GOLD),
-    ['text', { x: 32, y: 45.5, 'text-anchor': 'middle', 'font-family': 'Lilita One, sans-serif', 'font-size': 15, fill: '#8a5a10' }],
+    path('M8 32 H56 V56 H8 Z', '#8a5a34'),
+    path('M8 32 C 8 18 56 18 56 32 Z', '#a8743e'),
+    path('M8 32 H56', 'none', 3),
+    rect(27, 28, 10, 13, 2.5, hx(RC.bounty.main), 2.4),
+    dot(32, 34.5, 1.8, OL),
+    path('M18 32 V56 M46 32 V56', 'none', 2.4),
+    circ(16, 17, 4.6, hx(RC.bounty.light), 2.2),
+    circ(26, 13, 4, hx(RC.bounty.main), 2.2),
+    circ(46, 15, 5.5, '#fbf6ff', 2.2),
+    dot(44.6, 13.4, 1.6, '#ffffff'),
+    flat('M10 34 H54 V38 H10Z', 'rgba(255,255,255,0.12)'),
   ],
+  // Bendy Eel: an eel that bends into a hook
   bendy: [
-    ...stroke2('M10 52 C 22 52 18 30 30 28 C 42 26 40 10 54 10', '#3fd6a0', 6),
-    path('M50 4 L60 9 L52 17 Z', METAL),
-    dot(12, 52, 3.4, '#1f7a5a'),
-    hl('M24 40 C 26 34 28 31 32 30', 2, 0.7),
+    ...stroke2('M8 54 C 22 56 20 34 32 30 C 44 26 42 12 54 10', hx(RC.bendy.main), 7),
+    ['path', { d: 'M8 54 C 22 56 20 34 32 30 C 44 26 42 12 54 10', fill: 'none', stroke: hx(RC.bendy.dark, 0.7), 'stroke-width': 1.6, 'stroke-dasharray': '2 5', 'stroke-linecap': 'round' }],
+    poly('50,4 61,8 53,17', METAL, 2.6),
+    dot(11, 52, 2.2, OL),
+    hl('M22 44 C 24 37 26 33 31 31', 2, 0.7),
   ],
+  // Boing Barb: a coiled spring with a barb on top
   bouncy: [
-    ...stroke2('M8 50 L22 18 L36 46 L50 14', '#ff70d0', 5),
-    path('M46 10 L58 8 L54 20 Z', METAL),
-    circ(22, 18, 4, '#ffd0f0'),
-    circ(36, 46, 4, '#ffd0f0'),
+    ...stroke2('M20 58 L44 52 L20 46 L44 40 L20 34 L44 28 L22 22', hx(RC.bouncy.main), 4.4),
+    rect(14, 56, 36, 6, 2.5, hx(RC.bouncy.dark), 2.2),
+    ...stroke2('M30 22 V12', METAL, 4),
+    poly('22,14 30,2 38,14', METAL, 2.6),
+    ...stroke2('M50 10 l6 -4 M52 18 l7 0 M8 12 l-4 -4', hx(RC.bouncy.light), 2.2),
   ],
+  // Long Line: a hook flying far, with speed lines
   longshot: [
-    ...stroke2('M6 32 H50', ROPE, 5),
-    path('M48 22 L62 32 L48 42 Z', METAL),
-    ...stroke2('M10 22 H28 M10 42 H28', '#ffa030', 3),
+    ...stroke2('M4 32 H48', ROPE, 4.6),
+    path('M46 21 L62 32 L46 43 Z', METAL),
+    ...stroke2('M10 20 H30 M14 44 H34', hx(RC.longshot.main), 3.6),
+    ...stroke2('M36 14 H44 M38 50 H46', hx(RC.longshot.light), 2.4),
   ],
   // ------------------------------------------------------------------ status / causes
   burn: [
@@ -365,6 +401,105 @@ const ICONS = {
     rect(22, 28.5, 20, 6, 3, '#7ff0ff', 0),
     dot(26, 31.5, 1.8, '#ffffff'),
   ],
+  // ------------------------------------------------------------------ cosmetic slots
+  slotHead: [
+    path('M12 40 C 10 24 20 12 32 12 C 44 12 54 24 52 40 Z', '#f4ecd8'),
+    flat('M16 36 C 16 24 24 16 32 16 C 26 20 22 28 22 36Z', 'rgba(255,255,255,0.55)'),
+    rect(10, 34, 44, 8, 3, '#2c3a4a'),
+    path('M6 44 C 18 40 46 40 58 44 C 58 50 6 50 6 44 Z', '#1d2833'),
+    circ(32, 25, 5, BRASS, 2.4),
+  ],
+  slotFace: [
+    circ(32, 30, 22, '#f0b488'),
+    flat('M14 34 A20 20 0 0 0 50 34 A22 14 0 0 1 14 34Z', 'rgba(150,70,30,0.25)'),
+    dot(24, 26, 3, OL),
+    dot(40, 26, 3, OL),
+    path('M14 42 C 20 34 28 36 32 40 C 36 36 44 34 50 42 C 44 46 38 44 32 42 C 26 44 20 46 14 42 Z', '#5a3a22'),
+    ell(32, 35, 5, 4, '#e07a5a'),
+  ],
+  slotBody: [
+    path('M20 6 H44 V18 C 52 20 56 28 54 40 L50 58 H14 L10 40 C 8 28 12 20 20 18 Z', '#e8b33a'),
+    flat('M22 22 C 18 30 18 42 20 54 H16 L13 40 C 12 30 14 24 22 22Z', 'rgba(255,255,255,0.35)'),
+    path('M20 6 V18 M44 6 V18', 'none', 2.6),
+    rect(24, 34, 16, 10, 2, '#c48a22', 2.4),
+    dot(22, 20, 2.4, BRASS),
+    dot(42, 20, 2.4, BRASS),
+  ],
+  slotFeet: [
+    path('M18 6 H38 V36 C 38 40 40 42 44 42 H50 C 55 42 58 46 58 51 V54 H16 V36 Z', '#5f8a4a'),
+    rect(14, 52, 46, 8, 3, '#3a2a1a'),
+    flat('M18 12 H38 V17 H18Z', 'rgba(255,255,255,0.3)'),
+    hl('M23 22 V36', 2.4, 0.45),
+  ],
+  slotBack: [
+    path('M16 14 C 16 8 48 8 48 14 V52 C 48 58 16 58 16 52 Z', '#9a6a3a'),
+    path('M16 22 H48 M16 44 H48', 'none', 3.2),
+    flat('M20 14 V54 H25 V12Z', 'rgba(255,255,255,0.18)'),
+    rect(26, 26, 12, 10, 2, BRASS, 2.4),
+    ...stroke2('M22 8 C 22 2 42 2 42 8', ROPE, 2.4),
+  ],
+  // ------------------------------------------------------------------ economy and screens
+  pearl: [
+    path('M6 44 C 6 30 18 22 32 22 C 46 22 58 30 58 44 C 50 50 14 50 6 44 Z', '#e9c7d9'),
+    path('M14 44 C 18 34 24 30 32 30 M50 44 C 46 34 40 30 32 30 M32 30 V46', 'none', 2),
+    circ(32, 20, 12, '#fbf6ff'),
+    flat('M24 18 A9 9 0 0 1 31 11 A12 12 0 0 0 24 22Z', 'rgba(255,255,255,0.95)'),
+    flat('M36 30 A12 12 0 0 0 43 21 A10 10 0 0 1 36 28Z', 'rgba(170,140,200,0.5)'),
+  ],
+  wallet: [
+    rect(6, 16, 50, 38, 6, '#7a4a2a'),
+    path('M10 16 L44 6 L48 16', '#a8743e', 2.6),
+    rect(38, 28, 22, 14, 4, '#5a3420', 2.6),
+    circ(46, 35, 3.4, BRASS, 2),
+    flat('M10 20 H52 V24 H10Z', 'rgba(255,255,255,0.15)'),
+  ],
+  usdc: [
+    circ(32, 32, 26, '#3a7bd5'),
+    circ(32, 32, 19, '#5b9cf0', 2.4),
+    ['text', { x: 32, y: 42, 'text-anchor': 'middle', 'font-family': 'Lilita One, sans-serif', 'font-size': 27, fill: '#ffffff', stroke: OL, 'stroke-width': 2, 'paint-order': 'stroke' }],
+    hl('M16 24 A18 18 0 0 1 26 13', 3, 0.7),
+  ],
+  locker: [
+    path('M6 28 H58 V56 H6 Z', '#6a4428'),
+    path('M6 28 C 6 12 58 12 58 28 Z', '#8a5a34'),
+    rect(6, 26, 52, 6, 2, BRASS, 2.4),
+    rect(26, 30, 12, 14, 3, BRASS, 2.4),
+    dot(32, 37, 2.2, OL),
+    path('M16 32 V56 M48 32 V56', 'none', 2.4),
+    flat('M10 30 H54 V34 H10Z', 'rgba(255,255,255,0.12)'),
+  ],
+  shop: [
+    path('M6 22 L12 8 H52 L58 22 Z', '#e0533d'),
+    flat('M17 9 H27 L25 21 H14Z M37 9 H47 L50 21 H39Z', '#fff3d9'),
+    path('M17 8 L14 22 M27 8 L25 22 M37 8 L39 22 M47 8 L50 22', 'none', 2.4),
+    path('M6 22 C 6 28 16 28 16 22 C 16 28 27 28 27 22 C 27 28 37 28 37 22 C 37 28 48 28 48 22 C 48 28 58 28 58 22', 'none', 2.6),
+    rect(10, 28, 44, 28, 3, '#8a5a34'),
+    rect(16, 34, 14, 22, 2, '#5a3420', 2.4),
+    rect(36, 34, 12, 10, 2, '#9fd6ff', 2.4),
+  ],
+  market: [
+    ...stroke2('M32 8 V54', '#c18a2c', 4),
+    ...stroke2('M10 16 H54', '#c18a2c', 4),
+    path('M4 36 L10 18 L16 36 Z', 'none', 2.2),
+    path('M48 36 L54 18 L60 36 Z', 'none', 2.2),
+    path('M2 36 H18 C 18 44 2 44 2 36 Z', BRASS),
+    path('M46 36 H62 C 62 44 46 44 46 36 Z', BRASS),
+    rect(20, 52, 24, 6, 2, '#8a5a34'),
+    circ(32, 8, 4, BRASS, 2.4),
+  ],
+  career: [
+    rect(8, 34, 12, 22, 2, '#5cb4ff'),
+    rect(26, 22, 12, 34, 2, '#7fd99a'),
+    rect(44, 10, 12, 46, 2, '#ffd25a'),
+    path('M4 58 H60', 'none', 3),
+    flat('M10 36 H13 V54 H10Z M28 24 H31 V54 H28Z M46 12 H49 V54 H46Z', 'rgba(255,255,255,0.4)'),
+  ],
+  sparkle: [poly(star(32, 32, 28, 7, 4), '#fff2b0', 2.6), poly(star(50, 13, 9, 3, 4), '#ffffff', 2)],
+  tag: [path('M8 30 L30 8 H56 V34 L34 56 Z', '#e9c46a'), circ(46, 18, 4.2, '#7a4c12', 2.4), hl('M14 30 L32 12', 2.4, 0.5)],
+  info: [mono('M32 6 a26 26 0 1 0 0.01 0Z', 5), monoFill('M28 26 H36 V48 H28Z M32 12 a4.5 4.5 0 1 1 -0.01 0Z')],
+  sort: [mono('M20 10 V54 M10 44 L20 54 L30 44 M44 54 V10 M34 20 L44 10 L54 20', 5.5)],
+  user: [monoFill('M32 8 a12 12 0 1 1 -0.01 0Z M10 58 C 10 38 54 38 54 58 Z')],
+  link: [mono('M26 38 L38 26 M22 30 L16 36 a8 8 0 0 0 12 12 L34 42 M42 34 L48 28 a8 8 0 0 0 -12 -12 L30 22', 5.5)],
   // ------------------------------------------------------------------ UI glyphs (currentColor)
   star: [poly(star(32, 33, 27, 12, 5), GOLD, 3), hl('M22 24 L28 22', 2.4, 0.7)],
   check: [mono('M12 34 L26 48 L52 18', 8)],
@@ -401,7 +536,7 @@ const ICONS = {
 
 export type IconId = keyof typeof ICONS;
 
-const TEXT: Partial<Record<IconId, string>> = { double: 'x2', bounty: 'G', coin: 'G' };
+const TEXT: Partial<Record<IconId, string>> = { coin: 'G', usdc: '$' };
 
 const cache = new Map<string, SVGSVGElement>();
 

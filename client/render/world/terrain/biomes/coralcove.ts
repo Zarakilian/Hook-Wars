@@ -347,7 +347,9 @@ export class CoralcoveBiome extends BaseBiome implements MapBiome {
         z0: zTop,
         z1: -this.halfD - 0.5,
         level: this.lipY + 0.06,
-        keep: (x, z) => z < this.cliffLine(x) + 0.12,
+        // only the stream notch: cells straddling the cliff face elsewhere would leave a strip of
+        // lip-height water sticking out of the rock
+        keep: (x, z) => z < this.cliffLine(x) + 0.12 && Math.abs(x - riverAt(this.map.river.points, z).x) < 6.5,
       },
     ];
   }

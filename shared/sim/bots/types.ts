@@ -199,6 +199,30 @@ export interface Brain {
   detourZ: number;
   detourSide: number;
 
+  // navigation (navigate.ts): the current path toward the goal
+  /** Waypoints x0, z0, x1, z1, ... (NAV_MAXWP pairs). */
+  navWp: Float32Array;
+  navN: number;
+  navI: number;
+  /** The goal the current path (or straight line) was checked for. */
+  navGX: number;
+  navGZ: number;
+  /** Walkability variant of the current path (-1 = none yet). */
+  navVar: number;
+  /** Next time to re-test the straight line to the goal. */
+  navCheck: number;
+  /** The straight line to the goal is walkable: no path needed. */
+  navDirect: boolean;
+  /** The path reaches the goal (false: it stops at the closest point found). */
+  navDone: boolean;
+  /** Do not search again before this time (the goal was unreachable). */
+  navFail: number;
+  navAt: number;
+
+  // Bendy Eel: what our steering hook is chasing (TargetKind and id, tk -1 = nothing)
+  steerTk: number;
+  steerId: number;
+
   // bookkeeping
   lastState: number;
   stats: BotStats;
@@ -214,4 +238,11 @@ export interface BotStats {
   dives: number;
   bankShots: number;
   grappleEscapes: number;
+  /** Hooks thrown while Bendy Eel was active, and ticks spent steering one in flight. */
+  bendyThrows: number;
+  bendySteers: number;
+  /** Hooks thrown with Long Line active from beyond the normal hook range. */
+  longshots: number;
+  /** A* searches this bot ran. */
+  paths: number;
 }

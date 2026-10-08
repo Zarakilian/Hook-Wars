@@ -25,7 +25,32 @@ const MAX_BEND_PTS = 64; // numbers, i.e. 32 points
 const BUFFER_TIME = 0.3;
 /** Ticks with no input before a human's held movement is dropped (jitter is fine, a hidden tab is not). */
 const STALE_INPUT_TICKS = 15;
+/**
+ * A spare input that has sat in the queue this many ticks in a row is standing latency, not jitter:
+ * drain it (one movement-only input per tick) until the queue is back to just-in-time.
+ */
+const DRAIN_AFTER_TICKS = 20;
+/** Held ticks remembered as debt. Each one already took a movement step, so one late input can be skipped for it. */
+const MAX_HOLD_DEBT = 30;
 const tmpPos = { x: 0, z: 0, hit: false };
+
+/** Per-unit input queue bookkeeping (humans only). Lives beside the Unit so entities.ts stays untouched. */
+interface InputQueueState {
+  /** consecutive ticks that ended with at least one spare input still queued */
+  spareRun: number;
+  /** held ticks (no input in time, last movement repeated) not yet paid back by a skipped late input */
+  debt: number;
+  holds: number;
+  drained: number;
+}
+
+/** What consumeInput is doing for one unit, for tests and diagnostics. */
+export interface InputQueueInfo {
+  queued: number;
+  debt: number;
+  holds: number;
+  drained: number;
+}
 
 export class GameSim {
   readonly config: MatchConfig;
@@ -256,27 +281,81 @@ export class GameSim {
     }
   }
 
-  /** Inputs allowed to stay queued after a consume. Solo sets 0 so a frame hitch never adds lag. */
+  /**
+   * Spare inputs allowed to stay queued after a consume (a jitter cushion). Above this the backlog is
+   * skipped at once. Solo sets 0 so a frame hitch never adds lag.
+   */
   inputSlack = 2;
+  private readonly inq = new WeakMap<Unit, InputQueueState>();
+
+  /** Input queue state of one unit (humans only), for tests and diagnostics. */
+  inputQueueInfo(id: number): InputQueueInfo | null {
+    const u = this.unitById.get(id);
+    if (!u) return null;
+    const st = this.inq.get(u);
+    return { queued: u.queue.length, debt: st?.debt ?? 0, holds: st?.holds ?? 0, drained: st?.drained ?? 0 };
+  }
 
   // ------------------------------------------------------------------------------------------
   // Input and actions
   // ------------------------------------------------------------------------------------------
 
+  /**
+   * One input per tick, with two rules that keep latency from ratcheting up after a stall:
+   * - No input in time: hold the last movement (never a press) and count the tick as debt.
+   * - Spare inputs queued: skip movement-only inputs, as many as the debt (those steps were already
+   *   walked during the hold), any above inputSlack, and one per tick once a spare input has stood
+   *   for DRAIN_AFTER_TICKS. A press is never skipped or merged: it runs on its own tick with its own
+   *   aim. Skipping only ever drops inputs, so a unit never takes more steps than ticks elapsed.
+   */
   private consumeInput(u: Unit): void {
     const q = u.queue;
+    if (u.isBot) {
+      this.inq.delete(u); // a human taking this unit back starts with a clean queue state
+      if (q.length === 0) {
+        u.input.b = 0;
+        return;
+      }
+      let inp = q.shift()!; // bots push one input per tick
+      while (q.length > this.inputSlack) {
+        const n = q.shift()!;
+        n.b |= inp.b;
+        inp = n;
+      }
+      u.input = inp;
+      u.ack = inp.seq;
+      return;
+    }
+    let st = this.inq.get(u);
+    if (!st) {
+      st = { spareRun: 0, debt: 0, holds: 0, drained: 0 };
+      this.inq.set(u, st);
+    }
     if (q.length === 0) {
       u.input.b = 0; // hold last movement and aim, but never repeat a press
-      if (!u.isBot && ++u.idleTicks > STALE_INPUT_TICKS) u.input.mx = u.input.mz = 0;
+      if (++u.idleTicks > STALE_INPUT_TICKS) u.input.mx = u.input.mz = 0;
+      else {
+        st.debt = Math.min(MAX_HOLD_DEBT, st.debt + 1); // this tick's step was a guess the late input replaces
+        st.holds++;
+      }
+      st.spareRun = 0;
       return;
     }
     u.idleTicks = 0;
     let inp = q.shift()!;
-    // Keep latency low: if the client got ahead, collapse the backlog into one input.
-    while (q.length > this.inputSlack) {
-      const n = q.shift()!;
-      n.b |= inp.b;
-      inp = n;
+    if (q.length > 0) st.spareRun++;
+    else st.spareRun = 0;
+    let skip = Math.max(Math.min(st.debt, q.length), q.length - this.inputSlack);
+    if (skip <= 0 && st.spareRun >= DRAIN_AFTER_TICKS) skip = 1;
+    let skipped = 0;
+    while (skipped < skip && q.length > 0 && inp.b === 0) {
+      inp = q.shift()!;
+      skipped++;
+    }
+    if (skipped > 0) {
+      st.debt = Math.max(0, st.debt - skipped);
+      st.drained += skipped;
+      if (q.length === 0) st.spareRun = 0;
     }
     u.input = inp;
     u.ack = inp.seq;
