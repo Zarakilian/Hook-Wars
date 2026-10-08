@@ -659,8 +659,9 @@ function buildHook(t: TeamCols): RGrid {
   const g = new RGrid(10, 14, 10, -5, -12, -4);
   const iron: ColorFn = (x, y, z) => {
     const h = hashVox(x, y, z, 81);
-    if (h > 0.93) return 0x7b5a3c;
-    return shade(z > 0 ? 0x80878f : 0x5d636a, 0.92 + h * 0.14);
+    if (h > 0.94) return 0x8a6440;
+    // lighter, polished iron so the hook reads against grass and mud
+    return shade(z > 0 ? 0xa7afb9 : 0x7f8790, 0.92 + h * 0.14);
   };
   // rope out of the bottom of the fist
   g.on(CH.cloth, () => {
@@ -699,11 +700,17 @@ function buildHook(t: TeamCols): RGrid {
 
 // ---------------------------------------------------------------------------------------------
 
+/** Dominant colour of each accent option (death debris, portraits). */
+const ACCENT_COL = [SHIRT, NAVY, 0x2f4a78, 0x8fa6b8, ROPE, OILSKIN, BRASS, 0xb8a77c] as const;
+
 export function brawlerPalette(c: Cosmetics, team: Team): PudgyPalette {
   const n = COSMETIC_NAMES.brawler;
   const face = wrap(c.face, n.faces.length);
   const t = TEAM_COLORS[team];
-  return { skin: SKIN, skinDark: SKIN_SHADE, cloth: t.main, accent: wrap(c.accent, n.accents.length) === 5 ? OILSKIN : SHIRT, metal: 0x6a7078, extra: [BOOT, HAIR[face], TROUSER, t.dark] };
+  // dominant hat colour (0 = bare head: hair)
+  const hats = [HAIR[face], 0xf3f0e6, OILSKIN, t.main, 0xb7a77a, t.main, 0x2b2628, 0xf4f1ea];
+  const hat = hats[wrap(c.hat, n.hats.length)];
+  return { skin: SKIN, skinDark: SKIN_SHADE, cloth: t.main, accent: ACCENT_COL[wrap(c.accent, n.accents.length)], metal: 0x80878f, extra: [BOOT, HAIR[face], TROUSER, t.dark, hat] };
 }
 
 export function buildBrawler(c: Cosmetics, team: Team): FamilyBuild {

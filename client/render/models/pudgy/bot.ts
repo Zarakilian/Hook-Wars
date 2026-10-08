@@ -190,18 +190,32 @@ function buildBody(accent: number, t: TeamCols): RGrid {
       });
       break;
     case 6:
-      // gauge panel: two dials and a glowing indicator
-      g.on(CH.wet, () => {
-        for (const [cx, cy] of [[-3.5, 13], [3, 14]] as const) {
-          for (let y = -2; y <= 1; y++) for (let x = -2; x <= 1; x++) if (Math.hypot(x + 0.5, y + 0.5) < 2.1) g.set(cx + x, cy + y, 10.4, 0xf2efe2);
-          g.set(cx, cy, 11, 0xd8302a);
-          g.set(cx + 1, cy + 1, 11, 0xd8302a);
+      // gauge panel: two big dials mounted proud of the belly plate, and a glowing indicator lamp
+      {
+        /** first empty cell in front of the belly surface at (x, y) */
+        const front = (x: number, y: number): number => {
+          for (let z = 13; z > 0; z--) if (g.has(x, y, z)) return z + 1;
+          return 11;
+        };
+        for (const [cx, cy] of [[-4, 13], [3, 14]] as const) {
+          const zf = front(cx, cy);
+          for (let y = -3; y <= 2; y++)
+            for (let x = -3; x <= 2; x++) {
+              const r = Math.hypot(x + 0.5, y + 0.5);
+              if (r > 3.1) continue;
+              const rim = r > 2.2;
+              g.on(rim ? CH.brass : CH.wet, () => g.set(cx + x, cy + y, zf, rim ? ((x + y) % 2 ? BRASS : 0xf6cf6a) : 0xf4f1e6));
+            }
+          // needle and tick marks
+          g.on(CH.wet, () => {
+            g.set(cx, cy, zf + 1, 0x1d1f24);
+            g.set(cx + 1, cy + 1, zf + 1, 0xd8302a);
+            g.set(cx + 1, cy - 2, zf, 0x2a2c33);
+            g.set(cx - 2, cy + 1, zf, 0x2a2c33);
+          });
         }
-      });
-      g.on(CH.brass, () => {
-        for (const [cx, cy] of [[-3.5, 13], [3, 14]] as const) for (let a = 0; a < 12; a++) g.add(cx + Math.cos((a / 12) * Math.PI * 2) * 2.4, cy + Math.sin((a / 12) * Math.PI * 2) * 2.4, 10.4, BRASS);
-      });
-      g.on(CH.pulse, () => g.box(-1, 9, 10, 0, 10, 10, 0x6aff7a));
+        g.on(CH.pulse, () => g.box(-1, 9, front(-1, 9), 0, 10, front(0, 10), 0x6aff7a));
+      }
       break;
     case 7:
       // copper coils with glowing tops
@@ -578,10 +592,17 @@ function buildClaw(t: TeamCols): RGrid {
 
 // ---------------------------------------------------------------------------------------------
 
+/** Dominant colour of each accent option (death debris, portraits). */
+const ACCENT_COL = [STEEL_LIGHT, RUST[1], HAZARD, BRASS, STEEL_LIGHT, COPPER, 0xf2efe2, COPPER] as const;
+/** Dominant colour of each hat option (0 = bare dome). */
+const HAT_COL = [STEEL, GUNMETAL, STEEL_LIGHT, 0xfff4c8, BRASS, HAZARD, GUNMETAL, STEEL_LIGHT] as const;
+
 export function botPalette(c: Cosmetics, team: Team): PudgyPalette {
+  const n = COSMETIC_NAMES.bot;
   const t = TEAM_COLORS[team];
-  const accent = wrap(c.accent, COSMETIC_NAMES.bot.accents.length);
-  return { skin: STEEL, skinDark: GUNMETAL, cloth: t.main, accent: accent === 3 ? BRASS : COPPER, metal: CHROME, extra: [STEEL_DARK, HAZARD, t.light, EMBER] };
+  const accent = ACCENT_COL[wrap(c.accent, n.accents.length)];
+  const hat = HAT_COL[wrap(c.hat, n.hats.length)];
+  return { skin: STEEL, skinDark: GUNMETAL, cloth: t.main, accent, metal: CHROME, extra: [STEEL_DARK, HAZARD, t.light, EMBER, hat] };
 }
 
 export function buildBot(c: Cosmetics, team: Team): FamilyBuild {

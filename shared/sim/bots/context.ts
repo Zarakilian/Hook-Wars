@@ -27,6 +27,13 @@ export interface Track {
   hookSpeed: number;
   hookR: number;
   respawnAt: number;
+  /** Public estimates from observed wind-ups (bash and grapple casts are visible). */
+  bashReadyAt: number;
+  grappleReadyAt: number;
+  /** When this unit started drowning (public: the splash and the swim flag). */
+  drownAt: number;
+  /** Tick this unit last started a wind-up. */
+  castAt: number;
   tick: number;
 }
 
@@ -42,6 +49,7 @@ interface HookObs {
   owner: number;
   lx: number;
   lz: number;
+  first: number;
   tick: number;
 }
 
@@ -71,7 +79,6 @@ export class BotContext {
   untilWalk = Infinity;
   /** Length of the current (or next) walkable window in seconds. */
   walkFor = 0;
-  /** Accumulated bot think time, for the profile counters. */
   private forecastTick = -999;
   private lastDeep = true;
   private readonly scratch: RiverState = { level: 1, deep: true, shallow: false, frozen: false, phase: 'none', phaseLeft: 0, cycle: false };
@@ -98,7 +105,8 @@ export class BotContext {
       if (!tr) {
         tr = {
           x: new Float32Array(HIST), z: new Float32Array(HIST), vis: new Uint8Array(HIST), n: 0, lastState: u.state,
-          hookReadyAt: 0, reach: HOOK_LEVELS.range[0], hookSpeed: HOOK_LEVELS.speed[0], hookR: HOOK_LEVELS.width[0], respawnAt: -99, tick: 0,
+          hookReadyAt: 0, reach: HOOK_LEVELS.range[0], hookSpeed: HOOK_LEVELS.speed[0], hookR: HOOK_LEVELS.width[0], respawnAt: -99,
+          bashReadyAt: 0, grappleReadyAt: 0, drownAt: -99, castAt: -1, tick: 0,
         };
         this.tracks.set(u.id, tr);
       }
@@ -109,6 +117,17 @@ export class BotContext {
       if (tr.lastState === UnitState.Dead && !dead) {
         tr.respawnAt = sim.time;
         tr.hookReadyAt = sim.time; // respawn resets the hook
+        tr.bashReadyAt = Math.min(tr.bashReadyAt, sim.time + 1);
+        tr.grappleReadyAt = Math.min(tr.grappleReadyAt, sim.time + 2);
+      }
+      if (u.state !== tr.lastState) {
+        if (u.state === UnitState.Casting) {
+          tr.castAt = sim.tick;
+          if (u.castKind === 'bash') tr.bashReadyAt = sim.time + BAL.bashCooldown;
+          else if (u.castKind === 'grapple') tr.grappleReadyAt = sim.time + BAL.grappleCooldown;
+        } else if (u.state === UnitState.Grappling && tr.lastState === UnitState.Drowning) {
+          tr.grappleReadyAt = sim.time + BAL.grappleCooldown; // grapple out of the water has no wind-up
+        } else if (u.state === UnitState.Drowning) tr.drownAt = sim.time;
       }
       tr.lastState = u.state;
       tr.tick = this.tick;
@@ -142,7 +161,7 @@ export class BotContext {
       if (!owner) continue;
       const tr = this.tracks.get(owner.id);
       if (!obs) {
-        obs = { owner: owner.id, lx: owner.x, lz: owner.z, tick: this.tick };
+        obs = { owner: owner.id, lx: owner.x, lz: owner.z, first: this.tick, tick: this.tick };
         this.hooksSeen.set(hk.id, obs);
         if (tr) {
           const cd = BAL.hookCooldown * (FAMILY_DEFS[owner.family]?.hookCdMul ?? 1);
@@ -158,6 +177,42 @@ export class BotContext {
       }
     }
     if (this.hooksSeen.size > 0) for (const [id, o] of this.hooksSeen) if (o.tick !== this.tick) this.hooksSeen.delete(id);
+  }
+
+  /** Seconds since a hook in flight was first seen (0 if unknown). */
+  hookAge(id: number): number {
+    const o = this.hooksSeen.get(id);
+    return o ? (this.tick - o.first) * TICK_DT : 0;
+  }
+
+  /** Metres a hook in flight has covered since it left its owner (from where the throw was seen). */
+  hookTravel(id: number, hx: number, hz: number): number {
+    const o = this.hooksSeen.get(id);
+    return o ? Math.max(0, dist(o.lx, o.lz, hx, hz) - BAL.hookHand) : 0;
+  }
+
+  /**
+   * Spawn protection left on `u` as a player can tell it: the shimmer is visible, and respawns are
+   * public, so the remaining time follows from when we saw them pop back in.
+   */
+  spawnProtLeft(u: Unit, viewer: Unit): number {
+    if (u.spawnProt <= 0) return 0;
+    if (u.team === viewer.team) return u.spawnProt;
+    const tr = this.tracks.get(u.id);
+    return tr ? Math.max(0.05, tr.respawnAt + BAL.spawnProt - this.sim.time) : BAL.spawnProt;
+  }
+
+  /** Public estimate of when `u` can bash again. Bots know their bot allies exactly. */
+  bashReadyIn(u: Unit, viewer: Unit): number {
+    if (u.team === viewer.team && u.isBot) return u.cdBash;
+    const tr = this.tracks.get(u.id);
+    return tr ? Math.max(0, tr.bashReadyAt - this.sim.time) : 0;
+  }
+
+  grappleReadyIn(u: Unit, viewer: Unit): number {
+    if (u.team === viewer.team && u.isBot) return u.cdGrapple;
+    const tr = this.tracks.get(u.id);
+    return tr ? Math.max(0, tr.grappleReadyAt - this.sim.time) : 0;
   }
 
   /** Expected reach of a unit's hook: what we have seen, or what an upgraded hook would do by now. */

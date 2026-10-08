@@ -4,12 +4,12 @@
 // Files: water/field (baked channel data), water/surface (main shader), water/ice, water/caustics,
 // water/falls, water/reflection, water/ripples, water/waves, water/textures, water/style.
 import * as THREE from 'three';
-import { riverAt } from '../../../shared/maps/helpers.ts';
+import { channelDepthAt, riverAt } from '../../../shared/maps/helpers.ts';
 import type { MapDef } from '../../../shared/maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt, tidalActive } from '../../../shared/sim/river.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { World } from '../../../shared/world.ts';
-import { WATER_LAYER, groundY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
+import { WATER_LAYER, bedY, groundY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
 import { createCausticsMaterial } from './water/caustics.ts';
 import { FallSheet } from './water/falls.ts';
 import { bakeField, buildRiverGrid, fieldUniforms, sampleField, type GridSpan } from './water/field.ts';
@@ -17,7 +17,7 @@ import { createIceMaterial } from './water/ice.ts';
 import { PlanarReflection } from './water/reflection.ts';
 import { Ripples } from './water/ripples.ts';
 import { waterStyle } from './water/style.ts';
-import { MAX_MOVERS, MAX_POURS, createSurfaceMaterial } from './water/surface.ts';
+import { MAX_LAMPS, MAX_MOVERS, MAX_POURS, createSurfaceMaterial } from './water/surface.ts';
 import { createPuffTexture, createWaterTextures } from './water/textures.ts';
 import { advanceWaves, makeWaves, waveHeight } from './water/waves.ts';
 
@@ -33,8 +33,9 @@ interface Extras {
 const extras = new WeakMap<WaterView, Extras>();
 
 /**
- * Optional, for exact mover wakes: pass the snapshot mover clock (Snapshot.mc, as used for the mover
- * views) every frame. Without it the water integrates its own clock, which can drift a little online.
+ * Recommended, for exact mover wakes: pass the same mover clock the client poses the mover views with
+ * (GameClient.updateMovers' `mc`) every frame. Without it the water calibrates itself from the
+ * surfaceHeight() queries made at the mover poses, and free-runs on real time when there are none.
  */
 export function syncWaterMovers(view: WaterView, moverClock: number): void {
   const e = extras.get(view);
@@ -128,6 +129,36 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   }
   const pours: THREE.Vector4[] = [];
   for (let i = 0; i < MAX_POURS; i++) pours.push(new THREE.Vector4(0, 0, 1, 0));
+  // lamp and lantern glints (dusk / night maps): positions come straight from the map data, so this
+  // works however the props module lights its lamps. Lamp heights match the props models.
+  const lamps: { x: number; y: number; z: number; col: THREE.Color; k: number; ph: number; r: number }[] = [];
+  if (night && tier >= 1) {
+    const gY = groundY(map);
+    const dock = map.id === 'cogwater' || map.id === 'frostfang';
+    const warm = new THREE.Color(0xffb468);
+    const swamp = new THREE.Color(0xc8ec6a);
+    for (const o of map.obstacles) {
+      if (o.shape !== 'circle' || o.kind !== 'lamppost') continue;
+      if (channelDepthAt(map, o.x, o.z) < -7) continue;
+      lamps.push({ x: o.x, y: gY + 3.2 * (o.scale ?? 1), z: o.z, col: warm, k: 1.25, ph: (o.seed ?? 0) * 1.7, r: 2.8 });
+    }
+    for (const d of map.decor) {
+      if (d.kind !== 'lantern') continue;
+      const off = 0.35 * d.scale;
+      const x = d.x + Math.cos(d.rot) * off;
+      const z = d.z - Math.sin(d.rot) * off;
+      if (channelDepthAt(map, x, z) < -7) continue;
+      lamps.push({ x, y: gY + 1.48 * d.scale, z, col: dock ? warm : swamp, k: dock ? 0.8 : 0.65, ph: d.seed * 2.3, r: 1.9 * d.scale });
+    }
+  }
+  const lampP: THREE.Vector4[] = [];
+  const lampC: THREE.Vector3[] = [];
+  for (let i = 0; i < MAX_LAMPS; i++) {
+    lampP.push(new THREE.Vector4(0, -100, 0, 0));
+    lampC.push(new THREE.Vector3());
+  }
+  const lampOrder: number[] = lamps.map((_, i) => i);
+  const lampDist = new Float32Array(lamps.length);
   const camFwd = new THREE.Vector3(0, -1, 0);
   const camNF = new THREE.Vector2(0.5, 400);
   const surgeDir = new THREE.Vector2(0, -1);
@@ -164,6 +195,9 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uMovN: { value: 0 },
     uPour: { value: pours },
     uPourN: { value: 0 },
+    uLampP: { value: lampP },
+    uLampC: { value: lampC },
+    uLampN: { value: 0 },
     uSlope: { value: tex.slope },
     uNoise: { value: tex.noise },
     uShallow: { value: lin(atm.waterShallow) },
@@ -180,6 +214,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uStyleB: { value: new THREE.Vector4(style.scum, style.oil, style.rain, style.reflect) },
     uStyleC: { value: new THREE.Vector4(style.glitter, style.sss, night ? style.nightLift : style.nightLift * 0.3, style.refract) },
     uStyleD: { value: new THREE.Vector4(tier >= 1 ? style.speck : 0, style.plips, tier >= 1 ? 1 : 0, waterfallMap && tidal ? 1 : 0) },
+    uStyleE: { value: new THREE.Vector4(style.hueDepth, style.scumGain, 1, 0) },
     uSpeckCol: { value: lin(style.speckColor || 0x888888) },
     uMurk: { value: style.murk },
     uHasCapture: { value: 0 },
@@ -322,8 +357,34 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   }
 
   // ---- movers (logs, floes, barges, rafts) for wakes
+  // The wakes must sit exactly under the mover views, which the game client poses from the snapshot
+  // mover clock. Best: the glue calls syncWaterMovers(). Without it the water calibrates itself from
+  // the surfaceHeight() queries the client makes at each mover's exact pose centre (a point exactly
+  // on that mover's lane), and only free-runs on real time when no such query arrives.
   const moverWorld = map.movers.length ? new World(map) : null;
+  const moverSpan = map.d + 16;
+  const sniffDz = new Float64Array(map.movers.length).fill(Number.NaN);
   let moverClock = 0;
+  let poseClock = 0;
+  let sniffing = false;
+  let lastReal = -1;
+  const sniffMover = (x: number, z: number): void => {
+    if (!moverWorld) return;
+    const c = riverAt(pts, z);
+    for (let i = 0; i < map.movers.length; i++) {
+      const m = map.movers[i];
+      if (Math.abs(m.speed) < 1e-4 || Math.abs(x - (c.x + m.lane * c.hw)) > 0.004) continue;
+      let dz = z - moverWorld.moverPoses[i].z;
+      dz -= Math.round(dz / moverSpan) * moverSpan;
+      if (Math.abs(dz) > 9) continue;
+      // runes rest on fixed river spots that can sit on a lane line: never mistake one for a mover
+      let rune = false;
+      for (const s of map.runeSpots) if (Math.abs(s.x - x) < 0.02 && Math.abs(s.z - z) < 0.02) rune = true;
+      if (rune) continue;
+      // keep the candidate closest to the prediction (a unit that happens to stand on the lane loses)
+      if (!(Math.abs(dz) >= Math.abs(sniffDz[i]))) sniffDz[i] = dz;
+    }
+  };
 
   // ---- planar reflection (high / ultra)
   let reflection: PlanarReflection | null = null;
@@ -357,6 +418,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         const bed = sampleField(field, field.bed, x, z);
         return Math.max(lowY, bed + 0.035);
       }
+      if (sniffing) sniffMover(x, z);
       const c = sampleField(field, field.chan, x, z);
       if (!(c > -field.ext)) return -Infinity;
       if (frozenNow) return c > -0.4 ? iceY : -Infinity;
@@ -475,13 +537,30 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
 
       // -- movers: replicate (or follow) the sim mover clock
       let nMov = 0;
+      const nowMs = performance.now();
+      // real time, capped like the solo session's catch-up, so a hitch never leaves the clock behind
+      const realDt = lastReal < 0 ? rdt : Math.max(0, Math.min(0.27, (nowMs - lastReal) / 1000));
+      lastReal = nowMs;
       if (moverWorld) {
         const ex = extras.get(view);
         const floating = moversFloat(river, config);
         const present = moversPresent(river, config);
-        if (ex && performance.now() - ex.syncedAt < 600) moverClock = ex.syncedClock;
-        else if (floating) moverClock += rdt;
+        let sum = 0;
+        let n = 0;
+        for (let i = 0; i < sniffDz.length; i++) {
+          const dz = sniffDz[i];
+          if (Number.isFinite(dz)) {
+            sum += dz / map.movers[i].speed;
+            n++;
+          }
+          sniffDz[i] = Number.NaN;
+        }
+        if (ex && nowMs - ex.syncedAt < 600) moverClock = ex.syncedClock;
+        else if (n > 0) moverClock = poseClock + sum / n;
+        else if (floating) moverClock += realDt;
         moverWorld.updateMovers(moverClock, present);
+        poseClock = moverClock;
+        sniffing = floating && !(ex && nowMs - ex.syncedAt < 600);
         if (floating && !frozenNow) {
           for (let i = 0; i < map.movers.length && nMov < MAX_MOVERS; i++) {
             const pz = moverWorld.moverPoses[i];
@@ -507,7 +586,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         if (s > 0.01 && nPour < MAX_POURS) {
           const w = f.sheet.opts.width;
           const dz = f.sheet.opts.dir.y;
-          pours[nPour].set(f.sheet.land.x, f.sheet.land.y + dz * 0.35, w * (f.kind === 'lock' ? 0.48 : 0.42), s * (f.kind === 'lock' ? 1 : 0.95));
+          pours[nPour].set(f.sheet.land.x, f.sheet.land.y + dz * 0.35, w * 0.5 * (dz < 0 ? -1 : 1), s * (f.kind === 'lock' ? 1 : 0.95));
           nPour++;
           // churn: a steady patter of ripples along the landing line
           const rate = (f.kind === 'lock' ? 5 : 3) * s * rdt;
@@ -568,10 +647,42 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         su.tDepth.value = null;
       }
 
+      // -- lamps: the nearest few to where the camera looks, each with a soft flame flicker
+      let nLamp = 0;
+      if (lamps.length) {
+        camera.getWorldPosition(focus);
+        const along = camFwd.y < -0.05 ? (levelY - focus.y) / camFwd.y : 20;
+        const lx = focus.x + camFwd.x * along;
+        const lz = focus.z + camFwd.z * along;
+        for (let i = 0; i < lamps.length; i++) {
+          const l = lamps[i];
+          lampDist[i] = (l.x - lx) * (l.x - lx) + (l.z - lz) * (l.z - lz);
+        }
+        for (let i = 1; i < lampOrder.length; i++) {
+          const v = lampOrder[i];
+          let j = i - 1;
+          while (j >= 0 && lampDist[lampOrder[j]] > lampDist[v]) {
+            lampOrder[j + 1] = lampOrder[j];
+            j--;
+          }
+          lampOrder[j + 1] = v;
+        }
+        for (let i = 0; i < lampOrder.length && nLamp < MAX_LAMPS; i++) {
+          const l = lamps[lampOrder[i]];
+          if (lampDist[lampOrder[i]] > 34 * 34) break;
+          const flick = 0.9 + 0.1 * Math.sin(time * 9.1 + l.ph) * Math.sin(time * 5.3 + l.ph * 2.1);
+          lampP[nLamp].set(l.x, l.y, l.z, l.r);
+          lampC[nLamp].set(l.col.r, l.col.g, l.col.b).multiplyScalar(l.k * flick);
+          nLamp++;
+        }
+      }
+      su.uLampN.value = nLamp;
+
       // -- uniforms
       su.uTime.value = time;
       su.uLevelY.value = levelY - (freezeMap && freezeProg > 0 ? 0.05 * freezeProg : 0) - breakDip;
       su.uWaveDamp.value = waveDamp;
+      (su.uStyleE.value as THREE.Vector4).z = Math.max(0.12, Math.min(1, (levelY - bedY(map)) / 1.3));
       su.uSurge.value = surge;
       su.uSurgePhase.value = surgePhase;
       su.uPuddleMode.value = puddleMode;

@@ -40,13 +40,17 @@ export interface WaterStyle {
   /** slow drifting debris specks (leaves, petals, ice dust) colour, 0 = none */
   speckColor: number;
   speck: number;
+  /** metres for the water's own colour to go from waterShallow to waterDeep (0 = clarity * 0.5) */
+  hueDepth: number;
+  /** brightness of the swamp film */
+  scumGain: number;
 }
 
 const BASE: WaterStyle = {
   clarity: 1.6,
   waveAmp: 0.8,
   waveLen: 1,
-  choppy: 0.9,
+  choppy: 0.4,
   caustics: 0.5,
   streaks: 0.5,
   shoreFoam: 1,
@@ -63,33 +67,37 @@ const BASE: WaterStyle = {
   murk: 0,
   speckColor: 0,
   speck: 0,
+  hueDepth: 0,
+  scumGain: 1,
 };
 
 const BY_MAP: Partial<Record<MapDef['id'], Partial<WaterStyle>>> = {
   muckmire: {
     clarity: 0.75,
     waveAmp: 0.55,
-    choppy: 0.75,
+    choppy: 0.34,
     caustics: 0.22,
     streaks: 0.4,
     shoreFoam: 0.8,
     scum: 1,
     scumColor: 0x6d8f2a,
-    reflect: 1.0,
+    reflect: 1.4,
     glitter: 0.9,
     sss: 0.35,
     nightLift: 0.02,
     plips: 0.9,
     refract: 0.8,
-    murk: 0.38,
+    murk: 0.15,
     speckColor: 0x8a6a2a,
     speck: 0.6,
+    hueDepth: 0.55,
+    scumGain: 0.8,
   },
   frostfang: {
     clarity: 2.4,
     waveAmp: 0.9,
-    choppy: 1.05,
-    caustics: 0.55,
+    choppy: 0.45,
+    caustics: 0.3,
     streaks: 0.75,
     shoreFoam: 1.1,
     reflect: 1.15,
@@ -99,11 +107,12 @@ const BY_MAP: Partial<Record<MapDef['id'], Partial<WaterStyle>>> = {
     plips: 0.25,
     speckColor: 0xeaf4ff,
     speck: 0.5,
+    hueDepth: 1.1,
   },
   coralcove: {
     clarity: 4.2,
     waveAmp: 0.85,
-    choppy: 0.95,
+    choppy: 0.34,
     caustics: 1.0,
     streaks: 0.4,
     shoreFoam: 1.15,
@@ -115,29 +124,32 @@ const BY_MAP: Partial<Record<MapDef['id'], Partial<WaterStyle>>> = {
     refract: 1.2,
     speckColor: 0xfff2a8,
     speck: 0.25,
+    hueDepth: 1.25,
   },
   cogwater: {
     clarity: 0.95,
     waveAmp: 0.45,
-    choppy: 0.6,
-    caustics: 0.18,
-    streaks: 0.35,
+    choppy: 0.36,
+    caustics: 0,
+    streaks: 0.2,
     shoreFoam: 0.7,
     oil: 1,
     murk: 0.12,
     reflect: 1.5,
     glitter: 0.8,
     sss: 0.3,
-    nightLift: 0.03,
+    nightLift: 0.04,
     plips: 0.2,
     refract: 0.8,
     speckColor: 0,
     speck: 0,
+    hueDepth: 0.7,
   },
 };
 
 export function waterStyle(map: MapDef): WaterStyle {
   const s: WaterStyle = { ...BASE, ...(BY_MAP[map.id] ?? {}) };
   s.rain = map.atmosphere.weather === 'rain' ? 1 : 0;
+  if (!(s.hueDepth > 0)) s.hueDepth = Math.max(0.3, s.clarity * 0.5);
   return s;
 }

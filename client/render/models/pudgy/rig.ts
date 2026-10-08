@@ -48,7 +48,8 @@ export interface RigNodes {
 const SHADOW: Record<Quality, ReadonlySet<PartName>> = {
   low: new Set(),
   medium: new Set<PartName>(['body', 'head']),
-  high: new Set<PartName>(['body', 'head', 'hat', 'upperL', 'lowerL', 'upperR', 'lowerR', 'legL', 'legR', 'hook', 'jaw']),
+  // legs and jaw sit under the belly / beard and their shadows merge with the body's
+  high: new Set<PartName>(['body', 'head', 'hat', 'upperL', 'lowerL', 'upperR', 'lowerR', 'hook']),
   ultra: new Set<PartName>(['body', 'head', 'hat', 'hatExtra', 'upperL', 'lowerL', 'upperR', 'lowerR', 'legL', 'legR', 'hook', 'jaw']),
 };
 

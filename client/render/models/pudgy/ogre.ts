@@ -19,6 +19,8 @@ const LEAF_LIGHT = 0x6e9e36;
 const REED = 0xc2a85a;
 const MUSH = 0xc4562e;
 const MUSH_SPOT = 0xf2e2c2;
+/** body mushrooms: a team-neutral tan so they never read as a team colour from above */
+const SHROOM = 0xb98a52;
 const STEM = 0xe6dac0;
 const MUD = 0x5b4128;
 const VINE = 0x3f6a22;
@@ -85,7 +87,7 @@ function mossPatch(g: RGrid, cx: number, cy: number, cz: number, r: number, seed
 function mushroom(g: RGrid, x: number, y: number, z: number, s: number, lean = 0): void {
   g.on(CH.cloth, () => {
     g.box(x, y, z, x, y + Math.round(s), z, STEM);
-    g.blob(x + 0.5 + lean, y + s + 1, z + 0.5, s * 0.9 + 0.6, s * 0.45 + 0.4, s * 0.9 + 0.6, (xx, yy, zz) => (hashVox(xx, yy, zz, 19) > 0.78 && yy >= y + s + 1 ? MUSH_SPOT : shade(MUSH, 0.92 + hashVox(xx, yy, zz, 18) * 0.15)), (_x, yy) => yy >= y + s + 0.5);
+    g.blob(x + 0.5 + lean, y + s + 1, z + 0.5, s * 0.9 + 0.6, s * 0.45 + 0.4, s * 0.9 + 0.6, (xx, yy, zz) => (hashVox(xx, yy, zz, 19) > 0.78 && yy >= y + s + 1 ? MUSH_SPOT : shade(SHROOM, 0.92 + hashVox(xx, yy, zz, 18) * 0.15)), (_x, yy) => yy >= y + s + 0.5);
   });
 }
 
@@ -144,7 +146,7 @@ function buildBody(accent: number, t: TeamCols): RGrid {
 
   // team sash: left shoulder to right hip, front and back
   const sash = teamPaint(t, 28, 4, 22);
-  const onSash = (x: number, y: number) => Math.abs(y - (8.5 + (x + 10) * 0.62)) < 2.2;
+  const onSash = (x: number, y: number) => Math.abs(y - (8.5 + (x + 10) * 0.62)) < 3.0;
   g.on(CH.cloth, () => {
     g.shell(0, 11.5, 1.5, 11, 7.6, 9.5, 0.95, 0.2, (x, y, z) => onSash(x, y) && y > 7, sash);
     g.shell(0, 16.5, -2.5, 9, 5.2, 7, 0.95, 0.2, (x, y, z) => onSash(x, y) && y > 7, sash);
@@ -419,7 +421,8 @@ function buildHat(hat: number, t: TeamCols): { hat: RGrid | null; extra: RGrid |
       g.on(CH.cloth, () => {
         g.blob(0, 27, cz, 8.2, 4.4, 8, (x, y, z) => {
           const spot = hashVox(Math.floor(x / 2), Math.floor(y / 2), Math.floor(z / 2), 71) > 0.72;
-          return spot && y > 27 ? MUSH_SPOT : shade(MUSH, 0.9 + hashVox(x, y, z, 72) * 0.16 + (y - 27) * 0.03);
+          // team-tinted cap so a big red toadstool never reads as the wrong team from above
+          return spot && y > 27 ? MUSH_SPOT : shade(mix(t.main, MUSH, 0.2), 0.9 + hashVox(x, y, z, 72) * 0.16 + (y - 27) * 0.03);
         }, (x, y) => y >= 27);
         // gills underneath
         for (let z = cz - 7; z <= cz + 7; z++)
@@ -427,7 +430,7 @@ function buildHat(hat: number, t: TeamCols): { hat: RGrid | null; extra: RGrid |
       });
       g.on(CH.rubber, () => {
         // team-coloured band of woven grass round the stem
-        for (let z = cz - 6; z <= cz + 6; z++) for (let x = -6; x <= 5; x++) if (Math.abs(Math.hypot(x + 0.5, z + 0.5 - cz) - 5.6) < 0.7) g.add(x, 26, z, t.main);
+        for (let z = cz - 6; z <= cz + 6; z++) for (let x = -6; x <= 5; x++) if (Math.abs(Math.hypot(x + 0.5, z + 0.5 - cz) - 5.6) < 0.7) g.add(x, 26, z, t.dark);
       });
       return { hat: g, extra: null };
     }
@@ -544,7 +547,7 @@ function buildHat(hat: number, t: TeamCols): { hat: RGrid | null; extra: RGrid |
 // Arms, legs, hook
 // ---------------------------------------------------------------------------------------------
 
-function buildUpperArm(accent: number): RGrid {
+function buildUpperArm(accent: number, t: TeamCols): RGrid {
   const g = new RGrid(9, 10, 9, 6, 10, -5);
   const [sx, , sz] = SK.shoulder;
   g.on(CH.skin, () => {
@@ -553,6 +556,8 @@ function buildUpperArm(accent: number): RGrid {
   });
   warts(g, () => true, 0.12, 83);
   mossPatch(g, sx + 1, 19, sz - 1, 1.8, 84);
+  // woven team armband (reads from the top-down camera)
+  g.on(CH.cloth, () => g.cyl('y', sx, sz, 2.95, 14, 15, (x, y, z) => ((x + y + z) % 3 === 0 ? t.light : shade(t.main, 0.95 + hashVox(x, y, z, 86) * 0.08))));
   if (accent === 2) g.repaint((x, y) => Math.abs(y - 15) < 0.6 || Math.abs(y - 13) < 0.6, CH.skin, MUD, true);
   if (accent === 7) g.repaint((x, y, z) => hashVox(Math.floor(x / 2), Math.floor(y / 2), Math.floor(z / 2), 85) > 0.78, CH.pulse, 0x7ff4e4, true);
   return g;
@@ -645,10 +650,18 @@ function buildHook(t: TeamCols): RGrid {
 
 // ---------------------------------------------------------------------------------------------
 
+/** Dominant colour of each accent option (death debris, portraits). */
+const ACCENT_COL = [LEAF_LIGHT, BONE, MUD, 0xd8bf66, 0x5fae3a, VINE, 0xe0c898, 0x6ff0e0] as const;
+/** Dominant colour of each hat option (0 = bare head: moss). */
+const HAT_COL = [MOSS[1], MUSH, 0x5a9e3a, BONE, 0x8a6a46, MOSS[2], 0x4c6b2a, 0xfff27a] as const;
+
 export function ogrePalette(c: Cosmetics, team: Team): PudgyPalette {
-  void c;
+  const n = COSMETIC_NAMES.ogre;
   const t = TEAM_COLORS[team];
-  return { skin: SKIN, skinDark: SKIN_DARK, cloth: t.main, accent: MOSS[1], metal: BONE, extra: [BELLY, MUSH, LEAF, t.dark] };
+  const accent = ACCENT_COL[wrap(c.accent, n.accents.length)];
+  const hi = wrap(c.hat, n.hats.length);
+  const hat = hi === 1 ? mix(t.main, MUSH, 0.2) : HAT_COL[hi];
+  return { skin: SKIN, skinDark: SKIN_DARK, cloth: t.main, accent, metal: BONE, extra: [BELLY, hat, LEAF, t.dark] };
 }
 
 export function buildOgre(c: Cosmetics, team: Team): FamilyBuild {
@@ -664,8 +677,8 @@ export function buildOgre(c: Cosmetics, team: Team): FamilyBuild {
     head: part(k(`head${face}.${hat === 0 || hat === 7 ? 1 : 0}`), () => buildHead(face, hat === 0 || hat === 7), SK.neck),
     jaw: part(k(`jaw${face}`), () => buildJaw(face), SK.jaw),
     eyes: part(k(`eyes${face === 3 ? 1 : 0}`), () => buildEyes(face), SK.eyes),
-    upperL: part(k(`uarm${accent}`), () => buildUpperArm(accent), SK.shoulder),
-    upperR: partMirrored(k(`uarm${accent}`) + 'R', () => buildUpperArm(accent), SK.shoulder),
+    upperL: part(k(`uarm${accent}`), () => buildUpperArm(accent, t), SK.shoulder),
+    upperR: partMirrored(k(`uarm${accent}`) + 'R', () => buildUpperArm(accent, t), SK.shoulder),
     lowerL: part(k(`larm${accent}`), () => buildLowerArm(accent, t, false), SK.elbow),
     lowerR: partMirrored(k(`larm${accent}`) + 'R', () => buildLowerArm(accent, t, true), SK.elbow),
     legL: part(k(`leg${accent === 5 ? 1 : 0}`), () => buildLeg(accent), SK.leg),

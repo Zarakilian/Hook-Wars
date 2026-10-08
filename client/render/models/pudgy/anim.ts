@@ -134,6 +134,113 @@ const SHOT_DUR: Record<ShotKind, number> = {
 const ACTIONS: ReadonlySet<ShotKind> = new Set<ShotKind>(['throw', 'grapple', 'bash', 'melee', 'celebrate']);
 const CAST_SHOT = { hook: 'throw', grapple: 'grapple', bash: 'bash', melee: 'melee' } as const;
 
+// One-shot keyframe tables: key times (s) and channel values, hoisted so nothing allocates per frame.
+// Tables marked "x side" are multiplied by the shot's side sign at runtime.
+const KT = {
+  throw: [0, 0.1, 0.16, 0.3, 0.55],
+  grapple: [0, 0.09, 0.15, 0.3, 0.5],
+  bash: [0, 0.11, 0.17, 0.32, 0.6],
+  melee: [0, 0.18, 0.25, 0.38, 0.6],
+  hit: [0, 0.05, 0.16, 0.42],
+  spawn: [0, 0.14, 0.28, 0.42, 0.62],
+  spawnYaw: [0, 0.3, 0.62],
+  land: [0, 0.06, 0.18, 0.36],
+} as const;
+
+const KF = {
+  throw: {
+    rsx: [0.2, 1.0, -1.7, -1.25, -1.16],
+    rsz: [-0.3, -1.0, -0.2, 0.25, 0.3],
+    rsy: [0, 0.5, -0.2, 0, 0],
+    re: [-0.4, -1.7, 0.05, 0.05, 0.05],
+    by: [0, -0.6, 0.5, 0.35, 0],
+    tx: [0, -0.13, 0.24, 0.1, 0],
+    sy: [0, -0.1, 0.13, 0.01, 0],
+    sxz: [0, 0.06, -0.06, 0, 0],
+    lsx: [0, -0.7, 0.6, 0.3, 0],
+    lsz: [0, 0.4, 0.2, 0.1, 0],
+    jaw: [0, 0.1, 0.65, 0.2, 0],
+    ny: [0, 0.35, -0.25, -0.1, 0],
+    eye: [0, 0.55, -0.2, 0, 0],
+    rz: [0, -0.05, 0.08, 0.03, 0],
+  },
+  grapple: {
+    rsx: [0, 0.8, -2.9, -2.4, -2.0],
+    rsz: [0, -0.4, -0.1, 0, 0],
+    re: [-0.2, -1.5, -0.1, -0.2, -0.3],
+    sy: [0, -0.15, 0.16, 0.05, 0],
+    sxz: [0, 0.08, -0.06, 0, 0],
+    ry: [0, -0.04, 0.1, 0.03, 0],
+    tx: [0, -0.15, 0.18, 0.1, 0],
+    lsx: [0, -0.4, 0.5, 0.3, 0],
+    jaw: [0, 0.1, 0.55, 0.3, 0],
+    nx: [0, 0.1, -0.35, -0.2, 0],
+  },
+  bash: {
+    tx: [0, -0.24, 0.4, 0.25, 0],
+    rz: [0, -0.1, 0.42, 0.32, 0],
+    sy: [0, -0.15, 0.08, 0.02, 0],
+    sxz: [0, 0.1, -0.03, 0, 0],
+    belly: [0, -0.08, 0.5, 0.3, 0],
+    bx: [0, -0.12, -0.3, -0.18, 0],
+    sx: [0, 0.5, 1.0, 0.7, 0],
+    /** left shoulder out; the right one uses the negated value */
+    sz: [0, 0.3, 1.1, 0.8, 0],
+    /** right leg back; the left one uses the negated value */
+    leg: [0, 0, 0.35, 0.2, 0],
+    jaw: [0, 0, 0.75, 0.4, 0],
+    eye: [0, 0.6, -0.35, 0, 0],
+    nx: [0, 0.1, -0.3, -0.1, 0],
+  },
+  melee: {
+    sx: [0, -2.9, -0.85, -1.0, 0],
+    el: [-0.3, -1.6, -0.15, -0.3, 0],
+    /** x side */
+    sz: [0, 0.25, 0.05, 0, 0],
+    tx: [0, -0.15, 0.26, 0.15, 0],
+    sy: [0, 0.08, -0.13, 0, 0],
+    sxz: [0, -0.03, 0.08, 0, 0],
+    /** x side */
+    by: [0, 0.2, -0.35, -0.2, 0],
+    jaw: [0, 0.25, 0.55, 0.2, 0],
+    eye: [0, -0.2, 0.6, 0, 0],
+  },
+  hit: {
+    nx: [0, -0.5, 0.1, 0],
+    /** x side */
+    nz: [0, 0.28, -0.06, 0],
+    bx: [0, -0.26, 0.05, 0],
+    /** x side */
+    by: [0, 0.2, -0.05, 0],
+    tx: [0, -0.12, 0.03, 0],
+    sy: [0, -0.13, 0.05, 0],
+    sxz: [0, 0.09, -0.02, 0],
+    lsx: [0, -0.6, 0, 0],
+    rsx: [0, -0.5, 0, 0],
+    /** left shoulder out; the right one uses the negated value */
+    sz: [0, 0.45, 0, 0],
+    eye: [0, 1.2, 0.4, 0],
+    jaw: [0, 0.55, 0.2, 0],
+  },
+  spawn: {
+    pop: [-0.9, 0.24, -0.08, 0.03, 0],
+    yaw: [-Math.PI, 0.15, 0],
+    sx: [-2.2, -2.5, -1.2, -0.3, 0],
+    /** left shoulder out; the right one uses the negated value */
+    sz: [0.6, 0.5, 0.2, 0, 0],
+    jaw: [0.3, 0.6, 0.3, 0.1, 0],
+    eye: [0.8, -0.3, 0, 0, 0],
+  },
+  land: {
+    sy: [0, -0.22, 0.06, 0],
+    sxz: [0, 0.14, -0.03, 0],
+    /** left shoulder out; the right one uses the negated value */
+    sz: [0, 0.5, 0.1, 0],
+    nx: [0, 0.2, -0.05, 0],
+    eye: [0, 0.8, 0, 0],
+  },
+} as const;
+
 export class PudgyAnimator {
   private readonly n: RigNodes;
   private readonly fb: FamilyBuild;
@@ -213,6 +320,8 @@ export class PudgyAnimator {
   private exert = 0;
   private dropT = 0;
   private dropSide = 1;
+  /** weight of the layer currently being blended (see ov / ad) */
+  private sw = 1;
 
   /** Optional footstep callback (foot 0 = left, 1 = right; heavy = landing or stomp). */
   onFootstep: ((foot: 0 | 1, heavy: boolean) => void) | null = null;
@@ -546,13 +655,11 @@ export class PudgyAnimator {
   private poseHookOut(t: number): void {
     const p = this.pose;
     const w = this.hookW;
-    const mixTo = (c: number, v: number) => {
-      p[c] += (v - p[c]) * w;
-    };
-    mixTo(RSX, -1.16 + Math.sin(t * 31) * 0.02);
-    mixTo(RSY, 0);
-    mixTo(RSZ, 0.3);
-    mixTo(RE, 0.05);
+    this.sw = w;
+    this.ov(RSX, -1.16 + Math.sin(t * 31) * 0.02);
+    this.ov(RSY, 0);
+    this.ov(RSZ, 0.3);
+    this.ov(RE, 0.05);
     p[BY] += 0.28 * w;
     p[LSX] += 0.3 * w;
     p[LSZ] += 0.22 * w;
@@ -692,91 +799,101 @@ export class PudgyAnimator {
     }
   }
 
+  /** Blend channel c toward v by the current layer weight. */
+  private ov(c: number, v: number): void {
+    const p = this.pose;
+    p[c] += (v - p[c]) * this.sw;
+  }
+
+  /** Add v to channel c, scaled by the current layer weight. */
+  private ad(c: number, v: number): void {
+    this.pose[c] += v * this.sw;
+  }
+
   private shot(s: Shot, time: number): void {
     const p = this.pose;
     const t = s.t;
     const dur = s.dur;
     // envelope: in fast, out over the tail
     const w = Math.min(1, t / 0.035) * (1 - smooth01((t - (dur - 0.16)) / 0.16));
-    const ov = (c: number, v: number) => {
-      p[c] += (v - p[c]) * w;
-    };
-    const ad = (c: number, v: number) => {
-      p[c] += v * w;
-    };
+    this.sw = w;
     if (s.kind !== 'hit' && s.kind !== 'land' && !(s.kind === 'melee' && s.side > 0)) this.rBusy = Math.max(this.rBusy, w);
     switch (s.kind) {
       case 'throw': {
         // side-arm whip: wind back (0.1 s), release (0.12-0.16 s), follow through
-        const T = [0, 0.1, 0.16, 0.3, 0.55];
-        ov(RSX, kf(t, T, [0.2, 1.0, -1.7, -1.25, -1.16]));
-        ov(RSZ, kf(t, T, [-0.3, -1.0, -0.2, 0.25, 0.3]));
-        ov(RSY, kf(t, T, [0, 0.5, -0.2, 0, 0]));
-        ov(RE, kf(t, T, [-0.4, -1.7, 0.05, 0.05, 0.05]));
-        ad(BY, kf(t, T, [0, -0.6, 0.5, 0.35, 0]));
-        ad(TX, kf(t, T, [0, -0.13, 0.24, 0.1, 0]));
-        ad(SY, kf(t, T, [0, -0.1, 0.13, 0.01, 0]));
-        ad(SXZ, kf(t, T, [0, 0.06, -0.06, 0, 0]));
-        ad(LSX, kf(t, T, [0, -0.7, 0.6, 0.3, 0]));
-        ad(LSZ, kf(t, T, [0, 0.4, 0.2, 0.1, 0]));
-        ad(JAW, kf(t, T, [0, 0.1, 0.65, 0.2, 0]));
-        ad(NY, kf(t, T, [0, 0.35, -0.25, -0.1, 0]));
-        ad(EYE, kf(t, T, [0, 0.55, -0.2, 0, 0]));
-        ad(RZ, kf(t, T, [0, -0.05, 0.08, 0.03, 0]));
+        const T = KT.throw;
+        const K = KF.throw;
+        this.ov(RSX, kf(t, T, K.rsx));
+        this.ov(RSZ, kf(t, T, K.rsz));
+        this.ov(RSY, kf(t, T, K.rsy));
+        this.ov(RE, kf(t, T, K.re));
+        this.ad(BY, kf(t, T, K.by));
+        this.ad(TX, kf(t, T, K.tx));
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(LSX, kf(t, T, K.lsx));
+        this.ad(LSZ, kf(t, T, K.lsz));
+        this.ad(JAW, kf(t, T, K.jaw));
+        this.ad(NY, kf(t, T, K.ny));
+        this.ad(EYE, kf(t, T, K.eye));
+        this.ad(RZ, kf(t, T, K.rz));
         break;
       }
       case 'grapple': {
         // overhead lob
-        const T = [0, 0.09, 0.15, 0.3, 0.5];
-        ov(RSX, kf(t, T, [0, 0.8, -2.9, -2.4, -2.0]));
-        ov(RSZ, kf(t, T, [0, -0.4, -0.1, 0, 0]));
-        ov(RE, kf(t, T, [-0.2, -1.5, -0.1, -0.2, -0.3]));
-        ad(SY, kf(t, T, [0, -0.15, 0.16, 0.05, 0]));
-        ad(SXZ, kf(t, T, [0, 0.08, -0.06, 0, 0]));
-        ad(RY, kf(t, T, [0, -0.04, 0.1, 0.03, 0]));
-        ad(TX, kf(t, T, [0, -0.15, 0.18, 0.1, 0]));
-        ad(LSX, kf(t, T, [0, -0.4, 0.5, 0.3, 0]));
-        ad(JAW, kf(t, T, [0, 0.1, 0.55, 0.3, 0]));
-        ad(NX, kf(t, T, [0, 0.1, -0.35, -0.2, 0]));
+        const T = KT.grapple;
+        const K = KF.grapple;
+        this.ov(RSX, kf(t, T, K.rsx));
+        this.ov(RSZ, kf(t, T, K.rsz));
+        this.ov(RE, kf(t, T, K.re));
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(RY, kf(t, T, K.ry));
+        this.ad(TX, kf(t, T, K.tx));
+        this.ad(LSX, kf(t, T, K.lsx));
+        this.ad(JAW, kf(t, T, K.jaw));
+        this.ad(NX, kf(t, T, K.nx));
         break;
       }
       case 'bash': {
         // belly thrust lunge
-        const T = [0, 0.11, 0.17, 0.32, 0.6];
-        ad(TX, kf(t, T, [0, -0.24, 0.4, 0.25, 0]));
-        ad(RZ, kf(t, T, [0, -0.1, 0.42, 0.32, 0]));
-        ad(SY, kf(t, T, [0, -0.15, 0.08, 0.02, 0]));
-        ad(SXZ, kf(t, T, [0, 0.1, -0.03, 0, 0]));
-        ad(BELLY, kf(t, T, [0, -0.08, 0.5, 0.3, 0]));
-        ad(BX, kf(t, T, [0, -0.12, -0.3, -0.18, 0]));
-        ov(RSX, kf(t, T, [0, 0.5, 1.0, 0.7, 0]));
-        ov(LSX, kf(t, T, [0, 0.5, 1.0, 0.7, 0]));
-        ov(RSZ, kf(t, T, [0, -0.3, -1.1, -0.8, 0]));
-        ov(LSZ, kf(t, T, [0, 0.3, 1.1, 0.8, 0]));
-        ad(LLX, kf(t, T, [0, 0, -0.35, -0.2, 0]));
-        ad(RLX, kf(t, T, [0, 0, 0.35, 0.2, 0]));
-        ad(JAW, kf(t, T, [0, 0, 0.75, 0.4, 0]));
-        ad(EYE, kf(t, T, [0, 0.6, -0.35, 0, 0]));
-        ad(NX, kf(t, T, [0, 0.1, -0.3, -0.1, 0]));
+        const T = KT.bash;
+        const K = KF.bash;
+        this.ad(TX, kf(t, T, K.tx));
+        this.ad(RZ, kf(t, T, K.rz));
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(BELLY, kf(t, T, K.belly));
+        this.ad(BX, kf(t, T, K.bx));
+        this.ov(RSX, kf(t, T, K.sx));
+        this.ov(LSX, kf(t, T, K.sx));
+        this.ov(RSZ, -kf(t, T, K.sz));
+        this.ov(LSZ, kf(t, T, K.sz));
+        this.ad(LLX, -kf(t, T, K.leg));
+        this.ad(RLX, kf(t, T, K.leg));
+        this.ad(JAW, kf(t, T, K.jaw));
+        this.ad(EYE, kf(t, T, K.eye));
+        this.ad(NX, kf(t, T, K.nx));
         if (t > 0.15 && t - 0.017 <= 0.15) this.belly.kick(4);
         break;
       }
       case 'melee': {
         // overhead wallop with one hand
-        const T = [0, 0.18, 0.25, 0.38, 0.6];
+        const T = KT.melee;
+        const K = KF.melee;
         const side = s.side;
         const sx = side > 0 ? LSX : RSX;
         const sz = side > 0 ? LSZ : RSZ;
         const el = side > 0 ? LE : RE;
-        ov(sx, kf(t, T, [0, -2.9, -0.85, -1.0, 0]));
-        ov(el, kf(t, T, [-0.3, -1.6, -0.15, -0.3, 0]));
-        ov(sz, kf(t, T, [0, 0.25 * side, 0.05 * side, 0, 0]));
-        ad(TX, kf(t, T, [0, -0.15, 0.26, 0.15, 0]));
-        ad(SY, kf(t, T, [0, 0.08, -0.13, 0, 0]));
-        ad(SXZ, kf(t, T, [0, -0.03, 0.08, 0, 0]));
-        ad(BY, kf(t, T, [0, 0.2 * side, -0.35 * side, -0.2 * side, 0]));
-        ad(JAW, kf(t, T, [0, 0.25, 0.55, 0.2, 0]));
-        ad(EYE, kf(t, T, [0, -0.2, 0.6, 0, 0]));
+        this.ov(sx, kf(t, T, K.sx));
+        this.ov(el, kf(t, T, K.el));
+        this.ov(sz, kf(t, T, K.sz) * side);
+        this.ad(TX, kf(t, T, K.tx));
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(BY, kf(t, T, K.by) * side);
+        this.ad(JAW, kf(t, T, K.jaw));
+        this.ad(EYE, kf(t, T, K.eye));
         if (t > 0.25 && t - 0.017 <= 0.25) {
           this.belly.kick(-2.5);
           this.hatX.kick(4);
@@ -784,34 +901,36 @@ export class PudgyAnimator {
         break;
       }
       case 'hit': {
-        const T = [0, 0.05, 0.16, 0.42];
+        const T = KT.hit;
+        const K = KF.hit;
         const sg = s.side;
-        ad(NX, kf(t, T, [0, -0.5, 0.1, 0]));
-        ad(NZ, kf(t, T, [0, 0.28 * sg, -0.06 * sg, 0]));
-        ad(BX, kf(t, T, [0, -0.26, 0.05, 0]));
-        ad(BY, kf(t, T, [0, 0.2 * sg, -0.05 * sg, 0]));
-        ad(TX, kf(t, T, [0, -0.12, 0.03, 0]));
-        ad(SY, kf(t, T, [0, -0.13, 0.05, 0]));
-        ad(SXZ, kf(t, T, [0, 0.09, -0.02, 0]));
-        ad(LSX, kf(t, T, [0, -0.6, 0, 0]));
-        ad(RSX, kf(t, T, [0, -0.5, 0, 0]));
-        ad(LSZ, kf(t, T, [0, 0.45, 0, 0]));
-        ad(RSZ, kf(t, T, [0, -0.45, 0, 0]));
-        ad(EYE, kf(t, T, [0, 1.2, 0.4, 0]));
-        ad(JAW, kf(t, T, [0, 0.55, 0.2, 0]));
+        this.ad(NX, kf(t, T, K.nx));
+        this.ad(NZ, kf(t, T, K.nz) * sg);
+        this.ad(BX, kf(t, T, K.bx));
+        this.ad(BY, kf(t, T, K.by) * sg);
+        this.ad(TX, kf(t, T, K.tx));
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(LSX, kf(t, T, K.lsx));
+        this.ad(RSX, kf(t, T, K.rsx));
+        this.ad(LSZ, kf(t, T, K.sz));
+        this.ad(RSZ, -kf(t, T, K.sz));
+        this.ad(EYE, kf(t, T, K.eye));
+        this.ad(JAW, kf(t, T, K.jaw));
         break;
       }
       case 'spawn': {
-        const T = [0, 0.14, 0.28, 0.42, 0.62];
+        const T = KT.spawn;
+        const K = KF.spawn;
         // full override of scale and spin, independent of the envelope fade-in
-        p[POP] += kf(t, T, [-0.9, 0.24, -0.08, 0.03, 0]);
-        p[YAW] += kf(t, [0, 0.3, 0.62], [-Math.PI, 0.15, 0]);
-        ad(LSX, kf(t, T, [-2.2, -2.5, -1.2, -0.3, 0]));
-        ad(RSX, kf(t, T, [-2.2, -2.5, -1.2, -0.3, 0]));
-        ad(LSZ, kf(t, T, [0.6, 0.5, 0.2, 0, 0]));
-        ad(RSZ, kf(t, T, [-0.6, -0.5, -0.2, 0, 0]));
-        ad(JAW, kf(t, T, [0.3, 0.6, 0.3, 0.1, 0]));
-        ad(EYE, kf(t, T, [0.8, -0.3, 0, 0, 0]));
+        p[POP] += kf(t, T, K.pop);
+        p[YAW] += kf(t, KT.spawnYaw, K.yaw);
+        this.ad(LSX, kf(t, T, K.sx));
+        this.ad(RSX, kf(t, T, K.sx));
+        this.ad(LSZ, kf(t, T, K.sz));
+        this.ad(RSZ, -kf(t, T, K.sz));
+        this.ad(JAW, kf(t, T, K.jaw));
+        this.ad(EYE, kf(t, T, K.eye));
         if (t > 0.14 && t - 0.017 <= 0.14) {
           this.belly.kick(3);
           this.hatX.kick(-6);
@@ -819,13 +938,14 @@ export class PudgyAnimator {
         break;
       }
       case 'land': {
-        const T = [0, 0.06, 0.18, 0.36];
-        ad(SY, kf(t, T, [0, -0.22, 0.06, 0]));
-        ad(SXZ, kf(t, T, [0, 0.14, -0.03, 0]));
-        ad(LSZ, kf(t, T, [0, 0.5, 0.1, 0]));
-        ad(RSZ, kf(t, T, [0, -0.5, -0.1, 0]));
-        ad(NX, kf(t, T, [0, 0.2, -0.05, 0]));
-        ad(EYE, kf(t, T, [0, 0.8, 0, 0]));
+        const T = KT.land;
+        const K = KF.land;
+        this.ad(SY, kf(t, T, K.sy));
+        this.ad(SXZ, kf(t, T, K.sxz));
+        this.ad(LSZ, kf(t, T, K.sz));
+        this.ad(RSZ, -kf(t, T, K.sz));
+        this.ad(NX, kf(t, T, K.nx));
+        this.ad(EYE, kf(t, T, K.eye));
         if (t < 0.02) {
           this.belly.kick(-3);
           this.hatX.kick(6);
@@ -833,61 +953,56 @@ export class PudgyAnimator {
         break;
       }
       case 'celebrate':
-        this.celebrate(t, time, w);
+        this.celebrate(t, time);
         break;
     }
   }
 
-  private celebrate(t: number, time: number, w: number): void {
-    const p = this.pose;
-    const ov = (c: number, v: number) => {
-      p[c] += (v - p[c]) * w;
-    };
-    const ad = (c: number, v: number) => {
-      p[c] += v * w;
-    };
+  /** Family victory dance. Uses the shot weight already stored in this.sw. */
+  private celebrate(t: number, time: number): void {
+    const w = this.sw;
     const kind = this.fb.style.kind;
     if (kind === 'swagger') {
       // belly drum
       const d = Math.sin(t * 15);
-      ov(LSX, -0.55 + d * 0.35);
-      ov(RSX, -0.55 - d * 0.35);
-      ov(LE, -1.5);
-      ov(RE, -1.5);
-      ov(LSZ, 0.1);
-      ov(RSZ, -0.1);
-      ad(RY, Math.max(0, Math.sin(t * Math.PI * 2.4)) * 0.12);
-      ad(NX, -0.38);
-      ad(JAW, 0.35 + Math.sin(t * 21) * 0.3);
-      ad(EYE, 0.75);
-      ad(BX, -0.1);
+      this.ov(LSX, -0.55 + d * 0.35);
+      this.ov(RSX, -0.55 - d * 0.35);
+      this.ov(LE, -1.5);
+      this.ov(RE, -1.5);
+      this.ov(LSZ, 0.1);
+      this.ov(RSZ, -0.1);
+      this.ad(RY, Math.max(0, Math.sin(t * Math.PI * 2.4)) * 0.12);
+      this.ad(NX, -0.38);
+      this.ad(JAW, 0.35 + Math.sin(t * 21) * 0.3);
+      this.ad(EYE, 0.75);
+      this.ad(BX, -0.1);
       if (Math.abs(d) > 0.97) this.belly.kick(0.6 * w);
     } else if (kind === 'stomp') {
       // chest pound and roar
       const d = Math.sin(t * 12);
-      ov(LSX, -1.35 + d * 0.4);
-      ov(RSX, -1.35 - d * 0.4);
-      ov(LE, -2.0);
-      ov(RE, -2.0);
-      ov(LSZ, -0.25);
-      ov(RSZ, 0.25);
-      ad(NX, -0.55);
-      ad(JAW, 0.9);
-      ad(BX, -0.12);
-      ad(SY, Math.max(0, Math.sin(t * 6)) * 0.05);
-      ad(RY, Math.max(0, Math.sin(t * Math.PI * 1.6)) * 0.08);
+      this.ov(LSX, -1.35 + d * 0.4);
+      this.ov(RSX, -1.35 - d * 0.4);
+      this.ov(LE, -2.0);
+      this.ov(RE, -2.0);
+      this.ov(LSZ, -0.25);
+      this.ov(RSZ, 0.25);
+      this.ad(NX, -0.55);
+      this.ad(JAW, 0.9);
+      this.ad(BX, -0.12);
+      this.ad(SY, Math.max(0, Math.sin(t * 6)) * 0.05);
+      this.ad(RY, Math.max(0, Math.sin(t * Math.PI * 1.6)) * 0.08);
       if (Math.abs(d) > 0.97) this.belly.kick(0.5 * w);
     } else {
       // fist pump with a steam burst
       const pump = Math.max(0, Math.sin(t * 10));
-      ov(RSX, -2.9 + pump * 0.25);
-      ov(RE, -0.2 - pump * 0.7);
-      ov(RSZ, -0.15);
-      ov(LSX, 0.3);
-      ov(LSZ, 0.45);
-      ad(RY, Math.max(0, Math.sin(t * Math.PI * 2)) * 0.1);
-      ad(NX, -0.3);
-      ad(NY, Math.sin(time * 9) * 0.2);
+      this.ov(RSX, -2.9 + pump * 0.25);
+      this.ov(RE, -0.2 - pump * 0.7);
+      this.ov(RSZ, -0.15);
+      this.ov(LSX, 0.3);
+      this.ov(LSZ, 0.45);
+      this.ad(RY, Math.max(0, Math.sin(t * Math.PI * 2)) * 0.1);
+      this.ad(NX, -0.3);
+      this.ad(NY, Math.sin(time * 9) * 0.2);
       this.exert = Math.max(this.exert, 0.8 * w);
     }
   }

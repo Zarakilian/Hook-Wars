@@ -15,6 +15,8 @@ export class HookPath {
   readonly t = new Float64Array(MAXP);
   bent = false;
   bounced = false;
+  /** the path ended on an obstacle (a grapple latches there) */
+  blocked = false;
   push(x: number, z: number, t: number): void {
     if (this.n >= MAXP) return;
     this.x[this.n] = x;
@@ -76,11 +78,12 @@ function rayEnter(x: number, z: number, dx: number, dz: number, cx: number, cz: 
  */
 export function traceHook(
   world: World, wp: Whirlpool | undefined, sx: number, sz: number, dx: number, dz: number,
-  speed: number, r: number, range: number, bounces: number, t0: number, out: HookPath,
+  speed: number, r: number, range: number, bounces: number, t0: number, out: HookPath, latch = false,
 ): HookPath {
   out.n = 0;
   out.bent = false;
   out.bounced = false;
+  out.blocked = false;
   out.push(sx, sz, t0);
   let x = sx;
   let z = sz;
@@ -121,7 +124,7 @@ export function traceHook(
       const hz = z + dz * step * c.t;
       traveled += step * c.t;
       out.push(hx, hz, t0 + traveled / speed);
-      if (c.bouncy || left > 0) {
+      if (!latch && (c.bouncy || left > 0)) {
         if (!c.bouncy) left--;
         const dot = dx * c.nx + dz * c.nz;
         dx -= 2 * dot * c.nx;
@@ -136,6 +139,7 @@ export function traceHook(
         if (step * c.t < 1e-4) traveled += 0.02;
         continue;
       }
+      out.blocked = true;
       return out;
     }
     x = nx;

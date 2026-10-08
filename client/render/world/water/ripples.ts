@@ -99,7 +99,8 @@ export class Ripples {
         const age = now - this.t0[i];
         if (age < 0 || age > Ripples.life(this.r[i], this.s[i])) continue;
         this.uA[n].set(this.x[i], this.z[i], age, this.s[i]);
-        this.uR[n] = this.r[i];
+        // negative radius tells the shader this is ambient churn: waves only, no crisp foam rings
+        this.uR[n] = this.amb[i] ? -this.r[i] : this.r[i];
         n++;
       }
     }
@@ -124,7 +125,8 @@ vec4 rippleField(vec2 p, bool withFoam) {
   for (int i = 0; i < ${MAX_RIPPLES}; i++) {
     if (i >= uRipN) break;
     vec4 r = uRip[i];
-    float rad = uRipR[i];
+    float rad = abs(uRipR[i]);
+    float gameplay = step(0.0, uRipR[i]);
     float age = r.z;
     vec2 d = p - r.xy;
     float dist = length(d) + 1e-4;
@@ -148,15 +150,22 @@ vec4 rippleField(vec2 p, bool withFoam) {
     vec2 dir = d / dist;
     acc.yz += dir * (-a * k * s);
     if (withFoam) {
-      // white ring right at the front while young, plus a churned patch at the centre
+      // white ring right at the front while young, plus a churned patch at the centre.
+      // The ring is torn into arcs (angular breakup, different per ripple) so it never reads as a
+      // perfect drawn circle, and it thins out as it expands.
       float young = 1.0 - smoothstep(0.0, 0.9 + rad * 0.3, age);
-      float ring = exp(-pow(x / (0.09 + rad * 0.06), 2.0)) * young * min(r.w * 1.6, 1.0);
+      float ang = atan(d.y, d.x);
+      float seed = fract(r.x * 0.731 + r.y * 0.457) * 6.2832;
+      float tear = 0.55 + 0.45 * sin(ang * 5.0 + seed) * sin(ang * 3.0 - seed * 1.7 + age * 1.3);
+      tear = smoothstep(0.15, 0.85, tear);
+      float ring = exp(-pow(x / (0.09 + rad * 0.06), 2.0)) * young * min(r.w * 1.6, 1.0) * tear;
       // second, fainter ring trailing the first
       float x2 = x + 0.9 / k * 6.2832;
-      float ring2 = exp(-pow(x2 / (0.07 + rad * 0.04), 2.0)) * young * min(r.w * 1.6, 1.0) * 0.5;
+      float ring2 = exp(-pow(x2 / (0.07 + rad * 0.04), 2.0)) * young * min(r.w * 1.6, 1.0) * 0.5 * (1.0 - tear * 0.6);
       float burst = 1.0 - smoothstep(0.0, 0.45 + rad * 0.15, age);
       float core = (1.0 - smoothstep(0.0, rad * (0.55 + burst * 0.4) + 0.15, dist)) * (1.0 - smoothstep(0.0, 1.3 + rad * 0.5, age)) * min(r.w * 1.4, 1.0);
-      acc.w += ring * 0.95 + ring2 + core * (0.8 + burst * 0.6);
+      // ambient churn (waterfall base, plips) only roughs up the water: a faint core, no rings
+      acc.w += (ring * 0.95 + ring2) * gameplay + core * (0.8 + burst * 0.6) * mix(0.25, 1.0, gameplay);
     }
   }
   return acc;

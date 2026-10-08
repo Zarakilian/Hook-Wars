@@ -8,13 +8,15 @@ import { MAX_WAVES } from './waves.ts';
 
 export const MAX_MOVERS = 6;
 export const MAX_POURS = 4;
+export const MAX_LAMPS = 8;
 
 /** Shared GLSL: ice coverage from the freeze front. uIce = (front m, on, crack, break). */
 export const ICE_MASK_GLSL = /* glsl */ `
 uniform vec4 uIce;
 float iceCover(float chan, float n) {
   if (uIce.y < 0.5) return 0.0;
-  float d = chan + (n - 0.5) * 2.2;
+  // ragged but mostly continuous shelf: few isolated open holes behind the front
+  float d = chan + (n - 0.5) * 1.6;
   return 1.0 - smoothstep(uIce.x - 0.4, uIce.x, d);
 }
 `;
@@ -129,6 +131,10 @@ uniform vec4 uMovB[${MAX_MOVERS}];
 uniform int uMovN;
 uniform vec4 uPour[${MAX_POURS}];
 uniform int uPourN;
+uniform vec4 uLampP[${MAX_LAMPS}];
+uniform vec3 uLampC[${MAX_LAMPS}];
+uniform int uLampN;
+uniform vec4 uStyleE; // hue depth (m), scum colour gain, shore band scale, 0
 uniform sampler2D uSlope;
 uniform sampler2D uNoise;
 uniform vec3 uShallow;
@@ -272,9 +278,15 @@ void main() {
   // --- lighting terms
   vec3 irr = (uSunCol * max(uSunDir.y, 0.0) + uAmbient) * RECIPROCAL_PI;
   float clar = uStyleA.x;
+  // two depth scales: how far you can see the bed (clarity) and how fast the water's own colour
+  // goes from the shallow tint to the deep one (hue depth), so clear lagoons still get a blue middle
   float fogT = 1.0 - exp(-thick / clar);
-  vec3 body = mix(uShallow, uDeep, smoothstep(0.0, 1.0, pow(fogT, 0.7)) * (1.0 - uMurk));
+  float hueT = 1.0 - exp(-thick / uStyleE.x);
+  vec3 body = mix(uShallow, uDeep, smoothstep(0.0, 1.0, hueT) * (1.0 - uMurk));
   body *= 1.0 - 0.7 * whirlK * whirlK;
+  // the funnel: a dark, deep-looking eye that also swallows the refracted bed
+  float whirlEye = 0.0;
+  if (uWhirl.w > 0.0) whirlEye = (1.0 - smoothstep(0.0, uWhirl.z * 0.5, length(p - uWhirl.xy))) * min(uWhirl.w, 1.0);
   vec3 bodyLit = body * (irr + uStyleC.z);
   // light glowing through wave crests
   float crestK = smoothstep(0.0, 0.14, vCrest);
@@ -283,17 +295,20 @@ void main() {
   vec3 under;
   float alpha;
   if (cap) {
-    vec3 tint = uShallow / max(max(uShallow.r, uShallow.g), max(uShallow.b, 1e-3));
-    tint = mix(vec3(1.0), tint, clamp(thick * 0.7 + 0.12 + 0.3 * uPuddleMode, 0.0, 0.85));
+    // the bed seen through the water takes the water's hue: turquoise at the edges, blue in the middle
+    vec3 hue = body / max(max(body.r, body.g), max(body.b, 1e-3));
+    vec3 tint = mix(vec3(1.0), hue, clamp(thick * 0.7 + 0.12 + 0.3 * uPuddleMode, 0.0, 0.85));
     // sand under a film of water looks darker and richer
     tint *= mix(0.7, 1.0, smoothstep(0.0, 0.45, thick));
     under = mix(refr * tint, bodyLit, max(fogT, 0.18 * uPuddleMode));
     alpha = 1.0;
   } else {
     // no capture: a tinted veil over the bed (the bed shows through, coloured like shallow water)
-    under = mix(uShallow * (irr + uStyleC.z) * 1.12, bodyLit, smoothstep(0.0, 0.6, fogT));
-    alpha = mix(0.5, 1.0, fogT);
+    under = mix(uShallow * (irr + uStyleC.z) * 1.12, bodyLit, smoothstep(0.0, 0.8, max(fogT, hueT * 0.85)));
+    alpha = mix(0.5, 1.0, max(fogT, hueT * 0.6));
   }
+
+  under *= 1.0 - 0.55 * whirlEye * whirlEye;
 
   // --- reflection
   // reflections use a slightly calmer normal so long swells don't paint big sky-coloured blotches
@@ -346,8 +361,37 @@ void main() {
   vec2 gj = (hash22(gcell + 3.7) - 0.5) * 0.6;
   vec3 Nm = normalize(N + vec3(gj.x, 0.0, gj.y));
   float tw = 0.5 + 0.5 * sin(uTime * (2.5 + gh * 6.0) + gh * 50.0);
-  float glit = pow(max(dot(Nm, H2), 0.0), 500.0) * step(0.5, gh) * tw * gdot * 6.0 * detailFade;
+  // glitter gathers into a glint path under the (folded) sun instead of salting the whole river:
+  // a broad lobe on the calm normal decides where sparkles may live
+  float glintPath = pow(max(dot(Nr, H2), 0.0), 70.0);
+  float glit = pow(max(dot(Nm, H2), 0.0), 500.0) * step(0.55, gh) * tw * gdot * 6.0 * detailFade * (0.008 + glintPath * 1.8);
   spec += uSunCol * glit * uStyleC.x * 0.5 * sunUp;
+  // and the path itself shimmers faintly (broken up by the fine normal so it never reads as marble)
+  spec += uSunCol * glintPath * pow(max(dot(Nf, H2), 0.0), 160.0) * 0.04 * uStyleC.x * sunUp;
+  #endif
+
+  // --- lamp and lantern light: a warm pool on the water around every lamp, shimmering with the
+  // ripples, with sparkles on facets that catch the flame. Stylised on purpose: the lamps stand back
+  // from the edge, so a strict mirror reflection would land on the bank and never show.
+  vec3 lampSpec = vec3(0.0);
+  vec3 lampDiff = vec3(0.0);
+  #if DETAIL >= 1
+  for (int i = 0; i < ${MAX_LAMPS}; i++) {
+    if (i >= uLampN) break;
+    vec3 toL = uLampP[i].xyz - vWorld;
+    float dh2 = dot(toL.xz, toL.xz);
+    float rr = uLampP[i].w;
+    if (dh2 > rr * rr * 6.0) continue;
+    float d2 = dh2 + toL.y * toL.y;
+    vec3 Ld = toL * inversesqrt(d2);
+    vec3 Hl = normalize(V + Ld);
+    float pool = exp(-dh2 / (rr * rr));
+    // high-contrast ripple highlights: broken golden streaks rather than a smooth glow
+    float shimmer = pow(max(dot(Nf, Hl), 0.0), 40.0);
+    float sparkle = pow(max(dot(Nm, Hl), 0.0), 90.0) * step(0.45, gh) * gdot * (0.6 + 0.4 * tw);
+    lampSpec += uLampC[i] * pool * (0.01 + shimmer * 2.2 + sparkle * 4.0);
+    lampDiff += uLampC[i] * pool;
+  }
   #endif
 
   // --- foam
@@ -356,7 +400,9 @@ void main() {
   float foamN = lace * 0.65 + lace2 * 0.5;
   float boilN = 0.0;
   if (uPourN > 0) boilN = texture2D(uNoise, p * 0.7 + vec2(uTime * 0.21, -uTime * 0.17)).g + texture2D(uNoise, p * 1.3 - vec2(uTime * 0.31, uTime * 0.13)).g;
-  float sw = (0.2 + 0.32 * uSurge) * uStyleA.w;
+  // the shore band shrinks when the whole river is thin (early flood, low tide), so the middle of a
+  // shallow channel never counts as 'shore' and fills with lace
+  float sw = (0.2 + 0.32 * uSurge) * uStyleA.w * uStyleE.z;
   float shore = 1.0 - smoothstep(0.0, sw, thick);
   float lap = 0.5 + 0.5 * sin(uTime * 1.4 + chan * 2.5 + noiseA * 7.0);
   float shore2 = exp(-pow((thick - sw * (1.7 + lap * 0.9)) / (sw * 0.4), 2.0)) * (0.45 + uSurge * 0.4);
@@ -368,16 +414,18 @@ void main() {
   // flowing streaks
   vec2 su = vec2(pA.x * 0.26, pA.y * 0.045) + uScroll2.xy;
   float sn = texture2D(uNoise, su).r;
-  float ridge = 1.0 - smoothstep(0.0, 0.03 + uSurge * 0.03, abs(sn - 0.5));
+  // wide soft bands along noise contours, filled with bubbly lace: drifting foam lines, not scratches
+  float ridge = 1.0 - smoothstep(0.0, 0.075 + uSurge * 0.04, abs(sn - 0.5));
   #if DETAIL >= 1
   float sn2 = texture2D(uNoise, su * vec2(1.9, 1.4) + 0.37).a;
-  ridge = max(ridge, (1.0 - smoothstep(0.0, 0.022, abs(sn2 - 0.5))) * 0.7);
+  ridge = max(ridge, (1.0 - smoothstep(0.0, 0.05, abs(sn2 - 0.5))) * 0.65);
   #endif
   float patchy = smoothstep(0.4, 0.75, texture2D(uNoise, su * 0.45 + vec2(0.13, 0.71)).a);
-  float streak = ridge * patchy * smoothstep(0.4, 2.2, chan) * uStyleA.z * (0.45 + foamN * 0.8);
-  foam = max(foam, streak * (0.8 + uSurge * 0.5));
+  float streak = ridge * patchy * smoothstep(0.4, 2.2, chan) * uStyleA.z;
+  streak = smoothstep(0.35, 0.95, streak * (0.25 + foamN * 1.05));
+  foam = max(foam, streak * (0.75 + uSurge * 0.5));
   // crest whitecaps
-  foam = max(foam, smoothstep(0.17 - uSurge * 0.06, 0.28, vCrest) * foamN * 0.5 * uStyleA.y);
+  foam = max(foam, smoothstep(0.17 - uSurge * 0.06, 0.28, vCrest) * foamN * 0.45);
   // drifting movers: contact foam, V wake, churned trail
   for (int i = 0; i < ${MAX_MOVERS}; i++) {
     if (i >= uMovN) break;
@@ -421,13 +469,19 @@ void main() {
   for (int i = 0; i < ${MAX_POURS}; i++) {
     if (i >= uPourN) break;
     vec4 pr = uPour[i];
-    vec2 dd = (p - pr.xy) / pr.z;
+    // radius sign = the direction the water pours along z; the boil trails off downstream
+    float rad = abs(pr.z);
+    vec2 dd = (p - pr.xy) / rad;
+    float down = dd.y * sign(pr.z);
+    dd.y *= down > 0.0 ? 0.42 : 1.0;
     float d = length(dd);
     if (d > 1.0) continue;
-    float churn = (1.0 - smoothstep(0.2, 1.0, d)) * pr.w;
+    float churn = (1.0 - smoothstep(0.15, 1.0, d)) * pr.w;
     // no texture fetches inside the loop (derivatives are undefined in divergent loops)
     float boil = boilN + 0.35 * sin(d * 9.0 - uTime * 7.0 + noiseA * 6.0);
-    foam = max(foam, smoothstep(0.25, 0.85, churn * (0.35 + boil * 0.6)));
+    // dense white boil at the plunge, breaking into lace as it drifts away
+    float lacy = mix(1.0, foamN * 1.3, smoothstep(0.25, 0.9, max(down, 0.0) * 0.42 + d * 0.5));
+    foam = max(foam, smoothstep(0.2, 0.8, churn * (0.42 + boil * 0.6) * lacy));
   }
   // splashes and wakes
   foam = max(foam, smoothstep(0.12, 0.8, clamp(rip.w, 0.0, 1.2) * (0.45 + foamN * 0.75)));
@@ -449,11 +503,14 @@ void main() {
   if (uStyleB.x > 0.0) {
     float sn = texture2D(uNoise, pA * 0.09 + uScroll2.zw * 0.12).r;
     float sn2 = texture2D(uNoise, pA * 0.31 - uScroll2.zw * 0.2).a;
-    float near = 1.0 - smoothstep(0.2, 2.6, chan);
-    float mat = smoothstep(0.62, 0.78, sn * 0.75 + sn2 * 0.35 + near * 0.3);
+    // mats cling to the banks and drift in a few loose rafts mid-channel, so most of the swamp
+    // stays open, glossy water that reads as water from the camera
+    float near = 1.0 - smoothstep(0.1, 2.2, chan);
+    float sm = sn * 0.75 + sn2 * 0.35 + near * 0.34;
+    float mat = smoothstep(0.71, 0.83, sm);
     // duckweed reads as dots at the ragged edge of each mat
-    float dots = smoothstep(0.45, 0.8, lace2);
-    scum = max(mat * (0.75 + lace * 0.3), smoothstep(0.5, 0.62, sn * 0.75 + sn2 * 0.35 + near * 0.3) * dots * 0.8);
+    float dots = smoothstep(0.5, 0.82, lace2);
+    scum = max(mat * (0.75 + lace * 0.3), smoothstep(0.6, 0.71, sm) * dots * 0.75);
     scum *= uStyleB.x * (1.0 - whirlK);
     scum = clamp(scum, 0.0, 0.95);
   }
@@ -468,14 +525,17 @@ void main() {
 
   // --- compose
   vec3 col = mix(under, sky, F);
+  // lamplight scattering in the water body, then the glints on top
+  col += body * lampDiff * 0.35 * (1.0 - F);
   col += spec * (1.0 - foam) * (1.0 - scum);
+  col += lampSpec * (1.0 - foam * 0.7) * (1.0 - scum * 0.8);
   col += uFoamCol * rainRing * 0.04 * (irr + 0.05);
   // ripple crests catch the light so rings read even on calm, dark water
   col += uFoamCol * (irr + uStyleC.z * 2.0 + 0.01) * clamp(rip.x * 6.0, 0.0, 0.5) * (1.0 - foam);
-  vec3 scumLit = uScumCol * (irr * 0.9 + uStyleC.z) * (0.75 + lace * 0.4);
+  vec3 scumLit = uScumCol * (irr * 0.9 + uStyleC.z + lampDiff * 0.3) * (0.75 + lace * 0.4) * uStyleE.y;
   col = mix(col, scumLit, scum);
   col = mix(col, uSpeckCol * (irr + uStyleC.z), speck);
-  vec3 foamLit = uFoamCol * (irr * 1.15 + uStyleC.z * 3.0 + 0.012);
+  vec3 foamLit = uFoamCol * (irr * 1.15 + uStyleC.z * 3.0 + 0.012 + lampDiff * 0.3);
   col = mix(col, foamLit, foam);
 
   alpha = max(alpha, max(F * 0.9, max(foam, max(scum, speck))));

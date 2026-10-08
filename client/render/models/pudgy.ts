@@ -33,6 +33,19 @@ function familyBuild(family: FamilyId, cosmetics: Cosmetics, team: Team): Family
 
 let seedCounter = 1;
 
+/** Transparent-queue order of the stealth depth pre-pass; the ghost parts draw right after it. */
+const GHOST_DEPTH_ORDER = 10;
+let ghostDepth: THREE.MeshBasicMaterial | null = null;
+/** One shared depth-only material for every stealthed unit (lives for the page, never disposed). */
+function ghostDepthMaterial(): THREE.MeshBasicMaterial {
+  if (!ghostDepth) {
+    // transparent so it sorts into the transparent queue (after all opaque scenery), never writes colour
+    ghostDepth = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, transparent: true, opacity: 0 });
+    ghostDepth.name = 'pudgy-ghost-depth';
+  }
+  return ghostDepth;
+}
+
 /** PudgyView plus optional extras the game client may use. */
 export interface PudgyViewEx extends PudgyView {
   /** Called on each footstep while running (foot 0 = left, 1 = right) and on heavy landings. */
@@ -47,6 +60,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light);
   const solid = makePudgyMaterial(uniforms, false);
   let ghost: THREE.MeshStandardMaterial | null = null;
+  let twins: THREE.Mesh[] | null = null;
   const nodes = buildRig(fb, solid, o.quality);
   const root = new THREE.Group();
   root.name = `pudgy:${o.name}`;
@@ -82,15 +96,35 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
       alpha = q;
       if (q >= 1) {
         for (let i = 0; i < nodes.meshes.length; i++) {
-          nodes.meshes[i].material = solid;
-          nodes.meshes[i].castShadow = shadowFlags[i];
+          const m = nodes.meshes[i];
+          m.material = solid;
+          m.castShadow = shadowFlags[i];
+          m.renderOrder = 0;
         }
+        if (twins) for (const t of twins) t.visible = false;
       } else {
         if (!ghost) ghost = makePudgyMaterial(uniforms, true);
         ghost.opacity = q;
+        // depth-only twins (children of each part, so they follow its transform and visibility) draw
+        // first, then the ghost draws only the front-most surface: one clean see-through layer
+        // instead of arms and belly showing through each other.
+        if (!twins) {
+          twins = [];
+          for (const m of nodes.meshes) {
+            const t = new THREE.Mesh(m.geometry, ghostDepthMaterial());
+            t.name = 'ghost-depth';
+            t.renderOrder = GHOST_DEPTH_ORDER;
+            t.castShadow = false;
+            t.receiveShadow = false;
+            m.add(t);
+            twins.push(t);
+          }
+        }
+        for (const t of twins) t.visible = true;
         for (const m of nodes.meshes) {
           m.material = ghost;
           m.castShadow = false;
+          m.renderOrder = GHOST_DEPTH_ORDER + 1;
         }
       }
     },

@@ -45,18 +45,34 @@ export function mapInfo(map: MapDef): MapInfo {
   const obs = map.obstacles;
   const halfW = map.w / 2;
   const halfD = map.d / 2;
+  const walkPad = UNIT_RADIUS + 0.05;
+  const pad = Math.max(HOOK_INFLATE, walkPad);
+  // Rasterise each obstacle into the cells of its bounding box only (cheap even on a big map).
+  for (const o of obs) {
+    const x0 = (o.shape === 'circle' ? o.x - o.r : Math.min(o.ax, o.bx) - o.r) - pad;
+    const x1 = (o.shape === 'circle' ? o.x + o.r : Math.max(o.ax, o.bx) + o.r) + pad;
+    const z0 = (o.shape === 'circle' ? o.z - o.r : Math.min(o.az, o.bz) - o.r) - pad;
+    const z1 = (o.shape === 'circle' ? o.z + o.r : Math.max(o.az, o.bz) + o.r) + pad;
+    const ix0 = Math.max(0, Math.floor((x0 - ox) / CELL));
+    const ix1 = Math.min(nx - 1, Math.floor((x1 - ox) / CELL));
+    const iz0 = Math.max(0, Math.floor((z0 - oz) / CELL));
+    const iz1 = Math.min(nz - 1, Math.floor((z1 - oz) / CELL));
+    for (let iz = iz0; iz <= iz1; iz++) {
+      const z = oz + (iz + 0.5) * CELL;
+      for (let ix = ix0; ix <= ix1; ix++) {
+        const x = ox + (ix + 0.5) * CELL;
+        const d = o.shape === 'circle' ? Math.hypot(x - o.x, z - o.z) - o.r : distToSegment(o.ax, o.az, o.bx, o.bz, x, z) - o.r;
+        const i = ix + iz * nx;
+        if (d < HOOK_INFLATE) hookGrid[i] = 1;
+        if (d < walkPad) walkGrid[i] = 1;
+      }
+    }
+  }
   for (let iz = 0; iz < nz; iz++) {
     const z = oz + (iz + 0.5) * CELL;
     for (let ix = 0; ix < nx; ix++) {
       const x = ox + (ix + 0.5) * CELL;
-      let dmin = 1e9;
-      for (const o of obs) {
-        const d = o.shape === 'circle' ? Math.hypot(x - o.x, z - o.z) - o.r : distToSegment(o.ax, o.az, o.bx, o.bz, x, z) - o.r;
-        if (d < dmin) dmin = d;
-      }
-      const i = ix + iz * nx;
-      if (dmin < HOOK_INFLATE) hookGrid[i] = 1;
-      if (dmin < UNIT_RADIUS + 0.05 || Math.abs(x) > halfW - UNIT_RADIUS - 0.1 || Math.abs(z) > halfD - UNIT_RADIUS - 0.1) walkGrid[i] = 1;
+      if (Math.abs(x) > halfW - UNIT_RADIUS - 0.1 || Math.abs(z) > halfD - UNIT_RADIUS - 0.1) walkGrid[ix + iz * nx] = 1;
     }
   }
   const cover: [number[], number[]] = [[], []];
