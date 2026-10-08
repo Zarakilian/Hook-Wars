@@ -135,7 +135,7 @@ const UNSAFE_CHARS = new RegExp(
 /** Strip control characters and markup-ish characters, collapse spaces, clamp length. */
 export function cleanText(v: unknown, maxLen: number): string | null {
   if (typeof v !== 'string') return null;
-  let s = v.replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim();
+  let s = v.replace(/[\t\n\r]/g, ' ').replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim();
   if (s.length > maxLen) s = s.slice(0, maxLen);
   return s;
 }
