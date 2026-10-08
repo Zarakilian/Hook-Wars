@@ -4,12 +4,13 @@
 // near the enemy fountain. Walkable beds open up pushes for bruisers; tides chase everyone out.
 import { BAL, HOOK_LEVELS } from '../../constants.ts';
 import { dist, dist2 } from '../../math.ts';
-import { UnitState, type Team } from '../../types.ts';
+import { UnitState, type RuneType, type Team } from '../../types.ts';
 import type { Unit } from '../entities.ts';
 import type { GameSim } from '../sim.ts';
 import type { BotContext } from './context.ts';
 import { bankOf, bankPoint, sideOf, type P2 } from './geom.ts';
 import { hookLineClear, standable } from './mapinfo.ts';
+import { compAt, edgeDist, holdSpot, inComp, nearestDry, NAV_LAND } from './nav.ts';
 import { Mode, type Brain } from './types.ts';
 
 const MAXF = 8;
@@ -18,8 +19,11 @@ const fz = new Float64Array(MAXF);
 const freach = new Float64Array(MAXF);
 const fready = new Float64Array(MAXF);
 const fval = new Float64Array(MAXF);
+/** 1 if that foe carries a Bendy Eel (public glow): its hook curves round cover. */
+const fbend = new Uint8Array(MAXF);
 let nf = 0;
 const cand: P2 = { x: 0, z: 0 };
+const esc: P2 = { x: 0, z: 0 };
 const ZOFF = [0, -3, 3, -6, 6];
 
 /** Lane (z) for a unit: teammates spread evenly along the bank by id order. */
@@ -65,6 +69,7 @@ function gatherFoes(sim: GameSim, ctx: BotContext, u: Unit): void {
     freach[nf] = ctx.reachOf(e) + 1.3;
     fready[nf] = ctx.hookReadyIn(e, u);
     fval[nf] = 1 + (1 - e.hp / e.maxHp) * 1.2 + (fready[nf] > 1.5 ? 0.5 : 0);
+    fbend[nf] = e.bendy > 0 ? 1 : 0;
     nf++;
   }
 }
@@ -76,7 +81,7 @@ export function exposureAt(ctx: BotContext, x: number, z: number, within: number
     if (fready[i] > within) continue;
     const d = dist(x, z, fx[i], fz[i]);
     if (d > freach[i]) continue;
-    if (hookLineClear(ctx.info, fx[i], fz[i], x, z, 0.9, 0.6)) n++;
+    if (fbend[i] === 1 || hookLineClear(ctx.info, fx[i], fz[i], x, z, 0.9, 0.6)) n++;
   }
   return n;
 }
@@ -94,7 +99,7 @@ function scoreSpot(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, x: number, 
   const eta = dist(u.x, u.z, x, z) / BAL.moveSpeed;
   for (let i = 0; i < nf; i++) {
     const d = dist(x, z, fx[i], fz[i]);
-    if (d < freach[i] && hookLineClear(ctx.info, fx[i], fz[i], x, z, 0.9, 0.6)) {
+    if (d < freach[i] && (fbend[i] === 1 || hookLineClear(ctx.info, fx[i], fz[i], x, z, 0.9, 0.6))) {
       const w = fready[i] <= eta + 0.5 ? 1 : 0.3;
       s -= w * (hookSoon ? 0.4 : 1.25) * (1.3 - d / freach[i]);
     }
@@ -106,7 +111,7 @@ function scoreSpot(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, x: number, 
   if (hookSoon && b.roleDef.runeBias > 0) {
     for (const r of sim.runes) {
       if (r.dragged) continue;
-      if (dist2(x, z, r.x, r.z) < myReach * myReach && hookLineClear(ctx.info, x, z, r.x, r.z, 0.9, 0.6)) s += 0.25 * b.roleDef.runeBias;
+      if (dist2(x, z, r.x, r.z) < myReach * myReach && hookLineClear(ctx.info, x, z, r.x, r.z, 0.9, 0.6)) s += 0.25 * b.roleDef.runeBias * runeWorth(u, r.type);
     }
   }
   return s;
@@ -127,7 +132,10 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
   const ch = sim.world.channel(u.x, u.z);
   const myBank = bankOf(sim, u.x, u.z);
   const deep = sim.river.deep;
-  const myReach = HOOK_LEVELS.range[u.up.range];
+  const myReach = HOOK_LEVELS.range[u.up.range] * (u.longshot > 1 ? BAL.longshotRangeMul : 1);
+  const ns = ctx.nav;
+  /** The walk component we stand in (dry ground only): every spot we pick must be in it. */
+  const myComp = compAt(ns, NAV_LAND, u.x, u.z, 4);
   b.laneZ = laneOf(ctx, u, halfD);
   b.pushKill = false;
   gatherFoes(sim, ctx, u);
@@ -137,26 +145,54 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
   if (hpFrac < role.retreatHp && u.pieT <= 0) b.retreating = true;
   if (hpFrac > 0.88 || (b.retreating && u.pieT > 0 && hpFrac > 0.6)) b.retreating = false;
 
-  // 1. The water is coming back: get out of the channel while there is time.
-  if (ch > -0.4 && !deep) {
-    const ownT = timeToBank(sim, u, team);
+  // 1. The water is coming back: get out of whatever channel we stand in while there is time.
+  //    (Nobody needs 14 s to wade out, so the search only runs once the turn is near.)
+  if (ch > -0.4 && !deep && ctx.untilDeep < 14 + tune.tideMargin) {
+    const mul = sim.river.shallow ? BAL.shallowSlow : sim.river.frozen ? 0.8 : BAL.mudSlow;
+    const speed = BAL.moveSpeed * mul;
+    // walking distance to dry ground, preferring our own side of the main river
+    const dOwn = nearestDry(ns, u.x, u.z, team, 40, 45, esc);
+    const ownT = Number.isFinite(dOwn) ? (dOwn + 0.6) / speed : timeToBank(sim, u, team);
     const margin = tune.tideMargin + 1.2;
     if (ctx.untilDeep < ownT + margin || (b.crossing && ctx.untilDeep < ownT + margin + 3)) {
       // home if we can make it, otherwise the nearest dry ground (the far bank beats drowning)
       const home = ctx.untilDeep > ownT + 0.6;
-      bankPoint(sim, home ? team : myBank, u.z, 1.8, cand);
+      if (!home || !Number.isFinite(dOwn)) {
+        const dAny = nearestDry(ns, u.x, u.z, team, 0, 45, esc);
+        if (!Number.isFinite(dAny)) bankPoint(sim, home ? team : myBank, u.z, 1.8, esc);
+      }
       if (home) b.crossing = false;
-      setGoal(b, Mode.Leave, cand.x, cand.z);
+      // step a little past the first dry cell, inland, so we are clear of the water when it comes
+      let ix = esc.x - u.x;
+      let iz = esc.z - u.z;
+      const il = Math.sqrt(ix * ix + iz * iz);
+      if (il > 0.1) {
+        ix /= il;
+        iz /= il;
+        const fx = esc.x + ix * 1.3;
+        const fz = esc.z + iz * 1.3;
+        if (sim.world.channel(fx, fz) < -0.6 && standable(ctx.info, fx, fz)) {
+          esc.x = fx;
+          esc.z = fz;
+        }
+      }
+      setGoal(b, Mode.Leave, esc.x, esc.z);
       return;
     }
   }
 
   // 2. Stranded on the far bank of a deep river (after a dive, or delivered alive): stay near the
   //    water where our lifeguards can hook us home, fight if they come close, keep off their fountain.
-  if (deep && myBank !== team && ch <= 0) {
-    const z = Math.max(-halfD + 4, Math.min(halfD - 4, u.z * 0.6 + b.laneZ * 0.4));
-    bankPoint(sim, myBank, z, 1.6, cand);
-    setGoal(b, Mode.Stranded, cand.x, cand.z);
+  //    (A bridge or a chain of docks home means we are not stranded: just walk back.)
+  //    Knocked onto an island, a floe or a cut-off pier on our own side is the same story.
+  const homeComp = ns.homeComp[team];
+  const walkHome = myComp >= 0 && myComp === homeComp;
+  if (deep && ch <= 0 && !walkHome && (myBank !== team || (myComp >= 0 && homeComp >= 0))) {
+    if (myBank !== team) {
+      const z = Math.max(-halfD + 4, Math.min(halfD - 4, u.z * 0.6 + b.laneZ * 0.4));
+      bankPoint(sim, myBank, z, 1.6, cand);
+      setGoal(b, Mode.Stranded, cand.x, cand.z);
+    } else setGoal(b, Mode.Stranded, u.x, u.z); // a little island: wait for a hook or the grapple
     return;
   }
 
@@ -206,12 +242,16 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
   }
   if (myBank === team || deep) b.crossing = false;
 
-  // 5. Walkable bed: walk over runes that are close (nobody has to hook them).
-  if (walkable && window > 6) {
+  // 5. Walk over runes that are close (nobody has to hook them): on a walkable bed, or on dry ground
+  //    we can reach (a rune parked by a pier or an island bridge).
+  const bedOpen = walkable && window > 6;
+  if (bedOpen || deep) {
     for (const r of sim.runes) {
       if (r.dragged) continue;
+      if (!bedOpen && (myComp < 0 || !inComp(ns, NAV_LAND, r.x, r.z, myComp))) continue;
       const d = dist(u.x, u.z, r.x, r.z);
-      if (d < 9 * (0.5 + role.runeBias * 0.5) && !ctx.claimedByOther(team, r.id, u.id)) {
+      const want = Math.max(0.6, Math.min(1.3, runeWorth(u, r.type) / 1.1));
+      if (d < 9 * (0.5 + role.runeBias * 0.5) * want && !ctx.claimedByOther(team, r.id, u.id)) {
         ctx.claim(team, r.id, u.id, sim.time + 1);
         setGoal(b, Mode.Rune, r.x, r.z);
         return;
@@ -231,23 +271,41 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
   let bx = b.goalX;
   let bz = b.goalZ;
   // keep the old goal unless something is clearly better (hysteresis stops dithering)
-  if (b.mode === Mode.Hold && standable(ctx.info, b.goalX, b.goalZ) && bankOf(sim, b.goalX, b.goalZ) === team) {
-    const edge = -sim.world.channel(b.goalX, b.goalZ);
+  if (b.mode === Mode.Hold && standable(ctx.info, b.goalX, b.goalZ) && bankOf(sim, b.goalX, b.goalZ) === team
+    && sim.world.channel(b.goalX, b.goalZ) <= -0.4 && (myComp < 0 || inComp(ns, NAV_LAND, b.goalX, b.goalZ, myComp))) {
+    const edge = edgeDist(ns, team, b.goalX, b.goalZ);
     if (edge > 0.5 && (hookSoon ? edge < s1 + 0.6 : edge > s0 - 0.6)) bestScore = scoreSpot(sim, ctx, u, b, b.goalX, b.goalZ, hookSoon, myReach) + 0.15;
   }
   const zmax = halfD - 4;
-  for (let zi = 0; zi < ZOFF.length + 2; zi++) {
-    let z = zi < ZOFF.length ? b.laneZ + ZOFF[zi] : u.z + (zi === ZOFF.length ? -2 : 2);
+  // a loose rune within hook range of our bank is worth a candidate spot right across from it
+  let runeZ = NaN;
+  if (hookSoon && role.runeBias > 0) {
+    let bestR = 0;
+    for (const r of sim.runes) {
+      if (r.dragged || Math.abs(r.z - b.laneZ) > 12) continue;
+      const w = runeWorth(u, r.type) * role.runeBias - Math.abs(r.z - u.z) * 0.03;
+      if (w > bestR && !ctx.claimedByOther(team, r.id, u.id)) {
+        bestR = w;
+        runeZ = r.z;
+      }
+    }
+  }
+  let found = false;
+  const NZ = ZOFF.length + 2 + (Number.isFinite(runeZ) ? 1 : 0);
+  for (let zi = 0; zi < NZ; zi++) {
+    let z = zi < ZOFF.length ? b.laneZ + ZOFF[zi] : zi < ZOFF.length + 2 ? u.z + (zi === ZOFF.length ? -2 : 2) : runeZ;
     z = Math.max(-zmax, Math.min(zmax, z));
     for (let si = 0; si < 2; si++) {
       let s = si === 0 ? s0 : s1;
-      bankPoint(sim, team, z, s, cand);
+      // on the forward strip of the main river (or the nearest ground we can reach behind a channel)
+      if (!holdSpot(ns, team, z, s, myComp, cand)) continue;
       if (!standable(ctx.info, cand.x, cand.z)) {
         s += 0.8;
-        bankPoint(sim, team, z, s, cand);
-        if (!standable(ctx.info, cand.x, cand.z)) continue;
+        if (!holdSpot(ns, team, z, s, myComp, cand) || !standable(ctx.info, cand.x, cand.z)) continue;
       }
       if (sim.world.channel(cand.x, cand.z) > -0.4) continue;
+      if (myComp >= 0 && !inComp(ns, NAV_LAND, cand.x, cand.z, myComp)) continue;
+      found = true;
       if (inHazard(sim, cand.x, cand.z, 1) || nearEnemyFountain(sim, team, cand.x, cand.z, 3)) continue;
       const sc = scoreSpot(sim, ctx, u, b, cand.x, cand.z, hookSoon, myReach);
       if (sc > bestScore) {
@@ -269,7 +327,8 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
       const r = o.shape === 'circle' ? o.r : 0.6;
       // stand on the far side of the cover from the river
       const sx = ox + sideOf(team) * (r + 1.0);
-      if (!standable(ctx.info, sx, oz) || inHazard(sim, sx, oz, 1)) continue;
+      if (!standable(ctx.info, sx, oz) || inHazard(sim, sx, oz, 1) || sim.world.channel(sx, oz) > -0.4) continue;
+      if (myComp >= 0 && !inComp(ns, NAV_LAND, sx, oz, myComp)) continue;
       const sc = scoreSpot(sim, ctx, u, b, sx, oz, false, myReach);
       if (sc > bestScore) {
         bestScore = sc;
@@ -278,6 +337,36 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
       }
     }
   }
+  if (!found && bestScore < -1e8) {
+    // nothing on any lane fits (a map edit cut us off): old behaviour, straight back from the centreline
+    bankPoint(sim, team, b.laneZ, s0, cand);
+    bx = cand.x;
+    bz = cand.z;
+  }
   b.goalScore = bestScore;
   setGoal(b, Mode.Hold, bx, bz);
+}
+
+/** How much a rune is worth to this bot right now (power-up runes count less while we still have one). */
+export function runeWorth(u: Unit, t: RuneType): number {
+  switch (t) {
+    case 'double':
+      return u.double > 2 ? 0.5 : 1.5;
+    case 'haste':
+      return u.haste > 2 ? 0.4 : 1.25;
+    case 'bendy':
+      return u.bendy > 3 ? 0.4 : 1.25;
+    case 'longshot':
+      return u.longshot > 3 ? 0.4 : 1.15;
+    case 'ironskin':
+      return u.shield > 60 ? 0.4 : 0.95;
+    case 'bouncy':
+      return u.bouncy > 3 ? 0.3 : 0.9;
+    case 'ghost':
+      return 0.85;
+    case 'bounty':
+      return 0.8;
+    default:
+      return 0.5;
+  }
 }

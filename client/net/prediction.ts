@@ -3,6 +3,7 @@
 import { TICK_DT } from '../../shared/constants.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
 import { stepMove, type MoveBody } from '../../shared/sim/movement.ts';
+import { STALE_INPUT_TICKS } from '../../shared/sim/sim.ts';
 import { UnitState, type PlayerInput, type RiverState, type UnitSnap, type YouSnap } from '../../shared/types.ts';
 import { World } from '../../shared/world.ts';
 
@@ -26,6 +27,12 @@ export class Predictor {
   private lastDrawnX = NaN;
   private lastDrawnZ = NaN;
   private initialised = false;
+  /** server tick at which the current ack was first seen, to count the server's held ticks */
+  private ackSeen = -1;
+  private ackTick = 0;
+  private calls = 0;
+  /** held ticks the last reconcile accounted for (diagnostics) */
+  holds = 0;
 
   constructor(map: MapDef) {
     this.world = new World(map);
@@ -62,14 +69,30 @@ export class Predictor {
     stepMove(this.world, this.river, this.body, input.mx, input.mz, mm, TICK_DT);
   }
 
-  /** Server says where we really are; rewind and replay unacknowledged inputs. */
-  reconcile(me: UnitSnap, you: YouSnap, river: RiverState, moverClock: number, moversOn: boolean): void {
+  /**
+   * Server says where we really are; rewind and replay unacknowledged inputs.
+   *
+   * Held ticks: when an input is late the server repeats our last movement for that tick, and drops a
+   * movement-only late input for each such tick once they arrive (shared/sim/sim.ts consumeInput). Those
+   * steps are already in the server position, so the replay skips the same inputs instead of walking
+   * them twice (which overshot and then snapped back after every stall). Pass the snapshot tick as
+   * serverTick; without it every call counts as one tick.
+   */
+  reconcile(me: UnitSnap, you: YouSnap, river: RiverState, moverClock: number, moversOn: boolean, serverTick?: number): void {
     this.river = river;
     this.world.updateMovers(moverClock, moversOn);
     const controllable = me.st === UnitState.Alive || me.st === UnitState.Drowning || me.st === UnitState.Casting;
     this.mm = you.mm;
     const oldX = this.body.x;
     const oldZ = this.body.z;
+    const tick = serverTick ?? ++this.calls;
+    if (you.ack !== this.ackSeen || tick < this.ackTick) {
+      this.ackSeen = you.ack;
+      this.ackTick = tick;
+    }
+    // ticks the server held since it consumed our acked input (beyond STALE it stopped instead)
+    let skip = Math.min(STALE_INPUT_TICKS, Math.max(0, tick - this.ackTick));
+    this.holds = skip;
     // drop acknowledged inputs
     while (this.pending.length && this.pending[0].input.seq <= you.ack) this.pending.shift();
     this.body.x = me.x;
@@ -87,7 +110,13 @@ export class Predictor {
     }
     const wasActive = this.active;
     this.active = true;
-    for (const p of this.pending) stepMove(this.world, this.river, this.body, p.input.mx, p.input.mz, p.mm, TICK_DT);
+    for (const p of this.pending) {
+      if (skip > 0 && p.input.b === 0) {
+        skip--; // the server already walked this tick with our previous movement
+        continue;
+      }
+      stepMove(this.world, this.river, this.body, p.input.mx, p.input.mz, p.mm, TICK_DT);
+    }
     if (!this.initialised || !wasActive) {
       this.prev.x = this.body.x;
       this.prev.z = this.body.z;

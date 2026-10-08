@@ -1,366 +1,265 @@
-// Butcher-Bot: a riveted, barrel-bellied steam robot with team-coloured armour plates and
-// pauldrons, glowing vents on its back, a glowing visor and a crane-claw hook on its right arm.
-import { COSMETIC_NAMES, TEAM_COLORS, type PudgyPalette } from '../../contracts.ts';
-import type { Cosmetics, Team } from '../../../../shared/types.ts';
-import { dropGrid, part, partMirrored, wrap, type TeamCols } from './common.ts';
-import { CH, hashVox, mix, RGrid, shade, type ColorFn } from './grid.ts';
-import type { FamilyBuild, HatMode, PartDef, PartName, Skeleton, V3 } from './types.ts';
+// Butcher-Bot (ref03 default look, ref10 bare base): a riveted steel barrel-belly robot on short
+// piston legs with a small dome head and a glowing visor. The right arm is always a chunky crane
+// arm (part of the body); the hook skin hangs from its pulley. Bare base: clean grey steel with
+// yellow bands, plain dome, plain feet. Default set: grille dome, rusted hazard plates (porthole,
+// red valve, pipes), crane hook, twin smokestacks puffing steam, stomper feet.
+// Team colour: painted stripes on both shoulder pauldrons and a band round each thigh.
+import type { PudgyPalette } from '../../contracts.ts';
+import { dropGrid, part, partMirrored, resOf, ring, teamCloth, type Look, type TeamCols } from './common.ts';
+import { buildRes, CH, hashVox, hv, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
+import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, Skeleton, V3 } from './types.ts';
 
-const STEEL = 0x8c949e;
-const STEEL_LIGHT = 0xb4bcc6;
-const STEEL_DARK = 0x4c535c;
-const GUNMETAL = 0x3a4048;
-const CHROME = 0xd6dde5;
+// ---------------------------------------------------------------------------------------------
+// Palette (ref03 / ref10)
+// ---------------------------------------------------------------------------------------------
+
+const STEEL = 0x948c83;
+const STEEL_L = 0xaaa298;
+const STEEL_D = 0x5e5852;
+const GUN = 0x4a4744;
+const RUST = [0x9a5630, 0xb86a34, 0x7e4626, 0xa85e2c] as const;
+const HAZ = 0xe0a030;
+const HAZ_D = 0x2a2624;
+const VALVE = 0xb0402a;
+const GLOW = 0xffa040;
+const GLOW_HOT = 0xffd080;
+const CHROME = 0xdde3ea;
 const BRASS = 0xd9a441;
 const COPPER = 0xc8743a;
 const RUBBER = 0x24262b;
-const HAZARD = 0xf2c230;
-const RUST = [0x8a4a2a, 0xa65a2e, 0x6e3c22] as const;
-const EMBER = 0xff9a3a;
+const RUBY = 0xe0203a;
+
+const SCALE = 0.92;
+
+const BELLY_C: V3 = [0, 19.5, 1];
+const BELLY_R: V3 = [12.2, 11.5, 11.6];
+const HC: V3 = [0, 32.5, 1.5];
+const HR: V3 = [5.4, 4.8, 5.2];
 
 const SK: Skeleton = {
-  core: 13,
-  hip: [0, 6.5, 0],
-  leg: [4.5, 6.5, 0],
-  body: [0, 13.5, 0.5],
-  neck: [0, 21, 0.5],
-  shoulder: [10.5, 18.5, 0],
-  elbow: [10.5, 13, 0],
-  hand: [10.5, 7, 0.5],
-  jaw: [0, 23.5, 1.5],
-  eyes: [0, 26, 6],
-  hat: [0, 30, 0.5],
-  hatExtra: [0, 33, 0.5],
-  drop: [6, 27, 3],
-};
-const HEAD_C: V3 = [0, 25.6, 0.5];
-
-const steel = (base: number, seed: number): ColorFn => (x, y, z) => {
-  const h = hashVox(x, y, z, seed);
-  return shade(base, 0.93 + h * 0.12);
+  core: 19,
+  hip: [0, 10, 0],
+  leg: [6.2, 10, 0],
+  body: [0, 19.5, 1],
+  neck: [0, 30, 1.5],
+  shoulder: [14, 27, 0],
+  elbow: [14.5, 20, 0.5],
+  hand: [14.8, 9.6, 1.5],
+  jaw: [0, 30.5, 5],
+  eyes: [0, 33, 6.4],
+  hat: [0, 35, 1.5],
+  hatExtra: [0, 40, 1.5],
+  back: [0, 24, -10],
+  backExtra: [0, 22, -13],
+  drop: [6, 34, 3],
+  top: 38,
 };
 
-function rusty(g: RGrid, amount: number, seed: number): void {
-  g.each((c, x, y, z) => {
-    const ch = c & 7;
-    if (ch !== CH.iron && ch !== CH.rubber) return;
-    const blot = hashVox(Math.floor(x / 3), Math.floor(y / 3), Math.floor(z / 3), seed);
-    if (blot > 1 - amount && hashVox(x, y, z, seed + 1) > 0.25) return RUST[Math.floor(hashVox(x, y, z, seed + 2) * 3) % 3];
-    return undefined;
-  }, true);
-}
+const slug = (id: string | undefined): string => (id ? id.slice(id.indexOf('.') + 1) : '');
 
 // ---------------------------------------------------------------------------------------------
-// Body: riveted barrel
+// Paints
 // ---------------------------------------------------------------------------------------------
 
-function barrelR(y: number): number {
-  // bulge in the middle, rounded at the ends
-  const t = (y - 13.5) / 8.5;
-  const bulge = 1 + 0.07 * Math.cos(t * Math.PI * 0.5);
-  const end = t > 0.82 ? Math.sqrt(Math.max(0, 1 - ((t - 0.82) / 0.3) ** 2)) * 0.25 + 0.75 : t < -0.85 ? Math.sqrt(Math.max(0, 1 - ((-t - 0.85) / 0.3) ** 2)) * 0.3 + 0.7 : 1;
-  return bulge * end;
+/** Riveted steel plate: per-voxel variation, darker plate seams every few cells. */
+function plate(base: number, seed: number, seams = 5): ColorFn {
+  return (x, y, z) => {
+    const h = hv(x, y, z, seed);
+    const seam = (y + 200) % seams === 0;
+    return shade(base, (seam ? 0.8 : 0.93) + h * 0.14);
+  };
 }
 
-function inBarrel(x: number, y: number, z: number, grow = 0): boolean {
-  if (y < 5 || y > 21) return false;
-  const k = barrelR(y + 0.5);
-  const a = 10 * k + grow;
-  const b = 8.8 * k + grow;
-  const dx = Math.abs(x + 0.5) / a;
-  const dz = Math.abs(z + 0.5 - 0.5) / b;
-  return dx ** 2.6 + dz ** 2.6 <= 1;
+/** Rust streaks running down from rivets and seams (weathering, never blood). */
+function rusty(base: ColorFn, amount: number, seed: number): ColorFn {
+  return (x, y, z) => {
+    const streak = hashVox(x, Math.floor((y + 200) / 4), z, seed);
+    const blot = hashVox(Math.floor(x / 3), Math.floor(y / 3), Math.floor(z / 3), seed + 1);
+    if (blot > 1 - amount || streak > 1 - amount * 0.35) return shade(RUST[Math.floor(hv(x, y, z, seed + 2) * 4) % 4], 0.85 + hv(x, y, z, seed + 3) * 0.25);
+    return base(x, y, z);
+  };
 }
 
-function buildBody(accent: number, t: TeamCols): RGrid {
-  const g = new RGrid(28, 27, 26, -14, 3, -13);
-  // frame
-  g.on(CH.iron, () => {
-    for (let y = 5; y <= 21; y++) for (let z = -12; z <= 12; z++) for (let x = -13; x <= 12; x++) if (inBarrel(x, y, z)) g.set(x, y, z, steel(STEEL, 1)(x, y, z));
+const gun: ColorFn = (x, y, z) => shade(GUN, 0.85 + hv(x, y, z, 5) * 0.2);
+const hazard = (seed: number, along: 'xy' | 'zy' = 'xy'): ColorFn => (x, y, z) => {
+  const k = along === 'xy' ? x + y : z + y;
+  return Math.floor((k + 400) / 2) % 2 === 0 ? shade(HAZ, 0.88 + hv(x, y, z, seed) * 0.18) : shade(HAZ_D, 0.9 + hv(x, y, z, seed) * 0.2);
+};
+
+/** Rust is oxide, not metal: rusty iron voxels become rough and non-metallic so they read warm. */
+function dullRust(g: RGrid): void {
+  g.rechannel((c) => {
+    if ((c & 7) !== CH.iron) return -1;
+    const r = (c >> 16) & 255;
+    const gg = (c >> 8) & 255;
+    return r > 110 && r > gg * 1.3 ? CH.skin : -1;
   });
-  // hoops top, middle-back and bottom with rivets
-  const hoop = (y: number, col: number) => {
-    g.on(accent === 3 ? CH.brass : CH.iron, () => {
-      for (let z = -12; z <= 12; z++)
-        for (let x = -13; x <= 12; x++) if (inBarrel(x, y, z, 1) && !inBarrel(x, y, z)) g.set(x, y, z, (x + z) % 3 === 0 ? (accent === 3 ? 0xf6cf6a : STEEL_LIGHT) : col);
-    });
-  };
-  hoop(6, accent === 3 ? BRASS : GUNMETAL);
-  hoop(20, accent === 3 ? BRASS : GUNMETAL);
-  // team armour: big front belly plate and side plates, standing one voxel proud
-  const plate = (test: (x: number, y: number, z: number) => boolean, rim: number) => {
-    g.on(CH.rubber, () => {
-      for (let y = 5; y <= 21; y++)
-        for (let z = -12; z <= 12; z++)
-          for (let x = -13; x <= 12; x++) {
-            if (!inBarrel(x, y, z, 1) || inBarrel(x, y, z) || !test(x, y, z)) continue;
-            const edge = !test(x + 1, y, z) || !test(x - 1, y, z) || !test(x, y + 1, z) || !test(x, y - 1, z);
-            const h = hashVox(x, y, z, 3);
-            g.set(x, y, z, edge ? rim : shade(h > 0.94 ? t.light : t.main, 0.92 + (y - 8) * 0.012 + h * 0.06));
-          }
-    });
-  };
-  const rim = accent === 3 ? BRASS : t.dark;
-  plate((x, y, z) => z > 2 && y >= 8 && y <= 18 && Math.abs(x + 0.5) < 7.5, rim);
-  plate((x, y, z) => Math.abs(x + 0.5) > 8 && y >= 9 && y <= 17 && Math.abs(z) < 5, rim);
-  if (accent === 3) g.repaint((x, y, z) => (z > 2 && (y === 8 || y === 18) && Math.abs(x + 0.5) < 7.5), CH.brass, BRASS, true);
-  // rivets around the belly plate
+}
+
+/** Rivet bumps: a ring of studs round a horizontal band. */
+function rivetRing(g: RGrid, cx: number, cz: number, r: number, y: number, n: number, col: number): void {
   g.on(CH.iron, () => {
-    for (let y = 8; y <= 18; y += 2)
-      for (const x of [-8, 7]) {
-        for (let z = 12; z > 0; z--)
-          if (g.has(x, y, z)) {
-            g.set(x, y, z + 1, STEEL_LIGHT);
-            break;
-          }
-      }
-  });
-  if (accent === 4) {
-    // extra rivet rows all over
-    g.each((c, x, y, z) => {
-      if ((c & 7) === CH.iron && y % 3 === 0 && (x + z) % 3 === 0) return STEEL_LIGHT;
-      return undefined;
-    }, true);
-    g.on(CH.brass, () => {
-      for (let y = 9; y <= 17; y += 2)
-        for (let x = -6; x <= 5; x += 2) {
-          for (let z = 13; z > 0; z--)
-            if (g.has(x, y, z)) {
-              g.set(x, y, z + 1, (x + y) % 4 === 1 ? 0xf6cf6a : BRASS);
-              break;
-            }
-        }
-    });
-    g.on(CH.iron, () => {
-      for (let y = 7; y <= 19; y += 3)
-        for (let i = 0; i < 24; i++) {
-          const a = (i / 24) * Math.PI * 2;
-          const k = barrelR(y + 0.5);
-          g.add(Math.cos(a) * (10 * k + 0.6), y, 0.5 + Math.sin(a) * (8.8 * k + 0.6), STEEL_LIGHT);
-        }
-    });
-  }
-  // collar on top
-  g.on(CH.iron, () => g.cyl('y', 0, 0.5, 6.2, 21, 22, (x, y, z) => ((x + z) % 2 === 0 ? GUNMETAL : STEEL_DARK)));
-  // back: two glowing steam vents with louvres, pipes to the shoulders
-  const vent = (x0: number, x1: number, y0: number, y1: number) => {
-    for (let y = y0; y <= y1; y++)
-      for (let x = x0; x <= x1; x++) {
-        let zb = -13;
-        for (let z = -12; z <= 0; z++)
-          if (g.has(x, y, z)) {
-            zb = z;
-            break;
-          }
-        if (zb <= -13) continue;
-        const slat = (y - y0) % 2 === 0;
-        g.on(slat ? CH.iron : CH.pulse, () => g.set(x, y, zb, slat ? GUNMETAL : EMBER));
-        if (x === x0 || x === x1 || y === y0 || y === y1) g.on(CH.iron, () => g.set(x, y, zb - 1, STEEL_DARK));
-      }
-  };
-  const big = accent === 5;
-  vent(-6, -2, 11, big ? 18 : 16);
-  vent(1, 5, 11, big ? 18 : 16);
-  g.on(CH.brass, () => {
-    for (const s of [1, -1]) {
-      g.tube(s * 4, 17, -8.5, s * 7, 21, -6, 0.9, COPPER);
-      g.tube(s * 7, 21, -6, s * 9.5, 21, -2, 0.9, COPPER);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      g.put(cx + Math.sin(a) * r, y, cz + Math.cos(a) * r, col);
     }
   });
-  switch (accent) {
-    case 1:
-      rusty(g, 0.28, 31);
-      break;
-    case 2:
-      // hazard stripes across the belly plate
-      g.repaint((x, y, z) => z > 2 && y >= 15 && y <= 17 && Math.abs(x + 0.5) < 7.5, CH.rubber, (x, y) => ((x + y + 40) % 4 < 2 ? HAZARD : 0x1f2026), true);
-      break;
-    case 5:
-      // pipe bundle
-      g.on(CH.brass, () => {
-        for (let i = 0; i < 4; i++) {
-          const x = -4.5 + i * 3;
-          const col = i % 2 ? COPPER : 0x9aa2ab;
-          g.tube(x, 6, -10.6, x, 21, -10.2, 1.1, col);
-          g.tube(x, 21, -10.2, x * 1.6, 24.5, -5, 1.1, col);
-          g.tube(x * 1.6, 24.5, -5, x * 1.9, 22.5, 1, 1.1, col);
-          g.set(x, 9, -12, BRASS);
-          g.set(x, 15, -12, BRASS);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Body (body slot): barrel belly, collar, hips
+// ---------------------------------------------------------------------------------------------
+
+function buildBody(l: Look): RGrid {
+  const g = new RGrid(30, 30, 30, -15, 4, -14);
+  const body = slug(l.body);
+  const [bx, by, bz] = BELLY_C;
+  const [rx, ry, rz] = BELLY_R;
+  let skinC: ColorFn = plate(STEEL, 1);
+  if (body === 'hazard_plates') skinC = rusty(plate(0x877d72, 2), 0.15, 3);
+  else if (body === 'clean_chrome') skinC = (x, y, z) => shade(CHROME, 0.88 + hv(x, y, z, 4) * 0.14);
+  else if (body === 'brass_boiler') skinC = (x, y, z) => shade(BRASS, 0.86 + hv(x, y, z, 5) * 0.18);
+  else if (body === 'copper_coils') skinC = plate(0x6a625c, 6);
+  g.on(CH.iron, () => {
+    g.blob(bx, by, bz, rx, ry, rz, skinC);
+    // hip block and pelvis under the barrel
+    g.sblob(0, 10.5, 0, 8.5, 3.6, 6.5, 3, gun);
+    // neck collar ring
+    g.cyl('y', 0, 1.5, 6.4, 29, 30, gun);
+  });
+  // vertical plate seams (riveted straps) and horizontal bands
+  const straps = body === 'brass_boiler' ? shade(BRASS, 0.7) : body === 'clean_chrome' ? 0xa8b0b8 : STEEL_D;
+  g.repaint((x, y, z) => {
+    const a = Math.atan2(x + 0.5, z + 0.5 - bz);
+    return Math.abs(((a / (Math.PI * 2)) * 8 + 8.5) % 1 - 0.5) < 0.07 && y > 10;
+  }, CH.iron, (x, y, z) => shade(straps, 0.9 + hv(x, y, z, 7) * 0.15), true);
+  // yellow bands round the barrel (ref10), hazard-orange on the default plates
+  const band = body === 'hazard_plates' ? rusty((x, y, z) => shade(HAZ, 0.85 + hv(x, y, z, 8) * 0.2), 0.22, 9) : (x: number, y: number, z: number) => shade(0xd9a030, 0.88 + hv(x, y, z, 10) * 0.15);
+  if (body !== 'clean_chrome' && body !== 'brass_boiler') {
+    g.repaint((x, y) => y === 23 || y === 24, CH.rubber, band, true);
+    g.repaint((x, y) => y === 12, CH.rubber, band, true);
+  }
+  const at = (y: number) => rx * Math.sqrt(Math.max(0, 1 - ((y + 0.5 - by) / ry) ** 2)) + 0.05;
+  rivetRing(g, bx, bz, at(25), 25, 28, shade(STEEL_D, 1.1));
+  rivetRing(g, bx, bz, at(22), 22, 28, shade(STEEL_D, 1.1));
+  rivetRing(g, bx, bz, at(13), 13, 26, shade(STEEL_D, 1.1));
+
+  switch (body) {
+    case 'hazard_plates': {
+      // hazard stripe plates on the lower belly sides
+      for (const sx of [1, -1]) g.repaint((x, y, z) => y >= 14 && y <= 19 && Math.abs(x + 0.5) > 9 && z > -3 && Math.sign(x + 0.5) === sx, CH.rubber, hazard(11, 'zy'), true);
+      // porthole lamp on the upper chest
+      g.on(CH.iron, () => g.cyl('z', -3, 26.5, 2.6, 11, 12, gun));
+      g.on(CH.glow, () => g.cyl('z', -3, 26.5, 1.7, 12, 13, (x, y, z) => ((x + y + 100) % 3 === 0 ? shade(GLOW, 0.75) : hv(x, y, z, 12) > 0.6 ? GLOW_HOT : GLOW)));
+      // red valve wheel and pipes on the left side
+      g.on(CH.iron, () => {
+        g.tube(11.5, 20, 5, 13, 20, 6, 0.8, gun);
+        for (let i = 0; i < 16; i++) {
+          const a = (i / 16) * Math.PI * 2;
+          g.blob(13.4, 20 + Math.sin(a) * 2.4, 6 + Math.cos(a) * 2.4, 0.55, 0.55, 0.55, VALVE);
         }
+        g.tube(13.4, 20, 3.6, 13.4, 20, 8.4, 0.45, VALVE);
+        g.tube(13.4, 17.6, 6, 13.4, 22.4, 6, 0.45, VALVE);
+        // pipes bending round the belly
+        g.tube(10.5, 16, 7.5, 12.4, 13, 4, 0.9, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 13) * 0.2));
+        g.tube(12.4, 13, 4, 12, 12, -4, 0.9, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 13) * 0.2));
+        g.tube(-11.5, 27, 3, -12, 22, 7, 0.8, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 14) * 0.2));
       });
       break;
-    case 6:
-      // gauge panel: two big dials mounted proud of the belly plate, and a glowing indicator lamp
-      {
-        /** first empty cell in front of the belly surface at (x, y) */
-        const front = (x: number, y: number): number => {
-          for (let z = 13; z > 0; z--) if (g.has(x, y, z)) return z + 1;
-          return 11;
-        };
-        for (const [cx, cy] of [[-4, 13], [3, 14]] as const) {
-          const zf = front(cx, cy);
-          for (let y = -3; y <= 2; y++)
-            for (let x = -3; x <= 2; x++) {
-              const r = Math.hypot(x + 0.5, y + 0.5);
-              if (r > 3.1) continue;
-              const rim = r > 2.2;
-              g.on(rim ? CH.brass : CH.wet, () => g.set(cx + x, cy + y, zf, rim ? ((x + y) % 2 ? BRASS : 0xf6cf6a) : 0xf4f1e6));
-            }
-          // needle and tick marks
-          g.on(CH.wet, () => {
-            g.set(cx, cy, zf + 1, 0x1d1f24);
-            g.set(cx + 1, cy + 1, zf + 1, 0xd8302a);
-            g.set(cx + 1, cy - 2, zf, 0x2a2c33);
-            g.set(cx - 2, cy + 1, zf, 0x2a2c33);
-          });
+    }
+    case 'clean_chrome':
+      g.repaint((x, y, z) => hv(x, y, z, 15) > 0.97 && z > 0, CH.iron, 0xffffff, true);
+      break;
+    case 'copper_coils': {
+      // glowing copper coils wrapped round the belly
+      for (let k = 0; k < 3; k++) {
+        const y0 = 14 + k * 4.5;
+        const dy = (y0 - by) / ry;
+        const rr = Math.sqrt(Math.max(0, 1 - dy * dy));
+        for (let i = 0; i < 64; i++) {
+          const a = (i / 64) * Math.PI * 2;
+          g.on(CH.brass, () => g.blob(Math.sin(a) * (rx * rr + 0.7), y0 + (i / 64) * 1.4, bz + Math.cos(a) * (rz * rr + 0.7), 0.8, 0.8, 0.8, (x, y, z) => shade(COPPER, 0.85 + hv(x, y, z, 16) * 0.25)));
         }
-        g.on(CH.pulse, () => g.box(-1, 9, front(-1, 9), 0, 10, front(0, 10), 0x6aff7a));
+        g.repaint((x, y, z) => Math.abs(y - y0 - 0.7) < 0.6 && hv(x, y, z, 17) > 0.6, CH.pulse, 0xffb070, true);
       }
       break;
-    case 7:
-      // copper coils with glowing tops
-      for (const x of [-8, 7]) {
-        g.on(CH.brass, () => {
-          for (let y = 19; y <= 26; y++) g.cyl('y', x + 0.5, -4, y % 2 ? 1.7 : 1.2, y, y, y % 2 ? COPPER : 0xa65a28);
-        });
-        g.on(CH.pulse, () => g.blob(x + 0.5, 27.6, -4, 1.4, 1.2, 1.4, 0x9fd8ff));
+    }
+    case 'brass_boiler': {
+      // pressure gauges and a sight glass
+      for (const [gx, gy] of [[-4, 24], [3.5, 25]] as const) {
+        const gz = bz + Math.sqrt(Math.max(0, 1 - (gx / rx) ** 2 - ((gy - by) / ry) ** 2)) * rz;
+        g.on(CH.brass, () => g.cyl('z', gx, gy, 2.2, Math.floor(gz), Math.floor(gz) + 1, shade(BRASS, 1.1)));
+        g.on(CH.wet, () => g.cyl('z', gx, gy, 1.5, Math.floor(gz) + 1, Math.floor(gz) + 1, 0xf2eee0));
+        g.on(CH.iron, () => g.tube(gx, gy, Math.floor(gz) + 2, gx + 1, gy + 1, Math.floor(gz) + 2, 0.4, 0x1a1a1a));
       }
+      g.on(CH.wet, () => g.box(6, 13, 11, 7, 19, 11, (x, y) => (y < 16 ? 0x5ab0e0 : 0xc8e8f4)));
       break;
+    }
     default:
       break;
   }
+  dullRust(g);
   return g;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Head, jaw, eyes
+// Head (bare dome with visor; face slot), eyes (visor glow)
 // ---------------------------------------------------------------------------------------------
 
-function inHead(x: number, y: number, z: number): boolean {
-  const [cx, cy, cz] = HEAD_C;
-  if (y < 21.5 || y > 30.5) return false;
-  const top = y > 27 ? Math.sqrt(Math.max(0, 1 - ((y + 0.5 - 27) / 3.6) ** 2)) : 1;
-  const dx = Math.abs(x + 0.5 - cx) / (5.6 * (0.35 + 0.65 * top));
-  const dz = Math.abs(z + 0.5 - cz) / (5.3 * (0.35 + 0.65 * top));
-  void cy;
-  return dx ** 3 + dz ** 3 <= 1;
-}
-
-function buildHead(face: number, t: TeamCols, bare: boolean): RGrid {
-  const g = new RGrid(16, 14, 16, -8, 20, -7);
+function buildHead(l: Look): RGrid {
+  const g = new RGrid(16, 13, 16, -8, 27, -6);
+  const [cx, cy, cz] = HC;
+  const [rx, ry, rz] = HR;
+  const face = slug(l.face);
   g.on(CH.iron, () => {
-    for (let y = 21; y <= 31; y++) for (let z = -7; z <= 8; z++) for (let x = -8; x <= 7; x++) if (inHead(x, y, z)) g.set(x, y, z, steel(y > 27 ? STEEL_LIGHT : STEEL, 41)(x, y, z));
+    g.blob(cx, cy, cz, rx, ry, rz, plate(STEEL_L, 21, 3), (x, y) => y >= 29);
+    g.cyl('y', cx, cz, rx, 29, 30, gun);
   });
-  // team stripe over the dome (reads from above)
-  g.repaint((x, y, z) => Math.abs(x + 0.5) < 1.6 && y >= 27, CH.rubber, (x, y, z) => shade(t.main, 0.95 + hashVox(x, y, z, 42) * 0.08), true);
+  // visor slot across the front (the eyes part glows inside it)
+  g.carve((x, y, z) => y >= 32 && y <= 33 && z > cz + 2 && Math.abs(x + 0.5) < 4);
+  g.on(CH.iron, () => {
+    for (let x = -4; x <= 3; x++) for (let y = 32; y <= 33; y++) g.add(x, y, Math.floor(cz + 2), 0x1a1614);
+  });
+  rivetRing(g, cx, cz, rx * Math.sqrt(1 - ((30.5 - cy) / ry) ** 2) + 0.2, 30, 16, STEEL_D);
   // ear bolts
-  g.on(CH.brass, () => {
-    g.cyl('x', 25, 0.5, 1.4, 5, 6, BRASS);
-    g.cyl('x', 25, 0.5, 1.4, -7, -6, BRASS);
-    g.set(6, 25, 0, 0xf6cf6a);
-    g.set(-7, 25, 0, 0xf6cf6a);
-  });
-  // jaw recess
-  g.carve((x, y, z) => y < 23.5 && z > 1 && Math.abs(x + 0.5) < 4.6);
   g.on(CH.iron, () => {
-    for (let x = -4; x <= 3; x++) for (let z = 1; z <= 5; z++) g.add(x, 23, z, 0x1c1f24);
+    for (const sx of [1, -1]) g.cyl('x', 32, cz, 1.4, sx > 0 ? 5 : -6, sx > 0 ? 5 : -6, gun);
   });
-  // face plate recess for the eyes
-  if (face === 5) {
-    g.on(CH.wet, () => g.box(-4, 24, 5, 3, 28, 6, 0x101418));
-  } else {
-    g.carve((x, y, z) => z >= 5 && y >= 25 && y <= 27 && Math.abs(x + 0.5) < (face === 3 ? 2.6 : 4.6));
-    g.on(CH.iron, () => {
-      for (let y = 25; y <= 27; y++) for (let x = -5; x <= 4; x++) g.add(x, y, 4, GUNMETAL);
+  if (face === 'monocle') {
+    g.on(CH.brass, () => {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        g.blob(2.2 + Math.cos(ang) * 1.7, 32.5 + Math.sin(ang) * 1.7, cz + 5.4, 0.5, 0.5, 0.5, BRASS);
+      }
+      g.fineLine(3.8, 31.2, cz + 5.2, 3.6, 30.5, cz + 4.2, BRASS);
     });
-    if (face === 3 || face === 4) {
-      g.on(CH.brass, () => {
-        const cx = face === 3 ? -0.5 : 1.5;
-        for (let a = 0; a < 16; a++) g.add(cx + Math.cos((a / 16) * Math.PI * 2) * 2.6, 26 + Math.sin((a / 16) * Math.PI * 2) * 2.6, 6, BRASS);
-      });
-    }
-  }
-  if (bare) {
-    // antenna with a blinking tip
-    g.on(CH.iron, () => g.box(2, 30, -1, 2, 33, -1, STEEL_DARK));
-    g.on(CH.glow, () => g.set(2, 34, -1, t.light));
-  }
-  return g;
-}
-
-function buildJaw(face: number, t: TeamCols): RGrid {
-  const g = new RGrid(12, 6, 10, -6, 20, -1);
-  g.on(CH.iron, () => {
-    for (let y = 21; y <= 23; y++) for (let z = 1; z <= 6; z++) for (let x = -5; x <= 4; x++) if (inHead(x, y, z)) g.set(x, y, z, steel(STEEL_DARK, 51)(x, y, z));
-  });
-  if (face === 2) {
-    // speaker grille
-    g.repaint((x, y, z) => z >= 4 && y <= 22, CH.iron, (x, y) => (y % 2 === 0 ? 0x15171b : STEEL_LIGHT), true);
-  } else if (face === 5) {
-    // pixel smile
-    g.repaint((x, y, z) => z >= 4, CH.wet, 0x101418, true);
+    g.on(CH.wet, () => g.cyl('z', 2.2, 32.5, 1.3, Math.floor(cz + 5.3), Math.floor(cz + 5.3), 0xb8e0f0));
+  } else if (face === 'screen_smile') {
+    g.on(CH.iron, () => g.box(-3, 28, cz + 3, 2, 31, cz + 4, 0x202428));
     g.on(CH.glow, () => {
-      for (const x of [-3, 2]) g.set(x, 23, 6, t.light);
-      for (let x = -2; x <= 1; x++) g.set(x, 22, 6, t.light);
+      g.box(-2, 29, cz + 5, 1, 29, cz + 5, 0x7af0a0);
+      g.set(-3, 30, cz + 5, 0x7af0a0);
+      g.set(2, 30, cz + 5, 0x7af0a0);
     });
-  } else {
-    g.repaint((x, y, z) => z >= 5 && y === 22 && (x + 10) % 2 === 0, CH.iron, 0x15171b, true);
   }
   return g;
 }
 
-function buildEyes(face: number, t: TeamCols): RGrid {
-  const g = new RGrid(14, 8, 4, -7, 23, 4);
-  const hot = mix(t.light, 0xffffff, 0.45);
+function buildEyes(l: Look): RGrid {
+  const g = new RGrid(10, 4, 4, -5, 31, 4);
+  const face = slug(l.face);
   g.on(CH.glow, () => {
-    switch (face) {
-      case 0:
-        for (let x = -4; x <= 3; x++) g.set(x, 26, 6, Math.abs(x + 0.5) < 2 ? hot : t.light);
-        for (let x = -3; x <= 2; x++) g.set(x, 25, 5, shade(t.light, 0.7));
-        break;
-      case 1:
-        for (const cx of [2, -3]) {
-          g.box(cx, 25, 6, cx + 1, 26, 6, t.light);
-          g.set(cx + (cx > 0 ? 1 : 0), 26, 7, hot);
-        }
-        break;
-      case 2:
-        for (let x = -4; x <= 3; x++) g.set(x, 26, 5, t.light);
-        g.set(-2, 26, 6, hot);
-        g.set(1, 26, 6, hot);
-        break;
-      case 3:
-        g.box(-2, 25, 6, 1, 27, 6, t.light);
-        g.box(-1, 25, 7, 0, 26, 7, hot);
-        break;
-      case 4:
-        g.box(0, 25, 6, 2, 27, 6, t.light);
-        g.set(1, 26, 7, hot);
-        g.set(-3, 26, 6, t.light);
-        break;
-      case 5:
-        // pixel eyes: happy arches
-        for (const cx of [2, -3]) {
-          g.set(cx, 26, 6, t.light);
-          g.set(cx + 1, 26, 6, t.light);
-          g.set(cx - 1, 25, 6, t.light);
-          g.set(cx + 2, 25, 6, t.light);
-        }
-        break;
-      default:
-        break;
-    }
+    for (let x = -4; x <= 3; x++) g.set(x, 32, Math.floor(HC[2] + 3), (x + 100) % 3 === 0 ? GLOW_HOT : GLOW);
+    for (let x = -3; x <= 2; x++) g.set(x, 33, Math.floor(HC[2] + 3), shade(GLOW, 0.85));
+    if (face === 'monocle') g.set(2, 32, Math.floor(HC[2] + 3), 0xfff0c0);
   });
-  if (face === 1) {
-    g.on(CH.iron, () => {
-      for (const cx of [2.5, -2.5]) for (let a = 0; a < 12; a++) g.add(cx + Math.cos((a / 12) * Math.PI * 2) * 1.9, 26 + Math.sin((a / 12) * Math.PI * 2) * 1.9, 5, GUNMETAL);
-    });
-  }
+  // showcase: scanlines across the visor
+  if (buildRes() > 1) g.repaint(() => Math.floor(P.y * 2 + 100) % 2 === 0, CH.glow, shade(GLOW, 0.7), true);
   return g;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hats
+// Head slot
 // ---------------------------------------------------------------------------------------------
 
 interface HatMeta {
@@ -369,278 +268,472 @@ interface HatMeta {
   mode: HatMode;
   spin: number;
   extraJoint: V3;
+  top: number;
 }
-const HC = HEAD_C[2];
-const HAT_META: readonly HatMeta[] = [
-  { hat: false, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra },
-  { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra },
-  { hat: true, extra: true, mode: 'spin', spin: 1.6, extraJoint: [0, 33, HC - 1] },
-  { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra },
-  { hat: true, extra: true, mode: 'spin', spin: 0.8, extraJoint: [0, 30, HC] },
-  { hat: true, extra: true, mode: 'spin', spin: 14, extraJoint: [0, 34, HC] },
-  { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra },
-  { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra },
-];
 
-function buildHat(hat: number, t: TeamCols): { hat: RGrid | null; extra: RGrid | null } {
-  const cz = HC;
-  const g = new RGrid(20, 14, 20, -10, 27, cz - 10);
-  switch (hat) {
-    case 1: {
-      // smokestack with a brass band and an ember glow at the top
+function hatMeta(id: string): HatMeta {
+  const cz = HC[2];
+  switch (id) {
+    case 'grille_dome':
+      return { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra, top: 39 };
+    case 'radar_dish':
+      return { hat: true, extra: true, mode: 'spin', spin: 2.2, extraJoint: [0, 41, cz], top: 46 };
+    case 'lamp_head':
+      return { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra, top: 41 };
+    case 'kettle_lid':
+      return { hat: true, extra: true, mode: 'bob', spin: 0, extraJoint: [0, 38, cz], top: 41 };
+    case 'diving_helm':
+      return { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra, top: 40 };
+    case 'chrome_crown':
+      return { hat: true, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra, top: 42 };
+    default:
+      return { hat: false, extra: false, mode: 'none', spin: 0, extraJoint: SK.hatExtra, top: 37.5 };
+  }
+}
+
+function buildHat(id: string): RGrid {
+  const [cx, cy, cz] = HC;
+  const g = new RGrid(22, 18, 22, -11, 28, cz - 11);
+  switch (id) {
+    case 'grille_dome': {
+      // riveted dome cap with hazard paint and a furnace grille cage over the visor
       g.on(CH.iron, () => {
-        g.cyl('y', -1.5, cz - 1, 2.2, 29, 35, steel(GUNMETAL, 61));
-        g.cyl('y', -1.5, cz - 1, 2.8, 35, 36, STEEL_DARK);
+        g.blob(cx, cy + 0.6, cz, 5.9, 4.8, 5.7, rusty(plate(0x6e655c, 31, 2), 0.25, 32), (x, y) => y >= 34.5);
+        g.cyl('y', cx, cz, 6, 34, 34, gun);
+        g.put(0, 38, cz, gun);
       });
-      g.on(CH.brass, () => g.cyl('y', -1.5, cz - 1, 2.5, 32, 32, BRASS));
-      g.on(CH.pulse, () => g.cyl('y', -1.5, cz - 1, 1.4, 36, 36, EMBER));
-      g.on(CH.rubber, () => g.cyl('y', -1.5, cz - 1, 2.5, 30, 30, t.main));
-      return { hat: g, extra: null };
-    }
-    case 2: {
-      // radar dish on a mast (dish spins)
-      g.on(CH.iron, () => g.box(-1, 29, cz - 2, 0, 32, cz - 1, STEEL_DARK));
-      const d = new RGrid(14, 8, 10, -7, 31, cz - 6);
-      d.on(CH.iron, () => {
-        for (let y = -3; y <= 3; y++)
-          for (let x = -5; x <= 4; x++) {
-            const r = Math.hypot(x + 0.5, y + 0.5);
-            if (r <= 4.6) d.set(x, 34 + y * 0.8, cz - 1 + 3 - r * 0.5, r > 3.8 ? t.main : steel(STEEL_LIGHT, 62)(x, y, 0));
-          }
-        d.box(-1, 34, cz - 1, 0, 34, cz + 2, STEEL_DARK);
-      });
-      d.on(CH.glow, () => d.set(-1, 34, cz + 3, t.light));
-      return { hat: g, extra: d };
-    }
-    case 3: {
-      // searchlight lamp head
+      g.repaint((x, y, z) => y >= 36 && (x + z + 100) % 4 < 2 && z < cz + 3, CH.rubber, (x, y, z) => shade(HAZ, 0.85 + hv(x, y, z, 33) * 0.2), true);
+      rivetRing(g, cx, cz, 6.1, 35, 18, shade(STEEL_D, 1.15));
+      // grille: vertical bars in front of the visor with a frame
       g.on(CH.iron, () => {
-        g.box(-4, 29, cz - 3, 3, 33, cz + 3, steel(GUNMETAL, 63));
-        g.box(-3, 34, cz - 2, 2, 34, cz + 1, STEEL_DARK);
+        for (let x = -5; x <= 4; x++) {
+          if ((x + 100) % 2 === 0) g.box(x, 30, Math.floor(cz + 5.4), x, 34, Math.floor(cz + 5.4), shade(GUN, 1.1));
+        }
+        g.box(-5, 30, Math.floor(cz + 5.4), 4, 30, Math.floor(cz + 5.4), GUN);
+        g.box(-5, 34, Math.floor(cz + 5.4), 4, 34, Math.floor(cz + 5.4), GUN);
+        for (const sx of [1, -1]) g.cyl('x', 32, cz + 3, 1.8, sx > 0 ? 5 : -6, sx > 0 ? 6 : -7, gun);
       });
-      g.on(CH.glow, () => g.box(-3, 30, cz + 4, 2, 32, cz + 4, 0xfff4c8));
+      g.on(CH.glow, () => {
+        for (let x = -5; x <= 4; x++) if ((x + 100) % 2 !== 0) g.box(x, 31, Math.floor(cz + 4.4), x, 33, Math.floor(cz + 4.4), x % 3 === 0 ? GLOW_HOT : GLOW);
+      });
+      dullRust(g);
+      return g;
+    }
+    case 'radar_dish': {
+      g.on(CH.iron, () => {
+        g.cyl('y', 0, cz, 0.9, 36, 40, gun);
+        g.cyl('y', 0, cz, 2, 36, 36, gun);
+      });
+      return g;
+    }
+    case 'lamp_head': {
+      // a bright searchlight dome on a ring
+      g.on(CH.iron, () => {
+        g.cyl('y', 0, cz, 4.6, 36, 37, gun);
+        g.cyl('z', 0, 38.5, 3, Math.floor(cz - 2), Math.floor(cz + 3), plate(STEEL_L, 34, 2));
+      });
+      g.on(CH.glow, () => g.cyl('z', 0, 38.5, 2.3, Math.floor(cz + 3), Math.floor(cz + 4), (x, y, z) => (hv(x, y, z, 35) > 0.5 ? 0xfffbe0 : 0xfff0b0)));
+      g.on(CH.brass, () => ring(g, 0, cz, 4.4, 5.2, 35, 35, BRASS));
+      return g;
+    }
+    case 'kettle_lid': {
+      // an enamelled kettle lid with a little spout that whistles steam
+      g.on(CH.rubber, () => g.blob(0, 35, cz, 5.6, 2.6, 5.6, (x, y, z) => shade(0x3a7a8a, 0.86 + hv(x, y, z, 36) * 0.18), (x, y) => y >= 35));
+      g.on(CH.iron, () => {
+        g.tube(4, 35.5, cz + 2, 7.5, 37.5, cz + 4, 0.8, gun);
+        ring(g, 0, cz, 5, 6, 35, 35, gun);
+      });
+      return g;
+    }
+    case 'diving_helm': {
+      // brass diving helmet with three portholes enclosing the dome
       g.on(CH.brass, () => {
-        for (let x = -4; x <= 3; x++) {
-          g.set(x, 29, cz + 4, BRASS);
-          g.set(x, 33, cz + 4, BRASS);
+        g.blob(cx, cy + 0.5, cz, 6.6, 6, 6.6, (x, y, z) => shade(BRASS, 0.86 + hv(x, y, z, 37) * 0.2), (x, y) => y >= 29);
+        g.cyl('y', cx, cz, 7, 28, 29, (x, y, z) => shade(COPPER, 0.85 + hv(x, y, z, 38) * 0.2));
+      });
+      g.carveP((px, py, pz) => (Math.hypot(px, py - 33) < 2.6 && pz > cz + 3) || (Math.hypot(py - 33, pz - cz) < 2 && Math.abs(px) > 4));
+      g.on(CH.wet, () => {
+        g.cyl('z', 0, 33, 2.6, Math.floor(cz + 4.5), Math.floor(cz + 4.5), (x, y, z) => shade(0x9fd0d8, 0.9 + hv(x, y, z, 39) * 0.1));
+        for (const sx of [1, -1]) g.cyl('x', 33, cz, 2, sx > 0 ? 5 : -6, sx > 0 ? 5 : -6, 0x9fd0d8);
+      });
+      g.on(CH.brass, () => {
+        for (let a = 0; a < 16; a++) {
+          const ang = (a / 16) * Math.PI * 2;
+          g.blob(Math.cos(ang) * 2.9, 33 + Math.sin(ang) * 2.9, cz + 6.1, 0.55, 0.55, 0.55, shade(BRASS, 1.12));
         }
       });
-      g.on(CH.rubber, () => g.box(-4, 31, cz - 3, -4, 31, cz + 3, t.main));
-      return { hat: g, extra: null };
+      return g;
     }
-    case 4: {
-      // gear crown (turns slowly)
-      g.on(CH.rubber, () => g.cyl('y', 0, cz, 4.4, 29, 29, t.main));
-      const c = new RGrid(16, 6, 16, -8, 28, cz - 8);
-      c.on(CH.brass, () => {
-        for (let i = 0; i < 36; i++) {
-          const a = (i / 36) * Math.PI * 2;
-          c.set(Math.cos(a) * 4.8, 30, cz + Math.sin(a) * 4.8, BRASS);
-          if (i % 4 < 2) {
-            c.set(Math.cos(a) * 4.8, 31, cz + Math.sin(a) * 4.8, shade(BRASS, 1.1));
-            c.set(Math.cos(a) * 4.8, 32, cz + Math.sin(a) * 4.8, shade(BRASS, 1.2));
+    case 'chrome_crown': {
+      // Limited: a mirror-chrome crown with ruby lamps
+      g.premium(() => {
+        g.on(CH.iron, () => {
+          ring(g, 0, cz, 4.8, 6.2, 35, 36, (x, y, z) => shade(CHROME, 0.92 + hv(x, y, z, 40) * 0.1));
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2;
+            g.tube(Math.sin(a) * 5.6, 36, cz + Math.cos(a) * 5.6, Math.sin(a) * 5.8, 40, cz + Math.cos(a) * 5.8, 0.7, CHROME, 0.4);
           }
-        }
+        });
+        g.on(CH.glow, () => {
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+            g.blob(Math.sin(a) * 6.3, 35.6, cz + Math.cos(a) * 6.3, 0.75, 0.75, 0.75, RUBY);
+          }
+          g.blob(0, 40.6, cz + 5.6, 0.7, 0.7, 0.7, RUBY);
+        });
       });
-      return { hat: g, extra: c };
-    }
-    case 5: {
-      // propeller beanie: team cap, mast, spinning blades
-      g.on(CH.rubber, () => g.blob(0, 29, cz, 4.4, 2.4, 4.2, (x, y, z) => ((x + 40) % 4 < 2 ? t.main : t.light), (x, y) => y >= 29));
-      g.on(CH.iron, () => g.box(-1, 31, cz - 1, 0, 33, cz, STEEL_DARK));
-      const p = new RGrid(18, 3, 6, -9, 33, cz - 3);
-      p.on(CH.rubber, () => {
-        p.box(-8, 34, cz - 1, -2, 34, cz, t.main);
-        p.box(1, 34, cz - 1, 7, 34, cz, HAZARD);
-      });
-      p.on(CH.brass, () => p.box(-1, 34, cz - 1, 0, 35, cz, BRASS));
-      return { hat: g, extra: p };
-    }
-    case 6: {
-      // welding mask flipped up on the forehead
-      g.on(CH.iron, () => {
-        for (let x = -5; x <= 4; x++) for (let y = 28; y <= 32; y++) for (let z = cz + 1; z <= cz + 3; z++) if (Math.hypot(x + 0.5, (y - 30) * 1.2) < 5.5 && (z === cz + 1 + Math.floor(Math.abs(x + 0.5) / 3) || y === 32)) g.set(x, y, z - 1 + (y - 28) * 0.4, steel(GUNMETAL, 64)(x, y, z));
-      });
-      g.on(CH.wet, () => g.box(-2, 30, cz + 3, 1, 31, cz + 3, 0x1d3a2a));
-      g.on(CH.rubber, () => g.box(-5, 28, cz - 1, 4, 28, cz + 1, t.main));
-      return { hat: g, extra: null };
-    }
-    case 7: {
-      // kettle lid with a knob and a steaming spout
-      g.on(CH.iron, () => {
-        g.blob(0, 29, cz, 5.4, 2.6, 5.2, steel(STEEL_LIGHT, 65), (x, y) => y >= 29);
-        g.cyl('y', 0, cz, 5.8, 29, 29, STEEL_DARK);
-      });
-      g.on(CH.rubber, () => g.blob(0, 32.5, cz, 1.6, 1.3, 1.6, t.main));
-      g.on(CH.brass, () => g.tube(4, 30, cz + 2, 6.5, 32, cz + 4, 0.8, COPPER));
-      g.on(CH.pulse, () => g.set(6, 33, cz + 4, 0xe8f4ff));
-      return { hat: g, extra: null };
+      return g;
     }
     default:
-      return { hat: null, extra: null };
+      return g;
   }
 }
 
+function buildHatExtra(id: string): RGrid {
+  const cz = HC[2];
+  const g = new RGrid(16, 8, 16, -8, 38, cz - 8);
+  if (id === 'radar_dish') {
+    // the dish spins on its mast
+    g.on(CH.iron, () => {
+      for (let x = -6; x <= 5; x++)
+        for (let y = 39; y <= 45; y++) {
+          const dx = x + 0.5;
+          const dy = y + 0.5 - 42;
+          if (dx * dx + dy * dy <= 36) g.put(x, y, cz + 1 + (dx * dx + dy * dy) * 0.06, (xx, yy, zz) => shade(STEEL_L, 0.88 + hv(xx, yy, zz, 41) * 0.14));
+        }
+      g.tube(0, 42, cz + 1, 0, 42, cz + 4.5, 0.5, gun);
+    });
+    g.on(CH.glow, () => g.put(0, 42, cz + 5, 0xff5040));
+    return g;
+  }
+  // kettle lid knob, rattling
+  g.on(CH.rubber, () => g.blob(0, 38.6, cz, 1.3, 1, 1.3, 0x2a2a2a));
+  return g;
+}
+
 // ---------------------------------------------------------------------------------------------
-// Arms, legs, claw
+// Arms: left = riveted arm and fist; right = crane arm (always). Team stripes on the pauldrons.
 // ---------------------------------------------------------------------------------------------
 
-function buildUpperArm(accent: number, t: TeamCols): RGrid {
-  const g = new RGrid(10, 12, 10, 5, 11, -5);
+function pauldron(g: RGrid, t: TeamCols): void {
+  const [sx, sy, sz] = SK.shoulder;
+  g.on(CH.rubber, () => {
+    g.blob(sx + 0.4, sy + 0.8, sz, 5, 3.8, 5, (x, y, z) => shade(STEEL, 0.86 + hv(x, y, z, 51) * 0.18), (x, y) => y >= sy - 1);
+  });
+  // team stripes: two broad diagonal bands across the top
+  g.repaint((x, y, z) => y >= sy && Math.floor((z - x + 100) / 2.5) % 2 === 0, CH.rubber, teamCloth(t, 52), true);
+  g.repaint((x, y) => y < sy && y >= sy - 1, CH.iron, gun, true);
+  rivetRing(g, sx + 0.4, sz, 4.7, sy - 1, 12, STEEL_D);
+}
+
+function buildUpperArm(l: Look, crane: boolean): RGrid {
+  const g = new RGrid(14, 14, 14, 7, 18, -7);
   const [sx, sy, sz] = SK.shoulder;
   g.on(CH.iron, () => {
-    g.blob(sx, sy, sz, 2.3, 2.3, 2.3, steel(STEEL_DARK, 71));
-    g.cyl('y', sx, sz, 1.6, 14, 17, steel(GUNMETAL, 72));
-    g.cyl('y', sx, sz, 1.0, 13, 15, CHROME);
+    g.blob(sx, sy - 0.5, sz, 3.4, 3.4, 3.4, gun);
+    g.cyl('y', sx + 0.3, sz, crane ? 3.4 : 2.9, 20, 25, plate(STEEL, 53, 3));
+    // elbow joint barrel
+    g.cyl('z', sx + 0.4, 20.5, 2.6, Math.floor(sz - 3), Math.floor(sz + 3), gun);
+    if (crane) {
+      // crane housing over the shoulder (behind the pauldron) and a hydraulic piston on the outside
+      g.box(sx - 2.5, 20, sz - 3.5, sx + 3, 24, sz + 3.5, plate(0x877d72, 54, 2));
+      g.tube(sx + 3.4, 25, sz + 1.5, sx + 3.2, 20, sz + 1.8, 0.75, 0x9aa0a6);
+      g.tube(sx + 3.4, 25, sz + 1.5, sx + 3.3, 22, sz + 1.6, 1, 0x4a4846);
+    }
   });
-  // pauldron
-  g.on(CH.rubber, () => {
-    g.blob(sx + 0.3, sy + 0.2, sz, 3.6, 3, 3.6, (x, y, z) => {
-      if (accent === 2 && y >= sy + 1 && (x + z + 40) % 4 < 2) return HAZARD;
-      return shade(y > sy + 1.5 ? t.light : t.main, 0.94 + hashVox(x, y, z, 73) * 0.08);
-    }, (x, y) => y >= sy - 0.5);
-    for (let a = 0; a < 14; a++) g.set(sx + 0.3 + Math.cos((a / 14) * Math.PI * 2) * 3.4, sy - 0.5, sz + Math.sin((a / 14) * Math.PI * 2) * 3.4, accent === 3 ? BRASS : t.dark);
-  });
-  g.on(CH.iron, () => {
-    g.set(sx + 3, sy + 1, sz, STEEL_LIGHT);
-    g.set(sx, sy + 3, sz + 2, STEEL_LIGHT);
-    g.set(sx, sy + 3, sz - 2, STEEL_LIGHT);
-  });
-  if (accent === 1) rusty(g, 0.3, 74);
-  if (accent === 7) g.on(CH.brass, () => {
-    for (let y = 14; y <= 16; y++) g.cyl('y', sx, sz, 1.9, y, y, y % 2 ? COPPER : 0xa65a28);
-  });
+  pauldron(g, l.t);
   return g;
 }
 
-function buildLowerArm(accent: number, t: TeamCols, clawArm: boolean): RGrid {
-  const g = new RGrid(10, 12, 10, 5, 1, -5);
-  const [ex, ey, ez] = SK.elbow;
+function buildLowerArm(l: Look): RGrid {
+  // the left arm: a riveted forearm with a hazard plate and a big three-finger fist
+  const g = new RGrid(13, 14, 14, 8, 5, -7);
+  const [ex, , ez] = SK.elbow;
+  const [hx, hy, hz] = SK.hand;
+  const body = slug(l.body);
+  g.on(CH.iron, () => {
+    g.sblob(ex + 0.3, 16, ez + 0.6, 3.7, 4.4, 3.7, 3, plate(STEEL, 61, 3));
+    g.cyl('y', hx, hz, 2.3, 11, 12, gun);
+    g.sblob(hx, hy + 0.6, hz + 0.6, 3.5, 2.6, 3.6, 3, plate(STEEL_L, 62, 2));
+    for (let i = 0; i < 3; i++) g.sblob(hx + 2 - i * 2, hy - 2, hz + 2.6, 0.9, 1.6, 1, 2.5, gun);
+    g.sblob(hx - 3.2, hy + 0.2, hz + 2.2, 0.9, 1.6, 0.9, 2.5, gun);
+  });
+  g.repaint((x, y, z) => x > ex + 2.6 && y >= 14 && y <= 18, CH.rubber, body === 'hazard_plates' ? rusty(hazard(63, 'zy'), 0.15, 64) : hazard(63, 'zy'), true);
+  return g;
+}
+
+function buildCraneArm(): RGrid {
+  // the right arm (built on the left, mirrored): a boxy boom with hazard panels and a pulley block
+  const g = new RGrid(14, 18, 14, 8, 2, -7);
+  const [ex, , ez] = SK.elbow;
   const [hx, hy, hz] = SK.hand;
   g.on(CH.iron, () => {
-    g.blob(ex, ey, ez, 1.9, 1.9, 1.9, steel(STEEL_DARK, 81));
-    g.cyl('y', ex, ez + 0.3, 2.4, 8, 12, steel(STEEL, 82));
+    g.box(ex - 3.5, 11, ez - 3.5, ex + 3.5, 19, ez + 3.5, plate(0x877d72, 71, 3));
+    g.box(ex - 2.5, 10, ez - 2.5, ex + 2.5, 10, ez + 2.5, gun);
+    // a gear box on the outer face
+    g.cyl('x', 16, ez, 2.2, Math.floor(ex + 3.5), Math.floor(ex + 4.5), gun);
+    // pulley block with a sheave the cable runs over
+    g.box(hx - 2.5, hy + 0.5, hz - 2, hx + 2, hy + 2.5, hz + 1.5, gun);
+    g.cyl('x', hy + 1.5, hz, 1.6, Math.floor(hx - 1), Math.floor(hx + 1), (x, y, z) => shade(0x8a8f96, 0.9 + hv(x, y, z, 72) * 0.15));
+    // cable and the chains down the side
+    for (let y = 12; y <= 18; y++) g.put(ex - 3.5, y, ez + ((y % 2) ? 1 : 0), (y % 2) ? 0x5a5a5a : 0x3a3a3a);
   });
-  g.on(CH.rubber, () => g.cyl('y', ex, ez + 0.3, 2.6, 10, 11, accent === 2 ? (x, y) => ((x + y + 40) % 2 ? HAZARD : 0x1f2026) : t.main));
-  if (clawArm) {
-    // wrist coupling and cable spool; the claw itself is the hook part
-    g.on(CH.brass, () => g.cyl('y', hx, hz, 2.2, 7, 7, BRASS));
+  g.repaint((x, y, z) => (x >= ex + 2.5 || z >= ez + 2.5) && y >= 12 && y <= 17, CH.rubber, rusty(hazard(73), 0.12, 74), true);
+  g.repaint((x, y, z) => y === 18 || y === 11, CH.rubber, (x, y, z) => shade(HAZ, 0.85 + hv(x, y, z, 75) * 0.2), true);
+  rivetRing(g, ex, ez, 3.6, 18, 12, STEEL_D);
+  dullRust(g);
+  return g;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Legs (feet slot); team band on the thigh
+// ---------------------------------------------------------------------------------------------
+
+function buildLeg(l: Look): RGrid {
+  const g = new RGrid(14, 14, 18, -1, 0, -8);
+  const [lx, , lz] = SK.leg;
+  const feet = slug(l.feet);
+  g.on(CH.iron, () => {
+    // thigh piston and a knee gear
+    g.cyl('y', lx, lz, 2.9, 7, 11, plate(STEEL, 81, 3));
+    g.cyl('x', 6, lz + 0.5, 2.6, Math.floor(lx - 3), Math.floor(lx + 2), gun);
+    g.cyl('y', lx, lz + 0.4, 2.4, 3, 6, (x, y, z) => shade(0x9aa0a6, 0.88 + hv(x, y, z, 82) * 0.14));
+  });
+  // team band round the thigh
+  g.on(CH.rubber, () => g.cyl('y', lx, lz, 3.2, 9, 10, teamCloth(l.t, 83)));
+  if (feet === 'stomper_feet') {
+    // heavy piston feet with hazard trim
     g.on(CH.iron, () => {
-      g.cyl('x', hy + 1.5, hz, 1.2, Math.floor(hx) - 2, Math.floor(hx) + 1, STEEL_DARK);
-      g.cyl('y', hx, hz, 1.2, 6, 6, 0x15171b);
+      g.sblob(lx, 2, lz + 1.5, 4.8, 2.2, 6.2, 3, rusty(plate(0x6e655c, 84, 2), 0.25, 85));
+      g.box(lx - 4, 0, lz - 4, lx + 3, 0, lz + 7, gun);
+      for (const dx of [-3, 2]) g.tube(lx + dx, 4, lz - 1, lx + dx * 0.6, 7, lz, 0.6, 0x9aa0a6);
+    });
+    g.repaint((x, y, z) => z >= lz + 6 && y >= 1 && y <= 3, CH.rubber, hazard(86), true);
+    // toe claws
+    g.on(CH.iron, () => {
+      for (const dx of [-3, 0, 3]) g.sblob(lx + dx - 0.5, 1.2, lz + 7.6, 1.1, 1.2, 1, 2.5, gun);
+    });
+    dullRust(g);
+  } else if (feet === 'treads') {
+    // tank tread units instead of feet
+    g.on(CH.rubber, () => {
+      g.sblob(lx, 2.6, lz + 1, 3.4, 2.6, 6.8, 4, (x, y, z) => ((z + 100) % 2 === 0 ? RUBBER : shade(RUBBER, 1.6)));
+    });
+    g.on(CH.iron, () => {
+      for (const zz of [-3.5, 1, 5.5]) g.cyl('x', 2.6, lz + zz, 1.5, Math.floor(lx - 4), Math.floor(lx + 3), (x, y, z) => shade(0x8a8f96, 0.85 + hv(x, y, z, 87) * 0.2));
     });
   } else {
-    // three-finger gripper
+    // plain flat feet
     g.on(CH.iron, () => {
-      g.box(Math.floor(hx) - 1, 6, Math.floor(hz) - 1, Math.floor(hx) + 1, 7, Math.floor(hz) + 1, steel(GUNMETAL, 83));
-      for (const [dx, dz] of [[-1, 2], [1, 2], [0, -2]] as const) {
-        g.box(Math.floor(hx) + dx, 4, Math.floor(hz) + dz, Math.floor(hx) + dx, 6, Math.floor(hz) + dz, STEEL_DARK);
-        g.set(Math.floor(hx) + dx, 3, Math.floor(hz) + dz - Math.sign(dz), CHROME);
-      }
+      g.sblob(lx, 1.6, lz + 1, 3.8, 1.8, 5, 3, plate(STEEL, 88, 2));
+      g.box(lx - 3, 0, lz - 3, lx + 2, 0, lz + 5, gun);
     });
   }
-  if (accent === 1) rusty(g, 0.3, 84);
   return g;
 }
 
-function buildLeg(accent: number, t: TeamCols): RGrid {
-  const g = new RGrid(10, 10, 12, 0, 0, -5);
-  const lx = SK.leg[0];
+// ---------------------------------------------------------------------------------------------
+// Held hooks (fallback), hanging from the crane pulley. Grip at the origin, +Z = down the cable.
+// ---------------------------------------------------------------------------------------------
+
+function buildHook(id: string): RGrid {
+  const g = new RGrid(16, 18, 26, -8, -8, -3);
   g.on(CH.iron, () => {
-    g.cyl('y', lx, 0, 2.1, 5, 8, steel(GUNMETAL, 91));
-    g.cyl('y', lx, 0, 1.3, 3, 5, CHROME);
-    g.blob(lx, 2.6, 0, 1.6, 1.4, 1.6, steel(STEEL_DARK, 92));
-    // boxy foot
-    g.box(Math.floor(lx) - 2, 0, -2, Math.floor(lx) + 2, 1, 4, steel(STEEL, 93));
+    // cable from the pulley
+    for (let z = 0; z <= 3; z++) g.put(0, 0, z, z % 2 ? 0x4a4a4a : 0x333333);
   });
-  g.on(CH.rubber, () => {
-    g.box(Math.floor(lx) - 2, 0, -3, Math.floor(lx) + 2, 0, 4, RUBBER);
-    g.box(Math.floor(lx) - 2, 1, 3, Math.floor(lx) + 2, 2, 5, (x, y, z) => (accent === 2 && (x + y + z) % 3 === 0 ? HAZARD : t.main));
+  switch (id) {
+    case 'magnet_hook': {
+      // a big red horseshoe magnet with steel tips
+      g.on(CH.rubber, () => {
+        for (let a = 0; a <= 18; a++) {
+          const ang = (a / 18) * Math.PI;
+          g.blob(Math.cos(ang) * 4.2, 0, 8 + Math.sin(ang) * 3.4, 1.3, 1.3, 1.3, (x, y, z) => shade(0xc8302a, 0.86 + hv(x, y, z, 91) * 0.18));
+        }
+        g.tube(4.2, 0, 8, 4.2, 0, 13, 1.3, (x, y, z) => shade(0xc8302a, 0.86 + hv(x, y, z, 92) * 0.18));
+        g.tube(-4.2, 0, 8, -4.2, 0, 13, 1.3, (x, y, z) => shade(0xc8302a, 0.86 + hv(x, y, z, 92) * 0.18));
+      });
+      g.on(CH.iron, () => {
+        g.tube(4.2, 0, 13.5, 4.2, 0, 15, 1.3, CHROME);
+        g.tube(-4.2, 0, 13.5, -4.2, 0, 15, 1.3, CHROME);
+        g.tube(0, 0, 3, 0, 0, 5, 0.9, gun);
+      });
+      return g;
+    }
+    case 'claw_grabber': {
+      // a three-fingered arcade claw
+      g.on(CH.iron, () => {
+        g.cyl('z', 0, 0, 2.6, 3, 6, (x, y, z) => shade(CHROME, 0.85 + hv(x, y, z, 93) * 0.15));
+        for (let k = 0; k < 3; k++) {
+          const a = (k / 3) * Math.PI * 2;
+          const ox = Math.cos(a);
+          const oy = Math.sin(a);
+          g.tube(ox * 1.8, oy * 1.8, 6, ox * 4.2, oy * 4.2, 10, 0.75, CHROME);
+          g.tube(ox * 4.2, oy * 4.2, 10, ox * 2.4, oy * 2.4, 13.5, 0.7, CHROME);
+        }
+      });
+      g.on(CH.glow, () => g.cyl('z', 0, 0, 1.2, 6, 6, 0xff70d0));
+      return g;
+    }
+    default: {
+      // crane_hook: a pulley block and a fat red and grey crane hook
+      g.on(CH.iron, () => {
+        g.box(-2, -2, 3, 1, 1, 6, gun);
+        g.cyl('x', 0, 4.5, 1.4, -3, 2, (x, y, z) => shade(0x8a8f96, 0.88 + hv(x, y, z, 94) * 0.15));
+      });
+      const hookC = (seed: number): ColorFn => (x, y, z) => {
+        const outer = P.y < -0.5;
+        return rusty(outer ? (xx, yy, zz) => shade(0xb03a28, 0.85 + hv(xx, yy, zz, seed) * 0.2) : (xx, yy, zz) => shade(0x9a9690, 0.85 + hv(xx, yy, zz, seed) * 0.2), 0.12, seed + 1)(x, y, z);
+      };
+      g.on(CH.rubber, () => {
+        g.tube(0, 0, 6, 0, 0, 9, 1.6, hookC(95));
+        // the C: down, round toward -y (outer, red) and back up with a blunt tip
+        for (let a = 0; a <= 22; a++) {
+          const ang = (a / 22) * Math.PI * 1.25;
+          const r = 1.9 - (a / 22) * 0.5;
+          g.blob(0, -4 + Math.cos(ang) * 4.2 + 0.2, 9 + Math.sin(ang) * 4.2, r, r, r, hookC(96));
+        }
+      });
+      return g;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Back slot
+// ---------------------------------------------------------------------------------------------
+
+function buildBack(id: string): RGrid {
+  const g = new RGrid(28, 26, 16, -14, 14, -20);
+  if (id === 'twin_stacks') {
+    // two smokestacks standing up behind the shoulders, banded and riveted
+    for (const sx of [1, -1]) {
+      const x = sx * 6.5;
+      g.on(CH.iron, () => {
+        g.cyl('y', x, -9.5, 2.2, 22, 37, rusty(plate(0x5a524c, 101, 4), 0.25, 102));
+        g.cyl('y', x, -9.5, 2.7, 37, 38, gun);
+        g.cyl('y', x, -9.5, 2.6, 26, 26, gun);
+        g.box(x - 1, 20, -9, x, 23, -6, gun);
+      });
+      g.carveP((px, py, pz) => py > 37.5 && Math.hypot(px - x, pz + 9.5) < 1.5);
+      g.on(CH.pulse, () => g.cyl('y', x, -9.5, 1.4, 37, 37, 0xff8030));
+    }
+    dullRust(g);
+    return g;
+  }
+  if (id === 'propeller') {
+    // the hub housing; the blades spin (backExtra)
+    g.on(CH.iron, () => {
+      g.box(-3, 20, -12, 2, 26, -9, plate(STEEL, 103, 2));
+      g.cyl('z', 0, 23, 1.6, -15, -12, gun);
+    });
+    return g;
+  }
+  // gear_wheel: the axle mount; the cog turns (backExtra)
+  g.on(CH.iron, () => {
+    g.box(-2, 20, -12, 1, 25, -9, gun);
+    g.cyl('z', 0, 22, 1.4, -14, -12, gun);
   });
-  if (accent === 1) rusty(g, 0.3, 94);
   return g;
 }
 
-function buildClaw(t: TeamCols): RGrid {
-  // hand frame: the socket is the origin; claw hangs below the wrist coupling
-  const g = new RGrid(10, 12, 12, -5, -10, -6);
+function buildBackExtra(id: string): RGrid {
+  const [bx, by, bz] = SK.backExtra;
+  const g = new RGrid(28, 28, 6, -14, by - 14, bz - 3);
+  if (id === 'propeller') {
+    g.on(CH.rubber, () => {
+      for (const s of [1, -1]) {
+        g.sblob(bx + s * 5, by, bz, 4.6, 1.3, 0.6, 2.5, (x, y, z) => shade(0xb8302a, 0.85 + hv(x, y, z, 104) * 0.2));
+        g.put(bx + s * 9, by, bz, 0xf2f2f2);
+      }
+      g.cyl('z', bx, by, 1.2, Math.floor(bz - 1), Math.floor(bz + 1), gun);
+    });
+    return g;
+  }
+  // gear wheel: a big turning cog with spokes
   g.on(CH.iron, () => {
-    // housing
-    g.box(-2, -2, -2, 1, 0, 1, steel(STEEL, 101));
-    // piston
-    g.box(-1, -3, -1, 0, -3, 0, CHROME);
-    g.box(-2, -4, -2, 1, -4, 1, STEEL_DARK);
-    // two curved jaws (front and back) closing toward the tips
-    const path: [number, number][] = [[-4, 2], [-5, 3], [-6, 3], [-7, 3], [-8, 2], [-8, 1]];
-    for (const [y, z] of path) {
-      g.box(-1, y, z, 0, y, z, steel(STEEL_DARK, 102));
-      g.box(-1, y, -1 - z, 0, y, -1 - z, steel(STEEL_DARK, 103));
+    const c = (x: number, y: number, z: number) => shade(0x8a7a5a, 0.85 + hv(x, y, z, 105) * 0.2);
+    for (let i = 0; i < 360; i += 3) {
+      const a = (i / 180) * Math.PI;
+      const tooth = Math.floor(i / 15) % 2 === 0;
+      const r = tooth ? 9.5 : 8.4;
+      for (let rr = 7; rr <= r; rr += 0.7) g.put(bx + Math.cos(a) * rr, by + Math.sin(a) * rr, bz, c);
     }
-    g.box(-1, -8, 0, 0, -8, 0, CHROME);
-    g.box(-1, -8, -1, 0, -8, -1, CHROME);
-  });
-  g.on(CH.rubber, () => {
-    for (let z = -2; z <= 1; z++) {
-      g.set(2, -1, z, t.main);
-      g.set(-3, -1, z, t.main);
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI;
+      g.tube(bx - Math.cos(a) * 7, by - Math.sin(a) * 7, bz, bx + Math.cos(a) * 7, by + Math.sin(a) * 7, bz, 0.7, c);
     }
-    for (let x = -2; x <= 1; x++) for (let z = -2; z <= 1; z++) g.set(x, 1, z, (x + z + 10) % 2 ? HAZARD : 0x22232a);
+    g.cyl('z', bx, by, 1.8, Math.floor(bz - 1), Math.floor(bz + 1), gun);
   });
-  g.on(CH.glow, () => g.set(-1, -1, 2, t.light));
   return g;
 }
 
 // ---------------------------------------------------------------------------------------------
 
-/** Dominant colour of each accent option (death debris, portraits). */
-const ACCENT_COL = [STEEL_LIGHT, RUST[1], HAZARD, BRASS, STEEL_LIGHT, COPPER, 0xf2efe2, COPPER] as const;
-/** Dominant colour of each hat option (0 = bare dome). */
-const HAT_COL = [STEEL, GUNMETAL, STEEL_LIGHT, 0xfff4c8, BRASS, HAZARD, GUNMETAL, STEEL_LIGHT] as const;
-
-export function botPalette(c: Cosmetics, team: Team): PudgyPalette {
-  const n = COSMETIC_NAMES.bot;
-  const t = TEAM_COLORS[team];
-  const accent = ACCENT_COL[wrap(c.accent, n.accents.length)];
-  const hat = HAT_COL[wrap(c.hat, n.hats.length)];
-  return { skin: STEEL, skinDark: GUNMETAL, cloth: t.main, accent, metal: CHROME, extra: [STEEL_DARK, HAZARD, t.light, EMBER, hat] };
+export function botPalette(l: Look): PudgyPalette {
+  const body = slug(l.body);
+  const shell = body === 'hazard_plates' ? 0x6e655c : body === 'clean_chrome' ? CHROME : body === 'brass_boiler' ? BRASS : body === 'copper_coils' ? COPPER : STEEL;
+  return { skin: shell, skinDark: STEEL_D, cloth: l.t.main, accent: HAZ, metal: slug(l.head) === 'chrome_crown' ? CHROME : GUN, extra: [RUST[0], GLOW, VALVE, l.t.dark, STEEL_L] };
 }
 
-export function buildBot(c: Cosmetics, team: Team): FamilyBuild {
-  const n = COSMETIC_NAMES.bot;
-  const hat = wrap(c.hat, n.hats.length);
-  const accent = wrap(c.accent, n.accents.length);
-  const face = wrap(c.face, n.faces.length);
-  const t = TEAM_COLORS[team];
-  const k = (s: string) => `bot:${s}:${team}`;
-  const hm = HAT_META[hat];
-  const armKey = accent === 1 || accent === 2 || accent === 3 || accent === 7 ? accent : 0;
-  const legKey = accent === 1 || accent === 2 ? accent : 0;
+export function buildBot(l: Look): FamilyBuild {
+  const res = resOf(l.fine);
+  const team = l.team;
+  const body = slug(l.body);
+  const face = slug(l.face);
+  const head = slug(l.head);
+  const feet = slug(l.feet);
+  const back = slug(l.back);
+  const hands = slug(l.hands) || 'crane_hook';
+  const hm = hatMeta(head);
+  const sk: Skeleton = { ...SK, hatExtra: hm.extraJoint, top: hm.top };
   const parts: Partial<Record<PartName, PartDef>> = {
-    body: part(k(`body${accent}`), () => buildBody(accent, t), SK.body),
-    head: part(k(`head${face}.${hat === 0 ? 1 : 0}`), () => buildHead(face, t, hat === 0), SK.neck),
-    jaw: part(k(`jaw${face}`), () => buildJaw(face, t), SK.jaw),
-    eyes: part(k(`eyes${face}`), () => buildEyes(face, t), SK.eyes, 0.2),
-    upperL: part(k(`uarm${armKey}`), () => buildUpperArm(armKey, t), SK.shoulder),
-    upperR: partMirrored(k(`uarm${armKey}`) + 'R', () => buildUpperArm(armKey, t), SK.shoulder),
-    lowerL: part(k(`larm${armKey}`), () => buildLowerArm(armKey, t, false), SK.elbow),
-    lowerR: partMirrored(k(`larm${armKey}`) + 'R', () => buildLowerArm(armKey, t, true), SK.elbow),
-    legL: part(k(`leg${legKey}`), () => buildLeg(legKey, t), SK.leg),
-    legR: partMirrored(k(`leg${legKey}`) + 'R', () => buildLeg(legKey, t), SK.leg),
-    hook: part(k('claw'), () => buildClaw(t), [0, 0, 0]),
-    drop: part('bot:spark', () => dropGrid(true), [0, 0, 0], 0),
+    body: part(`bot:body:${body}`, () => buildBody(l), SK.body, res),
+    head: part(`bot:head:${face}`, () => buildHead(l), SK.neck, res),
+    eyes: part(`bot:eyes:${face === 'monocle' ? 1 : 0}`, () => buildEyes(l), SK.eyes, res),
+    upperL: part(`bot:uarm:${team}`, () => buildUpperArm(l, false), SK.shoulder, res),
+    upperR: partMirrored(`bot:uarmC:${team}`, () => buildUpperArm(l, true), SK.shoulder, res),
+    lowerL: part(`bot:larm:${body === 'hazard_plates' ? 'h' : ''}`, () => buildLowerArm(l), SK.elbow, res),
+    lowerR: partMirrored('bot:crane', () => buildCraneArm(), SK.elbow, res),
+    legL: part(`bot:leg:${feet}:${team}`, () => buildLeg(l), SK.leg, res),
+    legR: partMirrored(`bot:leg:${feet}:${team}`, () => buildLeg(l), SK.leg, res),
+    hook: part(`bot:hook:${hands}`, () => buildHook(hands), [0, 0, 0], res),
+    drop: part('bot:drop', () => dropGrid(true), [0, 0, 0], 1),
   };
-  if (hm.hat) parts.hat = part(k(`hat${hat}`), () => buildHat(hat, t).hat!, SK.hat);
-  if (hm.extra) parts.hatExtra = part(k(`hatx${hat}`), () => buildHat(hat, t).extra!, hm.extraJoint);
+  if (hm.hat) parts.hat = part(`bot:hat:${head}`, () => buildHat(head), SK.hat, res);
+  if (hm.extra) parts.hatExtra = part(`bot:hatx:${head}`, () => buildHatExtra(head), hm.extraJoint, res);
+  let backMode: BackMode = 'none';
+  let backSpin = 0;
+  if (back === 'twin_stacks' || back === 'propeller' || back === 'gear_wheel') parts.back = part(`bot:back:${back}`, () => buildBack(back), SK.back, res);
+  if (back === 'propeller' || back === 'gear_wheel') {
+    parts.backExtra = part(`bot:backx:${back}`, () => buildBackExtra(back), SK.backExtra, res);
+    backMode = back === 'propeller' ? 'spin' : 'turn';
+    backSpin = back === 'propeller' ? 9 : 0.8;
+  }
+  const puffs: PuffEmitter[] = [];
+  if (back === 'twin_stacks')
+    for (const sx of [1, -1]) puffs.push({ node: 'back', at: [sx * 6.5, 38.5, -9.5], kind: 'steam', rate: 1.6, burst: 5, size: 0.11 });
+  if (head === 'kettle_lid') puffs.push({ node: 'hat', at: [7.8, 38, HC[2] + 4.2], kind: 'steam', rate: 0.3, burst: 6, size: 0.08 });
   return {
     family: 'bot',
-    sk: { ...SK, hatExtra: hm.extraJoint },
-    rest: { armSplay: 0.32, armFwd: -0.18, elbow: -0.35, legSplay: 0.03, hunch: 0, headPitch: 0, jawRest: 0, holdElbow: -0.8 },
-    style: { kind: 'servo', stride: 2, bounce: 0.06, legSwing: 0.6, armSwing: 0.55, roll: 0.06, sway: 0.03, lean: 0.08, stomp: 0.6, breath: 0.4 },
+    sk,
+    rest: { armSplay: 0.22, armFwd: -0.12, elbow: -0.3, legSplay: 0.03, hunch: 0, headPitch: 0, jawRest: 0, holdElbow: -0.65 },
+    style: { kind: 'servo', stride: 2, bounce: 0.06, legSwing: 0.55, armSwing: 0.5, roll: 0.06, sway: 0.03, lean: 0.08, stomp: 0.6, breath: 0.4 },
     hatMode: hm.mode,
     hatSpin: hm.spin,
+    backMode,
+    backSpin,
     parts,
-    palette: botPalette(c, team),
-    scale: 1,
-    hookDangles: false,
+    palette: botPalette(l),
+    scale: SCALE,
+    // the hook hangs on its cable from the crane pulley and swings
+    hookDangles: true,
+    hookMount: { pos: [0, -0.02, 0], rot: [Math.PI / 2, 0, 0] },
+    hangMount: { pos: [0, -0.02, 0], rot: [Math.PI / 2, 0, 0] },
+    gripMount: { pos: [0, -0.05, 0.02], rot: [Math.PI / 2, 0, 0] },
+    puffs,
+    corpseLift: 0.62,
+    premium: head === 'chrome_crown',
   };
 }
+

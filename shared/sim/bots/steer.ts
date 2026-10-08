@@ -8,13 +8,19 @@ import type { GameSim } from '../sim.ts';
 import type { BotContext } from './context.ts';
 import { hazardHot, waterDir, type P2 } from './geom.ts';
 import { standable } from './mapinfo.ts';
+import { NAV_LAND } from './nav.ts';
+import { navReset, navTarget } from './navigate.ts';
 import { Mode, type Brain } from './types.ts';
 
 const wd: P2 = { x: 0, z: 0 };
+const nt: P2 = { x: 0, z: 0 };
 const ROT = [0.6, -0.6, 1.2, -1.2, 1.8, -1.8, 2.5, -2.5];
 
-function feelersClear(ctx: BotContext, u: Unit, dx: number, dz: number): boolean {
-  return standable(ctx.info, u.x + dx * 0.8, u.z + dz * 0.8) && standable(ctx.info, u.x + dx * 1.5, u.z + dz * 1.5);
+/** Static obstacles 0.8 m and 1.5 m ahead (never further than `reach`: a path turns at its waypoint). */
+function feelersClear(ctx: BotContext, u: Unit, dx: number, dz: number, reach: number): boolean {
+  const a = reach < 0.8 ? reach : 0.8;
+  const b = reach < 1.5 ? reach : 1.5;
+  return standable(ctx.info, u.x + dx * a, u.z + dz * a) && standable(ctx.info, u.x + dx * b, u.z + dz * b);
 }
 
 export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: PlayerInput): void {
@@ -22,20 +28,37 @@ export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: P
   const tune = b.tune;
   let mx = 0;
   let mz = 0;
+  /** Following a dry-only path waypoint (the path already keeps us off the water and the walls). */
+  let onPath = false;
+  let reach = 1.5;
   if (t < b.dodgeUntil) {
     mx = b.dodgeX;
     mz = b.dodgeZ;
   } else if (t < b.detourUntil) {
     mx = b.detourX;
     mz = b.detourZ;
-  } else if (!b.holdStill && !(b.intent && b.intent.purpose === 9)) {
+  } else if (!b.holdStill && !(b.intent && b.intent.kind === 'hook' && (b.intent.purpose === 9 || b.intent.purpose === 8))) {
     const gx = b.goalX - u.x;
     const gz = b.goalZ - u.z;
     const d = Math.sqrt(gx * gx + gz * gz);
     const arrive = b.mode === Mode.Push ? 1.5 : 0.35;
     if (d > arrive) {
-      mx = gx / d;
-      mz = gz / d;
+      // head for the next waypoint of the path to the goal (the goal itself when the way is straight)
+      navTarget(sim, ctx, u, b, b.goalX, b.goalZ, nt);
+      const hx = nt.x - u.x;
+      const hz = nt.z - u.z;
+      const hl = Math.sqrt(hx * hx + hz * hz);
+      if (hl > 0.05) {
+        mx = hx / hl;
+        mz = hz / hl;
+      } else {
+        mx = gx / d;
+        mz = gz / d;
+      }
+      if (!b.navDirect && b.navN > 0 && b.navI < b.navN) {
+        onPath = b.navVar === NAV_LAND;
+        reach = Math.max(0.5, hl);
+      }
       if (d < 1.2 && b.mode !== Mode.Push) {
         mx *= d / 1.2;
         mz *= d / 1.2;
@@ -63,9 +86,11 @@ export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: P
       mz /= l;
       l = 1;
     }
-    // --- keep out of hazards ---
+    // --- keep out of hazards (unless the tide is about to drown us: a sting beats a drowning) ---
+    const rushing = b.mode === Mode.Leave && ctx.untilDeep < 4;
     for (const hz of sim.hazards) {
-      if (!hazardHot(sim, hz, 1.3)) continue; // periodic vents are safe to cross between bursts
+      if (!hazardHot(sim, hz, rushing ? 0.5 : 1.3)) continue; // periodic vents are safe to cross between bursts
+      if (rushing && hz.period <= 0) continue;
       const nx = u.x + mx * 1.2;
       const nz = u.z + mz * 1.2;
       const R = hz.r + 0.8;
@@ -106,7 +131,11 @@ export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: P
     const onLand = sim.world.channel(u.x, u.z) <= 0;
     const floodSoon = !sim.river.deep && ctx.untilDeep < tune.tideMargin + 2.5 && b.mode !== Mode.Push && b.mode !== Mode.Rune;
     if (onLand && (sim.river.deep || floodSoon || (b.mode === Mode.Hold && !b.crossing))) {
-      if (sim.world.channel(u.x + mx * 0.9, u.z + mz * 0.9) > -0.25) {
+      // on a dry path (docks, narrow strips) only refuse an actual step into the water: the path is
+      // already padded, and the long look-ahead would stall us at every dock mouth
+      const look = onPath ? 0.45 : 0.9;
+      const pad = onPath ? -0.05 : -0.25;
+      if (sim.world.channel(u.x + mx * look, u.z + mz * look) > pad) {
         waterDir(sim, u.x, u.z, wd);
         const dot = mx * wd.x + mz * wd.z;
         if (dot > 0) {
@@ -120,14 +149,14 @@ export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: P
     if (l > 0.15) {
       const ux = mx / l;
       const uz = mz / l;
-      if (!feelersClear(ctx, u, ux, uz)) {
+      if (!feelersClear(ctx, u, ux, uz, reach)) {
         for (let i = 0; i < ROT.length; i++) {
           const a = ROT[i] * (b.detourSide || 1);
           const c = Math.cos(a);
           const s = Math.sin(a);
           const rx = ux * c - uz * s;
           const rz = ux * s + uz * c;
-          if (feelersClear(ctx, u, rx, rz)) {
+          if (feelersClear(ctx, u, rx, rz, reach)) {
             mx = rx * l;
             mz = rz * l;
             b.detourSide = a >= 0 ? 1 : -1;
@@ -154,6 +183,7 @@ export function steer(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: P
         b.detourSide = s;
         b.stuckHits = 0;
         b.nextPlan = t + 0.6;
+        navReset(b); // plan a fresh path from wherever the detour leaves us
       }
     } else b.stuckHits = 0;
     b.stuckX = u.x;

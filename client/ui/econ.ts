@@ -1,7 +1,7 @@
 // Player-facing helpers for the cosmetic economy: rarity colours and names, prices, the market fee,
 // wallet addresses. One place, so the Locker, Store, Market and Career say the same thing.
 import { COSMETICS, cosmeticById, type CosmeticDef, type CosmeticSlot, type Rarity } from '../../shared/cosmetics.ts';
-import { MARKET_FEE_BPS, MAX_LIST_PEARLS, MIN_LIST_PEARLS, type AccountView, type ChainNetwork, type OwnedItem, type Price } from '../../shared/economy.ts';
+import { marketFee as sharedFee, MARKET_FEE_BPS, MAX_LIST_PEARLS, MIN_LIST_PEARLS, sellerProceeds, type AccountView, type ChainNetwork, type OwnedItem, type Price } from '../../shared/economy.ts';
 import type { FamilyId } from '../../shared/types.ts';
 import type { IconId } from './icons.ts';
 
@@ -35,18 +35,21 @@ export function fmtPrice(p: Price): string {
 }
 
 /**
- * Seller proceeds after the 5% market fee. The fee is rounded down to whole Pearls (whole cents for
- * USDC), so the seller never gets less than 95%. The server is the authority; see contractConcerns.
+ * What the seller receives after the 5% market fee. Pearl sales use the shared rule the server
+ * applies (shared/economy.ts: the fee rounds up, at least 1 Pearl). USDC rounds to whole cents.
  */
 export function sellerReceives(p: Price): number {
-  if (p.cur === 'pearls') return p.amount - Math.floor((p.amount * MARKET_FEE_BPS) / 10_000);
+  if (p.cur === 'pearls') return sellerProceeds(p.amount);
   const cents = Math.round(p.amount * 100);
-  return (cents - Math.floor((cents * MARKET_FEE_BPS) / 10_000)) / 100;
+  return (cents - Math.ceil((cents * MARKET_FEE_BPS) / 10_000)) / 100;
 }
 
 export function marketFee(p: Price): number {
-  return p.cur === 'pearls' ? p.amount - sellerReceives(p) : Math.round((p.amount - sellerReceives(p)) * 100) / 100;
+  return p.cur === 'pearls' ? sharedFee(p.amount) : Math.round((p.amount - sellerReceives(p)) * 100) / 100;
 }
+
+/** The fee as a percentage, for labels ("5%"). */
+export const FEE_PCT = MARKET_FEE_BPS / 100;
 
 export const LIST_LIMITS = { min: MIN_LIST_PEARLS, max: MAX_LIST_PEARLS };
 

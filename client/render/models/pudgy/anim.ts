@@ -312,6 +312,9 @@ export class PudgyAnimator {
   private prevHop = 0;
   private hopV = 0;
   private hatSpinA = 0;
+  private backSpinA = 0;
+  private readonly backX = new Spring(2.4, 0.12);
+  private readonly backZ = new Spring(2.2, 0.12);
 
   // one-shots
   private readonly shots: Shot[] = [];
@@ -322,6 +325,11 @@ export class PudgyAnimator {
   private dropSide = 1;
   /** weight of the layer currently being blended (see ov / ad) */
   private sw = 1;
+
+  /** 0..1 exertion (throws, bashes, stomps): drives steam vents and smoke puffs. */
+  get exertion(): number {
+    return Math.min(1, this.exert + this.runW * 0.35);
+  }
 
   /** Optional footstep callback (foot 0 = left, 1 = right; heavy = landing or stomp). */
   onFootstep: ((foot: 0 | 1, heavy: boolean) => void) | null = null;
@@ -697,7 +705,7 @@ export class PudgyAnimator {
     p[TX] = -1.32;
     p[TZ] = Math.sin(t * 13) * 0.05;
     // lying on its back: drop the belly centre to about half the body depth above the ground
-    p[RY] = 0.52 - this.fb.sk.core * VOX * this.fb.scale + Math.abs(Math.sin(t * 15)) * 0.03;
+    p[RY] = this.fb.corpseLift - this.fb.sk.core * VOX * this.fb.scale + Math.abs(Math.sin(t * 15)) * 0.03;
     p[LSX] = -0.5;
     p[RSX] = -0.5;
     p[LSZ] = 1.2;
@@ -1048,6 +1056,7 @@ export class PudgyAnimator {
 
   private glow(dt: number, a: PudgyAnimInput, t: number): void {
     const u = this.u;
+    u.uTime.value = t;
     this.flash = Math.max(0, this.flash - dt / 0.13);
     this.exert = Math.max(0, this.exert - dt * 1.6);
     let flash = this.flash * this.flash;
@@ -1171,12 +1180,24 @@ export class PudgyAnimator {
       }
     }
 
+    if (n.backExtra) {
+      if (fb.backMode === 'spin' || fb.backMode === 'turn') {
+        const boost = fb.backMode === 'spin' ? 1 + this.runW * 2 + (a.state === UnitState.Grappling ? 4 : 0) : 1 + this.runW * 0.8;
+        this.backSpinA = (this.backSpinA + dt * fb.backSpin * boost) % TAU;
+        n.backExtra.rotation.set(0, 0, this.backSpinA);
+      } else if (fb.backMode === 'bob') {
+        const bx = this.backX.step(0, dt, -ayc * 0.08 - this.accel * 0.35);
+        const bz = this.backZ.step(0, dt, this.yawRate * 7);
+        n.backExtra.rotation.set(Math.max(-0.8, Math.min(0.8, bx)), 0, Math.max(-0.8, Math.min(0.8, bz)));
+      }
+    }
+
     // arms (right arm mirrors the rest pose)
     n.shL.rotation.set(o[LSX] + r.armFwd, o[LSY], o[LSZ] + r.armSplay);
     n.elL.rotation.set(o[LE] + r.elbow, 0, 0);
-    n.shR.rotation.set(o[RSX] + r.armFwd, o[RSY], o[RSZ] - r.armSplay);
     const holdT = a.hookOut ? 0 : 1 - this.rBusy;
     this.holdW += (holdT - this.holdW) * (1 - Math.exp(-dt * 12));
+    n.shR.rotation.set(o[RSX] + r.armFwd + (r.holdShoulder ?? 0) * this.holdW, o[RSY], o[RSZ] - r.armSplay);
     n.elR.rotation.set(o[RE] + r.elbow + r.holdElbow * this.holdW, 0, 0);
 
     // legs: counter the hip lean so feet stay under the body
@@ -1186,13 +1207,11 @@ export class PudgyAnimator {
     n.legR.position.y = n.base.legRY + o[RLY] / sc;
 
     // held hook: hidden while it is out
-    if (n.hook) {
-      n.hook.visible = !a.hookOut;
-      if (fb.hookDangles && n.hook.visible) this.dangle(dt);
-      else if (this.hasHand) {
-        n.handR.quaternion.identity();
-        this.hasHand = false;
-      }
+    n.grip.visible = !a.hookOut;
+    if (fb.hookDangles && n.grip.visible) this.dangle(dt);
+    else if (this.hasHand) {
+      n.handR.quaternion.identity();
+      this.hasHand = false;
     }
 
     // sweat drops (or sparks) at low HP

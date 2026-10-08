@@ -24,7 +24,7 @@ const HOOK_SUBSTEP = 0.35;
 const MAX_BEND_PTS = 64; // numbers, i.e. 32 points
 const BUFFER_TIME = 0.3;
 /** Ticks with no input before a human's held movement is dropped (jitter is fine, a hidden tab is not). */
-const STALE_INPUT_TICKS = 15;
+export const STALE_INPUT_TICKS = 15;
 /**
  * A spare input that has sat in the queue this many ticks in a row is standing latency, not jitter:
  * drain it (one movement-only input per tick) until the queue is back to just-in-time.
@@ -32,6 +32,13 @@ const STALE_INPUT_TICKS = 15;
 const DRAIN_AFTER_TICKS = 20;
 /** Held ticks remembered as debt. Each one already took a movement step, so one late input can be skipped for it. */
 const MAX_HOLD_DEBT = 30;
+/**
+ * Debt not paid back within this many consumes after a hold is forgiven: those inputs were never sent
+ * (hidden tab, dropped client frames), so later jitter spares must not be skipped for them.
+ */
+const DEBT_FORGIVE_TICKS = 4;
+/** Queued inputs per human before the oldest pair is merged (a 0.6 s burst fits without merging). */
+const MAX_QUEUE = 20;
 const tmpPos = { x: 0, z: 0, hit: false };
 
 /** Per-unit input queue bookkeeping (humans only). Lives beside the Unit so entities.ts stays untouched. */
@@ -40,6 +47,8 @@ interface InputQueueState {
   spareRun: number;
   /** held ticks (no input in time, last movement repeated) not yet paid back by a skipped late input */
   debt: number;
+  /** consumes since the last hold (debt older than DEBT_FORGIVE_TICKS is forgiven) */
+  sinceHold: number;
   holds: number;
   drained: number;
 }
@@ -154,7 +163,7 @@ export class GameSim {
   queueInput(id: number, input: PlayerInput): void {
     const u = this.unitById.get(id);
     if (!u || u.isBot) return;
-    if (u.queue.length >= 8) {
+    if (u.queue.length >= MAX_QUEUE) {
       // Client is flooding or lagging badly: merge the oldest pair so presses are never lost.
       const a = u.queue.shift()!;
       u.queue[0].b |= a.b;
@@ -288,6 +297,20 @@ export class GameSim {
   inputSlack = 2;
   private readonly inq = new WeakMap<Unit, InputQueueState>();
 
+  /**
+   * A new connection takes over this unit (rejoin): its client numbers inputs from 1 again, so forget the
+   * old queue, ack and hold bookkeeping. Progress (gold, items, stats) is untouched.
+   */
+  resetInput(id: number): void {
+    const u = this.unitById.get(id);
+    if (!u) return;
+    u.queue.length = 0;
+    u.ack = 0;
+    u.idleTicks = 0;
+    u.input.b = 0;
+    this.inq.delete(u);
+  }
+
   /** Input queue state of one unit (humans only), for tests and diagnostics. */
   inputQueueInfo(id: number): InputQueueInfo | null {
     const u = this.unitById.get(id);
@@ -328,7 +351,7 @@ export class GameSim {
     }
     let st = this.inq.get(u);
     if (!st) {
-      st = { spareRun: 0, debt: 0, holds: 0, drained: 0 };
+      st = { spareRun: 0, debt: 0, sinceHold: 0, holds: 0, drained: 0 };
       this.inq.set(u, st);
     }
     if (q.length === 0) {
@@ -339,9 +362,11 @@ export class GameSim {
         st.holds++;
       }
       st.spareRun = 0;
+      st.sinceHold = 0;
       return;
     }
     u.idleTicks = 0;
+    if (st.debt > 0 && ++st.sinceHold > DEBT_FORGIVE_TICKS) st.debt = 0; // the late inputs never came
     let inp = q.shift()!;
     if (q.length > 0) st.spareRun++;
     else st.spareRun = 0;

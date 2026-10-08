@@ -1,69 +1,95 @@
-// Aurora Harbour: a wide fjord harbour of ice floes under the aurora (reference: the frozen harbour
-// with a watchtower island, rope bridges and a lantern-lit village). Floe decks give forward spots,
-// floe islands are grapple-only perches. Tidal mode: the harbour freezes solid, then thaws.
+// Aurora Harbour: a frozen fjord harbour at night under the aurora (reference: the ice-floe harbour
+// with a watchtower rock, timber dock frames and cranes, a rope bridge and a lantern-lit village).
+// Frozen floe decks and timber docks hug both banks as forward hooking spots; the watchtower rock
+// and its ice-rock islets are grapple perches. Tidal mode: the harbour freezes solid, then cracks.
 // Point symmetric: every gameplay element mirrors through (0, 0).
-import { channelDepthAt, clearOf, scatter, symmetricRiver, withMirroredPoints, withMirrors } from './helpers.ts';
+import { channelDepthAt, clearOf, inCircles, platformAt, riverAt, scatter, symmetricRiver, withMirroredPoints, withMirrors } from './helpers.ts';
 import type { Decor, HazardSlot, MapDef, Obstacle, Platform, RiverDef } from './types.ts';
 
 const W = 72;
 const D = 48;
 
-const river: RiverDef = { points: symmetricRiver(D, { amp: 1.4, freq: 0.09, amp3: 0.3, hw: 5.6, hwVar: 0.4, hwFreq: 0.18 }), depth: 2.8, bank: 1.6, flow: 0.7 };
+const river: RiverDef = { points: symmetricRiver(D, { amp: 1.3, freq: 0.09, amp3: 0.3, hw: 5.15, hwVar: 0.35, hwFreq: 0.18 }), depth: 2.8, bank: 1.6, flow: 0.7 };
+// the watchtower rock and two ice-rock islets per half, on the centreline (the floes drift either side)
+const isleA = riverAt(river.points, 9.2).x;
+const isleB = riverAt(river.points, 17.5).x;
 const islands = [
-  { x: 0, z: 0, r: 2.3 }, // watchtower rock
-  { x: -2.4, z: -9, r: 1.4 },
-  { x: 2.4, z: 9, r: 1.4 },
-  { x: 1.6, z: -17, r: 1.6 },
-  { x: -1.6, z: 17, r: 1.6 },
+  { x: 0, z: 0, r: 1.9 },
+  { x: -isleA, z: -9.2, r: 1.2 },
+  { x: isleA, z: 9.2, r: 1.2 },
+  { x: -isleB, z: -17.5, r: 1.3 },
+  { x: isleB, z: 17.5, r: 1.3 },
 ];
-const platforms: Platform[] = [
-  // frozen floe decks hugging each bank: forward hooking spots
-  { kind: 'floe', x: -5.2, z: 4, w: 3.2, d: 2.6, rot: 0.25, seed: 1 },
-  { kind: 'floe', x: 5.2, z: -4, w: 3.2, d: 2.6, rot: 0.25, seed: 2 },
-  { kind: 'dock', x: -5.6, z: -14, w: 3.0, d: 1.8, rot: 0, seed: 3 },
-  { kind: 'dock', x: 5.6, z: 14, w: 3.0, d: 1.8, rot: 0, seed: 4 },
+const half: Platform[] = [
+  // frozen floe decks and a timber dock frame on each bank: forward hooking spots
+  { kind: 'floe', x: -5.6, z: 4.4, w: 3.0, d: 2.6, rot: 0.25, seed: 1 },
+  { kind: 'dock', x: -6.9, z: -13.6, w: 3.2, d: 1.9, rot: 0, seed: 3 },
+  { kind: 'floe', x: -5.2, z: 20.6, w: 2.6, d: 2.2, rot: -0.3, seed: 5 },
 ];
+const platforms: Platform[] = [...half, ...half.map((p) => ({ ...p, x: -p.x, z: -p.z, seed: (p.seed ?? 0) + 1 }))];
 const fountains: MapDef['fountains'] = [{ x: -32, z: 0, r: 6.5 }, { x: 32, z: 0, r: 6.5 }];
 
-const half: Obstacle[] = [
-  { shape: 'circle', kind: 'watchtower', x: 0.6, z: 0.4, r: 1.2, seed: 1 },
-  { shape: 'circle', kind: 'iceshelf', x: -8.6, z: -6, r: 1.3, seed: 2 },
-  { shape: 'circle', kind: 'snowpine', x: -10.5, z: 9, r: 0.85, seed: 3 },
-  { shape: 'circle', kind: 'lanternpost', x: -7.4, z: 1, r: 0.3, seed: 4 },
-  { shape: 'circle', kind: 'cratepile', x: -12, z: -16, r: 1.0, seed: 5 },
-  { shape: 'circle', kind: 'snowpine', x: -17, z: -4, r: 0.85, seed: 6 },
-  { shape: 'circle', kind: 'iceshelf', x: -19.5, z: 13, r: 1.5, seed: 7 },
-  { shape: 'circle', kind: 'runestone', x: -23, z: -12, r: 0.7, seed: 8 },
-  { shape: 'circle', kind: 'snowpine', x: -26, z: 5, r: 0.85, seed: 9 },
+const westHalf: Obstacle[] = [
+  // bank cover
+  { shape: 'circle', kind: 'iceshelf', x: -9.4, z: -5.6, r: 1.3, seed: 2 },
+  { shape: 'circle', kind: 'lanternpost', x: -8.0, z: 1.6, r: 0.3, seed: 4 },
+  { shape: 'circle', kind: 'crane', x: -8.8, z: -16.6, r: 1.1, seed: 10 },
+  { shape: 'circle', kind: 'snowpine', x: -10.6, z: 9.4, r: 0.85, seed: 3 },
+  { shape: 'circle', kind: 'cratepile', x: -9.2, z: 16.0, r: 1.0, seed: 5 },
+  // midfield
+  { shape: 'circle', kind: 'snowpine', x: -17.2, z: -3.6, r: 0.85, seed: 6 },
+  { shape: 'circle', kind: 'iceshelf', x: -19.6, z: 12.6, r: 1.5, seed: 7 },
+  { shape: 'circle', kind: 'barrel', x: -14.6, z: -11.4, r: 0.55, seed: 11 },
+  { shape: 'circle', kind: 'snowpine', x: -15.6, z: 20.0, r: 0.85, seed: 12 },
+  // backfield
+  { shape: 'circle', kind: 'runestone', x: -23.2, z: -12.2, r: 0.7, seed: 8 },
+  { shape: 'circle', kind: 'snowpine', x: -26.2, z: 5.4, r: 0.85, seed: 9 },
+  { shape: 'circle', kind: 'snowpine', x: -28.6, z: -18.4, r: 0.85, seed: 13 },
+  { shape: 'wall', kind: 'wall_ice', ax: -24.5, az: 17.5, bx: -20.5, bz: 19.2, r: 0.4, h: 1.4, seed: 14 },
 ];
-const obstacles = withMirrors(half);
+// the watchtower stands alone on the centre rock (its own mirror)
+const obstacles: Obstacle[] = [...withMirrors(westHalf), { shape: 'circle', kind: 'watchtower', x: 0, z: 0, r: 1.1, seed: 1 }];
 
 const partial = { w: W, d: D, river, platforms, islands };
 const depth = (x: number, z: number) => channelDepthAt(partial, x, z);
-const onGround = (x: number, z: number) => depth(x, z) < -1.0 && clearOf(obstacles, x, z, 0.6) && Math.abs(x) < W / 2 - 2;
+const plazas = fountains.map((f) => ({ x: f.x, z: f.z, r: f.r + 0.8 }));
+const offDeck = (x: number, z: number) => !platformAt(partial, x, z);
+const onGround = (x: number, z: number) =>
+  depth(x, z) < -1.0 && offDeck(x, z) && clearOf(obstacles, x, z, 0.6) && Math.abs(x) < W / 2 - 1 && Math.abs(z) < D / 2 - 0.6 && !inCircles(plazas, x, z);
 
 const decor: Decor[] = [
-  ...scatter(partial, { kind: 'snowtuft', count: 230, seed: 61, scale: [0.7, 1.4], accept: onGround }),
-  ...scatter(partial, { kind: 'pebbles', count: 50, seed: 62, scale: [0.6, 1.2], accept: onGround }),
-  ...scatter(partial, { kind: 'icicles', count: 26, seed: 63, scale: [0.7, 1.2], accept: (x, z) => { const c = depth(x, z); return c > -1.8 && c < -0.4; } }),
-  { kind: 'ropebridge', x: 0, z: 0, rot: Math.PI / 2, scale: 1, seed: 1 },
-  { kind: 'banner', x: 0.6, z: 0.4, rot: 0, scale: 1, seed: 2 },
-  { kind: 'lantern', x: -7.2, z: 1.2, rot: 0, scale: 1, seed: 3 },
-  { kind: 'lantern', x: 7.2, z: -1.2, rot: 0, scale: 1, seed: 4 },
+  ...scatter(partial, { kind: 'snowtuft', count: 240, seed: 61, scale: [0.7, 1.4], accept: onGround }),
+  ...scatter(partial, { kind: 'pebbles', count: 40, seed: 62, scale: [0.6, 1.2], accept: onGround }),
+  ...scatter(partial, { kind: 'icicles', count: 30, seed: 63, scale: [0.7, 1.2], accept: (x, z) => { const c = depth(x, z); return c > -1.6 && c < -0.4 && offDeck(x, z) && clearOf(obstacles, x, z, 0.5); } }),
+  ...scatter(partial, { kind: 'grass', count: 30, seed: 64, scale: [0.6, 1.0], accept: (x, z) => onGround(x, z) && Math.abs(x) > 20 }),
+  // the rope bridge from the watchtower rock to the islets, high above play
+  { kind: 'ropebridge', x: -isleA / 2, z: -4.6, rot: Math.atan2(-isleA, -9.2), scale: 1, seed: 1 },
+  { kind: 'ropebridge', x: isleA / 2, z: 4.6, rot: Math.atan2(isleA, 9.2), scale: 1, seed: 2 },
+  { kind: 'banner', x: 0, z: 0, rot: 0, scale: 1, seed: 3 },
+  { kind: 'lantern', x: -7.8, z: 2.2, rot: 0, scale: 1, seed: 4 },
+  { kind: 'lantern', x: 7.8, z: -2.2, rot: Math.PI, scale: 1, seed: 5 },
+  { kind: 'lantern', x: -6.0, z: -12.4, rot: 0, scale: 0.9, seed: 6 },
+  { kind: 'lantern', x: 6.0, z: 12.4, rot: Math.PI, scale: 0.9, seed: 7 },
+  { kind: 'chainhang', x: -8.8, z: -15.4, rot: 0, scale: 1, seed: 8 },
+  { kind: 'chainhang', x: 8.8, z: 15.4, rot: Math.PI, scale: 1, seed: 9 },
+  { kind: 'flag', x: -25.4, z: 7.6, rot: 0, scale: 1, seed: 10 },
+  { kind: 'flag', x: 25.4, z: -7.6, rot: Math.PI, scale: 1, seed: 11 },
+  { kind: 'sign', x: -24.8, z: -6.9, rot: Math.PI / 2, scale: 1, seed: 12 },
+  { kind: 'sign', x: 24.8, z: 6.9, rot: -Math.PI / 2, scale: 1, seed: 13 },
 ];
 
 const hazardSlots: HazardSlot[] = withMirroredPoints([
-  { x: 2.6, z: -4, r: 1.6, channel: true },
-  { x: -2.8, z: -20, r: 1.5, channel: true },
-  { x: 0, z: 12, r: 1.4, channel: true },
-  { x: -11, z: 2, r: 1.5, channel: false },
-  { x: -18, z: -10, r: 1.5, channel: false },
+  { x: 2.8, z: -4.4, r: 1.5, channel: true },
+  { x: -2.6, z: -21.0, r: 1.4, channel: true },
+  { x: -0.4, z: 12.8, r: 1.4, channel: true },
+  { x: -12.6, z: 2.4, r: 1.5, channel: false },
+  { x: -18.0, z: -9.6, r: 1.5, channel: false },
 ]);
 
 export const aurora: MapDef = {
   id: 'aurora',
   name: 'Aurora Harbour',
-  blurb: 'A frozen harbour under the northern lights. Floe decks and a watchtower rock in the middle. On Tidal, the whole harbour freezes solid, then cracks.',
+  blurb: 'A frozen harbour under the northern lights. Floe decks and timber docks reach into the water, a watchtower rock stands in the middle. On Tidal, the whole harbour freezes solid, then cracks.',
   w: W,
   d: D,
   river,
@@ -78,42 +104,41 @@ export const aurora: MapDef = {
   fountains,
   obstacles,
   movers: [
-    { kind: 'icefloe', r: 1.2, len: 0, lane: -0.45, speed: 1.4, offset: -14, seed: 1 },
-    { kind: 'icefloe', r: 0.9, len: 0, lane: 0.5, speed: -1.7, offset: 6, seed: 2 },
-    { kind: 'icefloe', r: 1.5, len: 0, lane: 0.1, speed: 1.1, offset: 20, seed: 3 },
+    { kind: 'icefloe', r: 0.95, len: 0, lane: -0.6, speed: 1.3, offset: -14, seed: 1 },
+    { kind: 'icefloe', r: 0.95, len: 0, lane: 0.6, speed: -1.3, offset: 14, seed: 2 },
   ],
-  runeSpots: [{ x: -2.4, z: -9 }, { x: 2.4, z: 9 }, { x: 0, z: -4 }],
+  runeSpots: withMirroredPoints([{ x: -isleA, z: -9.2 }, { x: 0.8, z: -4.8 }]),
   hazardSlots,
   decor,
   atmosphere: {
     timeOfDay: 'night',
-    sunDir: [-0.35, 0.5, -0.45],
-    sunColor: 0xb4ccff,
+    sunDir: [-0.3, 0.52, -0.5],
+    sunColor: 0xa8c4ff,
     sunIntensity: 1.5,
-    skyTop: 0x0a0f2c,
-    skyHorizon: 0x30507e,
-    groundAmbient: 0x2a3258,
+    skyTop: 0x070c26,
+    skyHorizon: 0x284a78,
+    groundAmbient: 0x283058,
     ambientIntensity: 1.15,
-    fogColor: 0x5c6c9e,
-    fogDensity: 0.012,
+    fogColor: 0x4a5c8e,
+    fogDensity: 0.011,
     weather: 'snow',
     aurora: true,
-    waterShallow: 0x3ab8c8,
-    waterDeep: 0x0a2846,
-    waterFoam: 0xf0f8ff,
-    exposure: 1.06,
-    saturation: 1.02,
-    bloom: 0.7,
+    waterShallow: 0x2aa6c0,
+    waterDeep: 0x08223e,
+    waterFoam: 0xeaf6ff,
+    exposure: 1.08,
+    saturation: 1.05,
+    bloom: 0.75,
   },
   terrain: {
-    grass: [0xeaf0f7, 0xdfe7f1, 0xf4f7fb, 0xd4dfeb],
+    grass: [0xe8eef6, 0xdce5f0, 0xf2f6fb, 0xd0dcea, 0xe2eaf4],
     dirt: [0x6a7486, 0x5b6576, 0x7a8494],
-    bank: [0x98a8bc, 0x8696aa, 0xadbccc],
-    bed: [0x44576a, 0x384a5c, 0x506478],
-    dryBed: [0x8a98a6, 0x7c8998, 0x9caab8],
+    bank: [0x96a6ba, 0x8494a8, 0xaabaca, 0x8c9cb0],
+    bed: [0x40536a, 0x34465a, 0x4c6076],
+    dryBed: [0x8696a6, 0x788898, 0x98a8b8, 0x6e7e90],
     cliff: [0x8ea2b8, 0x7c90a6, 0xa4b6ca],
     baseHeight: 1.3,
-    noiseAmp: 0.18,
+    noiseAmp: 0.17,
     noiseScale: 0.1,
     border: 'ice',
   },

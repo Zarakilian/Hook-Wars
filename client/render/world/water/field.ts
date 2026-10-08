@@ -1,7 +1,9 @@
-// Baked channel field: bed height, signed channel distance and a puddle mask over the river region.
-// One RGBA8 texture feeds every water shader; a CPU copy answers surfaceHeight() without noise calls.
+// Baked channel field: bed height, signed water distance and a puddle mask over every bit of water the
+// map has: the main river (plus a margin past its ends for the seam caps), braided side channels and
+// pools. One RGBA8 texture feeds every water shader; a CPU copy answers surfaceHeight() without noise.
+// Channel distance comes from waterDepthAt (platforms ignored), so the water runs on under docks.
 import * as THREE from 'three';
-import { channelDepthAt, riverAt } from '../../../../shared/maps/helpers.ts';
+import { riverAt, waterDepthAt } from '../../../../shared/maps/helpers.ts';
 import type { MapDef } from '../../../../shared/maps/types.ts';
 import { fbm2 } from '../../../../shared/math.ts';
 import { bedY, groundY } from '../../contracts.ts';
@@ -30,17 +32,48 @@ export interface WaterField {
   maxChan: number;
 }
 
-export function bakeField(map: MapDef, ground: (x: number, z: number) => number, cell: number, withStream = false): WaterField {
+/** How far the water sheet reaches past the channel edge (metres): the bank margin the surface covers. */
+export function waterExt(map: MapDef): number {
+  return Math.min(map.river.bank, 2.4) + 0.4;
+}
+
+/** Metres the box reaches past the sheet margin: room for the end-zone side bands (water.ts END_PAD + END_BAND). */
+const BOX_PAD = 3;
+
+/** Bounding box of every water body plus the sheet margin. z covers the river points plus `capZ` metres past each end. */
+export function waterBox(map: MapDef, ext: number, capN: number, capS: number): { minX: number; maxX: number; minZ: number; maxZ: number } {
   const pts = map.river.points;
-  const ext = Math.min(map.river.bank, 2.4) + 0.4;
   let minX = Infinity;
   let maxX = -Infinity;
   for (const p of pts) {
-    minX = Math.min(minX, p.x - p.hw - ext - 1);
-    maxX = Math.max(maxX, p.x + p.hw + ext + 1);
+    minX = Math.min(minX, p.x - p.hw - ext - BOX_PAD);
+    maxX = Math.max(maxX, p.x + p.hw + ext + BOX_PAD);
   }
-  const minZ = pts[0].z;
-  const maxZ = pts[pts.length - 1].z;
+  for (const ch of map.channels ?? []) {
+    for (const p of ch.points) {
+      minX = Math.min(minX, p.x - p.hw - ext - BOX_PAD);
+      maxX = Math.max(maxX, p.x + p.hw + ext + BOX_PAD);
+    }
+  }
+  for (const pl of map.pools ?? []) {
+    const r = Math.max(pl.rx, pl.rz) + ext + BOX_PAD;
+    minX = Math.min(minX, pl.x - r);
+    maxX = Math.max(maxX, pl.x + r);
+  }
+  // never wider than the play area plus a margin (a stray channel point must not blow up the texture)
+  minX = Math.max(minX, -map.w / 2 - 6);
+  maxX = Math.min(maxX, map.w / 2 + 6);
+  return { minX, maxX, minZ: pts[0].z - capN, maxZ: pts[pts.length - 1].z + capS };
+}
+
+export function bakeField(map: MapDef, ground: (x: number, z: number) => number, cell: number, withStream = false, capN = 0, capS = 0): WaterField {
+  const pts = map.river.points;
+  const ext = waterExt(map);
+  const box = waterBox(map, ext, capN, capS);
+  const minX = box.minX;
+  const maxX = box.maxX;
+  const minZ = box.minZ;
+  const maxZ = box.maxZ;
   const nx = Math.ceil((maxX - minX) / cell) + 1;
   const nz = Math.ceil((maxZ - minZ) / cell) + 1;
   const bed = new Float32Array(nx * nz);
@@ -57,7 +90,7 @@ export function bakeField(map: MapDef, ground: (x: number, z: number) => number,
       const x = minX + i * cell;
       const o = j * nx + i;
       const h = ground(x, z);
-      const c = channelDepthAt(map, x, z);
+      const c = waterDepthAt(map, x, z);
       bed[o] = h;
       chan[o] = c;
       maxChan = Math.max(maxChan, c);
@@ -161,47 +194,87 @@ export interface GridSpan {
   z1: number;
   /** vertex attribute aFixed for this span: 1 = reservoir held at full level */
   fixed: number;
+  /** keep cells within this many metres past the channel edge (default: the grid's reach) */
+  reach?: number;
+  /** skip cells whose four corners all have a channel distance above -hollow, so a side band leaves
+   *  the middle (already covered by the main sheet) out */
+  hollow?: number;
+  /** skip cells whose four corners all have ground (bedAt) higher than this: a side band only
+   *  needs to exist where the backdrop water can be */
+  dryAbove?: number;
 }
 
 /**
- * River-following grid: rows of constant z, each row spanning the channel plus `ext` on both sides.
+ * Water grid: a regular grid over the water box, keeping only the cells within `ext` metres of water
+ * (main river, side channels, pools; platforms ignored so the sheet runs on under docks and bridges).
  * Spans are separate patches (no shared vertices) so lock reservoirs can sit at a different level.
+ * The `uv` attribute is world xz (handy for MeshStandardMaterial based ice).
+ * `reachAt(z)` (optional) widens the kept margin row by row for spans without their own `reach`;
+ * `bedAt(x, z)` is the ground height, needed by spans with `dryAbove`.
  */
-export function buildRiverGrid(map: MapDef, step: number, ext: number, spans: GridSpan[], withChan = false): THREE.BufferGeometry {
-  const pts = map.river.points;
-  let maxW = 0;
-  for (const p of pts) maxW = Math.max(maxW, p.hw * 2 + ext * 2);
-  const cols = Math.max(8, Math.ceil(maxW / step));
+export function buildWaterGrid(
+  map: MapDef,
+  box: { minX: number; maxX: number },
+  step: number,
+  ext: number,
+  spans: GridSpan[],
+  reachAt?: (z: number) => number,
+  bedAt?: (x: number, z: number) => number,
+): THREE.BufferGeometry {
+  const cols = Math.max(2, Math.ceil((box.maxX - box.minX) / step));
+  const dx = (box.maxX - box.minX) / cols;
   const pos: number[] = [];
   const fixed: number[] = [];
-  const chanA: number[] = [];
   const idx: number[] = [];
   for (const s of spans) {
+    if (!(s.z1 > s.z0 + 1e-3)) continue;
     const rows = Math.max(2, Math.ceil((s.z1 - s.z0) / step) + 1);
-    const base = pos.length / 3;
+    const dz = (s.z1 - s.z0) / (rows - 1);
+    const stride = cols + 1;
+    const chan = new Float32Array(rows * stride);
+    const reach = new Float32Array(rows);
+    // exact end rows, so neighbouring spans (river and cap) share bit-identical edge vertices
+    const rowZ = (j: number): number => (j === rows - 1 ? s.z1 : j === 0 ? s.z0 : s.z0 + dz * j);
     for (let j = 0; j < rows; j++) {
-      const z = s.z0 + ((s.z1 - s.z0) * j) / (rows - 1);
-      const r = riverAt(pts, z);
-      const x0 = r.x - r.hw - ext;
-      const x1 = r.x + r.hw + ext;
-      for (let i = 0; i <= cols; i++) {
-        // cluster columns a little toward the edges, where shore detail lives
-        const t = i / cols;
-        const e = t - 0.5;
-        const tt = 0.5 + e * (0.82 + 0.72 * e * e);
-        const x = x0 + (x1 - x0) * tt;
-        pos.push(x, 0, z);
-        fixed.push(s.fixed);
-        if (withChan) chanA.push(channelDepthAt(map, x, z));
+      const z = rowZ(j);
+      reach[j] = s.reach ?? (reachAt ? reachAt(z) : ext);
+      for (let i = 0; i <= cols; i++) chan[j * stride + i] = waterDepthAt(map, box.minX + dx * i, z);
+    }
+    const hollow = s.hollow;
+    const dryAbove = bedAt ? s.dryAbove : undefined;
+    const bedG = dryAbove !== undefined && bedAt ? new Float32Array(rows * stride) : null;
+    if (bedG && bedAt) {
+      for (let j = 0; j < rows; j++) {
+        const z = rowZ(j);
+        for (let i = 0; i <= cols; i++) bedG[j * stride + i] = bedAt(box.minX + dx * i, z);
       }
     }
+    const vid = new Int32Array(rows * stride).fill(-1);
+    const vert = (i: number, j: number): number => {
+      const k = j * stride + i;
+      let v = vid[k];
+      if (v < 0) {
+        v = pos.length / 3;
+        pos.push(box.minX + dx * i, 0, rowZ(j));
+        fixed.push(s.fixed);
+        vid[k] = v;
+      }
+      return v;
+    };
     for (let j = 0; j < rows - 1; j++) {
       for (let i = 0; i < cols; i++) {
-        const a = base + j * (cols + 1) + i;
-        const b = a + 1;
-        const c = a + cols + 1;
-        const d = c + 1;
-        idx.push(a, c, b, b, c, d);
+        const k = j * stride + i;
+        const c = Math.max(chan[k], chan[k + 1], chan[k + stride], chan[k + stride + 1]);
+        if (!(c > -Math.max(reach[j], reach[j + 1]))) continue;
+        if (hollow !== undefined && Math.min(chan[k], chan[k + 1], chan[k + stride], chan[k + stride + 1]) > -hollow) continue;
+        if (bedG && dryAbove !== undefined && Math.min(bedG[k], bedG[k + 1], bedG[k + stride], bedG[k + stride + 1]) > dryAbove) continue;
+        const a = vert(i, j);
+        const b = vert(i + 1, j);
+        const cc = vert(i, j + 1);
+        const d = vert(i + 1, j + 1);
+        // alternate the diagonal so long straight shores never show a sawtooth
+        if ((i + j) & 1) idx.push(a, cc, d, a, d, b);
+        else idx.push(a, cc, b, b, cc, d);
       }
     }
   }
@@ -211,8 +284,6 @@ export function buildRiverGrid(map: MapDef, step: number, ext: number, spans: Gr
   for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   g.setAttribute('aFixed', new THREE.Float32BufferAttribute(fixed, 1));
-  if (withChan) g.setAttribute('aChan', new THREE.Float32BufferAttribute(chanA, 1));
-  // uv = world xz (handy for MeshStandardMaterial based ice)
   const uv = new Float32Array((pos.length / 3) * 2);
   for (let v = 0; v < pos.length / 3; v++) {
     uv[v * 2] = pos[v * 3];

@@ -19,7 +19,7 @@ const MUD = [0x2f2a1d, 0x372f20, 0x2a251a];
 export class MuckmireBiome extends BaseBiome implements MapBiome {
   private readonly zone = { z: 0, t: 0 };
   readonly sparkle = 0;
-  readonly farColor = 0x2a3a1c;
+  readonly farColor: number = 0x2a3a1c;
   readonly farY: number;
   private readonly grassSorted: number[];
   private readonly dirtSorted: number[];

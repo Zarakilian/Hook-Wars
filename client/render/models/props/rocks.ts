@@ -246,7 +246,7 @@ export function buildRunestone(r: number, seed: number): PropModel {
 
 // ---------------------------------------------------------------------------------------------
 
-function coralBranch(g: PGrid, x: number, y: number, z: number, dx: number, dy: number, dz: number, len: number, depth: number, col: number, rnd: () => number): void {
+export function coralBranch(g: PGrid, x: number, y: number, z: number, dx: number, dy: number, dz: number, len: number, depth: number, col: number, rnd: () => number): void {
   const ex = x + dx * len;
   const ey = y + dy * len;
   const ez = z + dz * len;

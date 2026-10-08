@@ -5,7 +5,7 @@ import { hash01, Rng } from '../../math.ts';
 import { Btn, UnitState, type PlayerInput } from '../../types.ts';
 import type { Unit } from '../entities.ts';
 import type { GameSim } from '../sim.ts';
-import { comboWatch, escapeWater, holdAim, runIntent, thinkBash, thinkGrappleHome, thinkHook } from './combat.ts';
+import { comboWatch, escapeWater, holdAim, runIntent, steerBendy, thinkBash, thinkGrappleHome, thinkGrappleOut, thinkHook } from './combat.ts';
 import type { BotContext } from './context.ts';
 import { checkDodge, JUDGED } from './dodge.ts';
 import { shop, trapStep, useItems } from './items.ts';
@@ -14,6 +14,7 @@ import { assignRole, ROLES, tuningFor } from './roles.ts';
 import { steer } from './steer.ts';
 import { Mode, type Brain } from './types.ts';
 import { diveFollowUp, thinkDive } from './dive.ts';
+import { navReset, newWaypoints } from './navigate.ts';
 
 const CAST_BITS = Btn.Hook | Btn.Grapple | Btn.Bash;
 
@@ -35,8 +36,13 @@ export function createBrain(sim: GameSim, u: Unit): Brain {
     intent: null, aim: null, hookReadySince: -1, baitUntil: 0, lastBankSearch: -99, comboTarget: -1, comboAt: 0, holdStill: false, reeling: false,
     diveTarget: -1, divePurpose: 0, diveUntil: 0, nextDiveCheck: t + 3, trapUntil: 0, lastMineT: -99, itemCdUntil: 0, drownSeen: 0, panicked: false,
     stuckX: u.x, stuckZ: u.z, stuckCheck: t + 0.5, stuckHits: 0, detourUntil: 0, detourX: 0, detourZ: 0, detourSide: 1,
+    navWp: newWaypoints(), navN: 0, navI: 0, navGX: u.x, navGZ: u.z, navVar: -1, navCheck: 0, navDirect: false, navDone: false, navFail: 0, navAt: -99,
+    steerTk: -1, steerId: -1,
     lastState: u.state,
-    stats: { hooks: 0, saves: 0, runes: 0, dodges: 0, combos: 0, dives: 0, bankShots: 0, grappleEscapes: 0 },
+    stats: {
+      hooks: 0, saves: 0, runes: 0, dodges: 0, combos: 0, dives: 0, bankShots: 0, grappleEscapes: 0,
+      bendyThrows: 0, bendySteers: 0, longshots: 0, paths: 0,
+    },
   };
 }
 
@@ -58,6 +64,9 @@ function onStateChange(sim: GameSim, u: Unit, b: Brain): void {
   }
   if (b.lastState === UnitState.Casting) b.aim = null;
   if (b.lastState === UnitState.Dead) b.nextPlan = t;
+  // dragged, shoved, flown or respawned: the old path starts somewhere else now
+  if (b.lastState === UnitState.Dead || b.lastState === UnitState.Hooked || b.lastState === UnitState.Knocked
+    || b.lastState === UnitState.Grappling || b.lastState === UnitState.Drowning) navReset(b);
   b.lastState = u.state;
 }
 
@@ -93,6 +102,7 @@ export function tickBot(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input:
   // Alive
   diveFollowUp(sim, ctx, u, b, input);
   if (!(input.b & CAST_BITS)) comboWatch(sim, ctx, u, b, input);
+  if (!(input.b & CAST_BITS) && u.activeHook >= 0) steerBendy(sim, ctx, u, b, input);
   if (input.b & CAST_BITS) {
     input.mx = 0;
     input.mz = 0;
@@ -107,6 +117,7 @@ export function tickBot(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input:
       thinkDive(sim, ctx, u, b);
       thinkGrappleHome(sim, ctx, u, b);
     }
+    if (b.mode === Mode.Leave) thinkGrappleOut(sim, ctx, u, b);
     useItems(sim, ctx, u, b, input);
   }
   if (!(input.b & CAST_BITS)) runIntent(sim, ctx, u, b, input);

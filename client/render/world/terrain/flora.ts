@@ -4,8 +4,10 @@
 import * as THREE from 'three';
 import { Rng } from '../../../../shared/math.ts';
 import type { Quality } from '../../contracts.ts';
-import { VoxelGrid, hashVox, mix, shade } from '../../voxel/voxel.ts';
-import { meshVoxelsFast } from './vmesh.ts';
+import { hashVox, mix, shade } from '../../voxel/voxel.ts';
+import { EXTRA_MODELS, type ExtraKind } from './floraextra.ts';
+import { VB, sp, type Mat, type ModelDef } from './vb.ts';
+import { GLOW, meshVoxelsFast } from './vmesh.ts';
 
 export interface BackdropRule {
   model: ModelKind;
@@ -25,98 +27,17 @@ export interface BackdropRule {
   underwater?: boolean;
   /** keep the instance yaw fixed (radians) instead of random */
   yaw?: (x: number, z: number) => number;
+  /** set pieces: place exactly here (density, spacing and the play-edge guards are skipped) */
+  points?: { x: number; z: number; yaw?: number; scale?: number }[];
 }
 
-export type ModelKind =
+type BaseKind =
   | 'cypress' | 'swampoak' | 'snag' | 'bush' | 'fern' | 'mossrock' | 'log' | 'reeds' | 'lilypads'
   | 'pine' | 'snowpine' | 'icerock' | 'iceshard' | 'snowbush' | 'iceberg' | 'floe'
   | 'palm' | 'jbush' | 'sandrock' | 'searock' | 'beachgrass' | 'driftwood'
   | 'crate' | 'barrel' | 'boat' | 'crane' | 'lamp' | 'bollard' | 'chimney'
   | 'pebble' | 'root' | 'shellbits' | 'icebits' | 'cobbles';
-
-type Mat = 'leaf' | 'shiny' | 'glow';
-
-interface ModelDef {
-  /** model bounds in metres [w, h, d] (grid size) */
-  size: [number, number, number];
-  /** voxel size for the near and far levels of detail */
-  vox: [number, number];
-  mat: Mat;
-  /** sway strength for wind (0 = static) */
-  sway: number;
-  build: (b: VB, rnd: Rng) => void;
-}
-
-/** Voxel builder in metres: origin at the bottom centre of the grid. */
-class VB {
-  readonly g: VoxelGrid;
-  readonly v: number; // voxels per metre
-  readonly cx: number;
-  readonly cz: number;
-  constructor(size: [number, number, number], vox: number) {
-    this.v = 1 / vox;
-    const nx = Math.max(2, Math.ceil(size[0] * this.v));
-    const ny = Math.max(2, Math.ceil(size[1] * this.v));
-    const nz = Math.max(2, Math.ceil(size[2] * this.v));
-    this.g = new VoxelGrid(nx, ny, nz);
-    this.cx = nx / 2;
-    this.cz = nz / 2;
-  }
-  private X(x: number): number {
-    return x * this.v + this.cx;
-  }
-  private Z(z: number): number {
-    return z * this.v + this.cz;
-  }
-  ell(x: number, y: number, z: number, rx: number, ry: number, rz: number, c: number | ((x: number, y: number, z: number) => number)): void {
-    const v = this.v;
-    this.g.ellipsoid(this.X(x), y * v, this.Z(z), Math.max(0.5, rx * v), Math.max(0.5, ry * v), Math.max(0.5, rz * v), c);
-  }
-  cyl(x: number, z: number, r: number, y0: number, y1: number, c: number | ((x: number, y: number, z: number) => number)): void {
-    const v = this.v;
-    this.g.cylinder(this.X(x), this.Z(z), Math.max(0.5, r * v), Math.floor(y0 * v), Math.max(Math.floor(y0 * v), Math.ceil(y1 * v) - 1), c);
-  }
-  box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, c: number | ((x: number, y: number, z: number) => number)): void {
-    const v = this.v;
-    this.g.box(Math.floor(this.X(x0)), Math.floor(y0 * v), Math.floor(this.Z(z0)), Math.ceil(this.X(x1)) - 1, Math.ceil(y1 * v) - 1, Math.ceil(this.Z(z1)) - 1, c);
-  }
-  line(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, r: number, c: number | ((x: number, y: number, z: number) => number)): void {
-    const v = this.v;
-    this.g.line(this.X(x0), y0 * v, this.Z(z0), this.X(x1), y1 * v, this.Z(z1), r * v, c);
-  }
-  /** Tapered trunk along a polyline of points [x,y,z,...] with radius r0 -> r1. */
-  trunk(pts: number[], r0: number, r1: number, c: (x: number, y: number, z: number) => number): void {
-    const n = pts.length / 3;
-    for (let i = 0; i < n - 1; i++) {
-      const steps = 6;
-      for (let s = 0; s < steps; s++) {
-        const t = (i + s / steps) / (n - 1);
-        const a = i * 3;
-        const k = s / steps;
-        const x = pts[a] + (pts[a + 3] - pts[a]) * k;
-        const y = pts[a + 1] + (pts[a + 4] - pts[a + 1]) * k;
-        const z = pts[a + 2] + (pts[a + 5] - pts[a + 2]) * k;
-        const r = r0 + (r1 - r0) * t;
-        const yy = pts[a + 1] + (pts[a + 4] - pts[a + 1]) * Math.min(1, k + 1 / steps);
-        this.cyl(x, z, r, y, yy + 0.02, c);
-      }
-    }
-  }
-  /** Recolour exposed tops (voxel with empty space above) through fn. */
-  caps(fn: (c: number, x: number, y: number, z: number) => number): void {
-    const g = this.g;
-    for (let z = 0; z < g.nz; z++)
-      for (let y = 0; y < g.ny; y++)
-        for (let x = 0; x < g.nx; x++) {
-          const c = g.get(x, y, z);
-          if (c < 0) continue;
-          if (!g.solid(x, y + 1, z)) g.set(x, y, z, fn(c, x, y, z));
-        }
-  }
-}
-
-const sp = (pal: readonly number[], seed: number, amt = 0.08) => (x: number, y: number, z: number) =>
-  shade(pal[Math.floor(hashVox(x, y, z, seed) * pal.length) % pal.length], 1 + (hashVox(x, y, z, seed + 1) - 0.5) * 2 * amt);
+export type ModelKind = BaseKind | ExtraKind;
 
 const BARK = [0x5a4632, 0x4b3a28, 0x6a5440, 0x3f3122];
 const MOSSY_LEAF = [0x3d5226, 0x485e2b, 0x34481f, 0x52692f, 0x2f4219];
@@ -136,7 +57,7 @@ const PLANK = [0x8a6a44, 0x7a5c3a, 0x96764c, 0x6e5232];
 const IRON = [0x3a3c40, 0x45474c, 0x303236];
 const RUST = [0x8a3a22, 0x9a4428, 0x7a3220, 0xa85030];
 
-const MODELS: Record<ModelKind, ModelDef> = {
+const BASE_MODELS: Record<BaseKind, ModelDef> = {
   cypress: {
     size: [5, 9.4, 5], vox: [0.22, 0.32], mat: 'leaf', sway: 1,
     build(b, r) {
@@ -485,7 +406,7 @@ const MODELS: Record<ModelKind, ModelDef> = {
     build(b, r) {
       b.cyl(0, 0, 0.18, 0, 0.3, sp(IRON, 1));
       b.cyl(0, 0, 0.08, 0.3, 3.4, sp(IRON, 2));
-      b.box(-0.25, 3.4, -0.25, 0.25, 3.9, 0.25, 0xffd590);
+      b.box(-0.25, 3.4, -0.25, 0.25, 3.9, 0.25, 0xffd590 | (GLOW * 5));
       b.box(-0.3, 3.9, -0.3, 0.3, 4.0, 0.3, sp(IRON, 3));
       void r;
     },
@@ -547,6 +468,8 @@ const MODELS: Record<ModelKind, ModelDef> = {
   },
 };
 
+const MODELS: Record<ModelKind, ModelDef> = { ...BASE_MODELS, ...EXTRA_MODELS };
+
 const VARIANTS = 3;
 const TEMPLATES = new Map<string, THREE.BufferGeometry>();
 
@@ -590,6 +513,26 @@ export function buildFlora(rules: BackdropRule[], env: BackdropEnv, seed: number
   const placed: Placed[] = [];
   rules.forEach((rule, ri) => {
     const rng = new Rng((seed * 31 + ri * 977) >>> 0);
+    if (rule.points) {
+      for (const pt of rule.points) {
+        let y = env.ground(pt.x, pt.z);
+        if (rule.onWater) y = env.water();
+        else if (rule.waterline) y = Math.max(y, env.water() - 0.25);
+        y += rule.yOffset ?? 0;
+        placed.push({
+          model: rule.model,
+          lod: env.outside(pt.x, pt.z) < hiDist ? 0 : 1,
+          variant: rng.int(0, VARIANTS - 1),
+          x: pt.x,
+          y,
+          z: pt.z,
+          yaw: pt.yaw ?? rng.range(0, Math.PI * 2),
+          scale: pt.scale ?? 1,
+          shadow: shadows && !!rule.castShadow && env.outside(pt.x, pt.z) < 14,
+        });
+      }
+      return;
+    }
     const s = rule.spacing / Math.sqrt(densityMul);
     for (let z = env.bounds.z0; z < env.bounds.z1; z += s) {
       for (let x = env.bounds.x0; x < env.bounds.x1; x += s) {
@@ -649,16 +592,24 @@ export function buildFlora(rules: BackdropRule[], env: BackdropEnv, seed: number
   const mats: Record<Mat, THREE.MeshStandardMaterial> = {
     leaf: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }),
     shiny: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.28, metalness: 0.05 }),
-    glow: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2, emissive: new THREE.Color(0xffb050), emissiveIntensity: 0.35 }),
+    glow: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 }),
   };
   const sway = { uTime: { value: 0 } };
-  const patchSway = (m: THREE.MeshStandardMaterial) => {
+  // every flora material: per-voxel glow from the aEmit attribute (lit windows, lanterns, lamps);
+  // the leaf material also sways in the wind
+  const patch = (m: THREE.MeshStandardMaterial, swayOn: boolean) => {
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = sway.uTime;
-      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;').replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-{
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+uniform float uTime;
+attribute float aEmit;
+varying float vHwEmit;`)
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+vHwEmit = aEmit;
+${swayOn ? `{
   vec3 hwIP = vec3(0.0);
   #ifdef USE_BATCHING
   hwIP = batchingMatrix[3].xyz;
@@ -666,12 +617,19 @@ export function buildFlora(rules: BackdropRule[], env: BackdropEnv, seed: number
   float hwS = max(0.0, transformed.y - 1.0);
   transformed.x += sin(uTime * 1.25 + hwIP.x * 0.37 + hwIP.z * 0.21) * 0.018 * hwS;
   transformed.z += cos(uTime * 1.05 + hwIP.z * 0.31 + hwIP.x * 0.13) * 0.013 * hwS;
-}`,
-      );
+}` : ''}`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying float vHwEmit;`)
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+totalEmissiveRadiance += vColor.rgb * vHwEmit * 2.4;`);
     };
-    m.customProgramCacheKey = () => 'hw-flora-sway';
+    m.customProgramCacheKey = () => (swayOn ? 'hw-flora-sway-e' : 'hw-flora-e');
   };
-  patchSway(mats.leaf);
+  patch(mats.leaf, true);
+  patch(mats.shiny, false);
+  patch(mats.glow, false);
 
   const group = new THREE.Group();
   group.name = 'backdrop-flora';

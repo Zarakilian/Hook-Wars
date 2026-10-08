@@ -1,5 +1,6 @@
 // Minimap: a cached nautical-chart layer per water state (deep, shallow, dry, frozen) plus a
 // dynamic layer at ~30 Hz with units, you, runes, hook lines and the camera footprint.
+import { RUNE_COLORS } from '../../../shared/constants.ts';
 import type { MapDef } from '../../../shared/maps/types.ts';
 import type { HookSnap, RiverState, RuneType } from '../../../shared/types.ts';
 import { UnitState } from '../../../shared/types.ts';
@@ -9,16 +10,10 @@ import { h, hex, setText } from '../dom.ts';
 import { icon } from '../icons.ts';
 import type { HudFrame } from '../types.ts';
 
-const RUNE_COLOR: Record<RuneType, string> = {
-  haste: '#7ff0ff',
-  double: '#ff7a3a',
-  ironskin: '#b8c8d8',
-  ghost: '#eef4ff',
-  bounty: '#ffd25a',
-  bendy: '#3fd6a0',
-  bouncy: '#ff70d0',
-  longshot: '#ffa030',
-};
+/** Minimap rune fills, from the shared rune palette (models, effects and HUD use the same). */
+const RUNE_FILL = Object.fromEntries((Object.keys(RUNE_COLORS) as RuneType[]).map((t) => [t, hex(RUNE_COLORS[t].main)])) as Record<RuneType, string>;
+/** Hook power-ups get a round marker with a ring, the classic runes a diamond. */
+const POWER_UP: Partial<Record<RuneType, true>> = { bendy: true, bouncy: true, longshot: true };
 
 interface TrackedRune {
   i: number;
@@ -280,16 +275,27 @@ export class Minimap {
     ctx.fillStyle = 'rgba(255,240,180,0.22)';
     ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(x, y - s);
-    ctx.lineTo(x + s, y);
-    ctx.lineTo(x, y + s);
-    ctx.lineTo(x - s, y);
-    ctx.closePath();
-    ctx.fillStyle = RUNE_COLOR[t];
+    if (POWER_UP[t]) {
+      ctx.arc(x, y, s * 0.9, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(x, y - s);
+      ctx.lineTo(x + s, y);
+      ctx.lineTo(x, y + s);
+      ctx.lineTo(x - s, y);
+      ctx.closePath();
+    }
+    ctx.fillStyle = RUNE_FILL[t];
     ctx.fill();
     ctx.strokeStyle = '#2a190d';
     ctx.lineWidth = this.dpr;
     ctx.stroke();
+    if (POWER_UP[t]) {
+      ctx.beginPath();
+      ctx.arc(x, y, s * 1.45, 0, Math.PI * 2);
+      ctx.strokeStyle = RUNE_FILL[t];
+      ctx.lineWidth = 1.2 * this.dpr;
+      ctx.stroke();
+    }
   }
 
   dispose(): void {

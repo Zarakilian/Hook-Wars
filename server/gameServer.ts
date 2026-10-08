@@ -1,7 +1,8 @@
 // WebSocket front door: connection limits, rate limits, message routing, the shared tick loop.
 // Hardened for the open internet: small payloads, per-IP caps, token-bucket rate limits,
 // strict validation (shared/protocol.ts), hello and idle deadlines, slow-consumer protection,
-// and per-message compression for the snapshot stream.
+// and per-message compression for the snapshot stream. Snapshot pacing by client acks lives in
+// room.ts; this file keeps the byte-level guard for clients that do not ack.
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -28,9 +29,15 @@ const BUCKET_BURST = 180;
 const LOBBY_RATE = 5;
 const LOBBY_BURST = 20;
 const LOBBY_MSGS = new Set<ClientMsg['t']>(['listRooms', 'createRoom', 'joinRoom', 'quickPlay', 'leaveRoom', 'setTeam', 'setConfig', 'ready', 'start']);
-// bufferedAmount counts compressed bytes (about 150 to 200 B per snapshot with deflate)
-const SLOW_BUFFER = 64 * 1024; // skip snapshots above this
+// bufferedAmount counts compressed bytes (about 1.5 KB per 5v5 snapshot with deflate). It cannot see
+// backlog in kernel socket buffers, so acking clients are paced by acks (room.ts); this is the backstop.
+const SLOW_BUFFER = 16 * 1024; // skip snapshots above this (about 10 frames)
 const KILL_BUFFER = 512 * 1024; // terminate above this
+const TICK_MS = TICK_DT * 1000;
+/** Ticks the loop may run back to back to catch up before it drops time instead. */
+const MAX_CATCHUP = 5;
+/** Timer lateness is learned up to one Windows clock period (15.6 ms) plus a little. */
+const TIMER_LATE_MAX = 17;
 
 interface Conn extends RoomClient {
   ws: WebSocket;
@@ -62,9 +69,15 @@ export class GameServer {
   private readonly roomOwnerIp = new Map<string, string>(); // room code -> creator IP
   private nextId = 1;
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
+  private loopImmediate: ReturnType<typeof setImmediate> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
-  private acc = 0;
-  private last = 0;
+  private stopped = false;
+  /** deadline of the next tick (performance.now() ms) */
+  private nextTick = 0;
+  /** when the pending setTimeout was due, to learn how late this OS fires timers */
+  private timerDue = 0;
+  /** observed timer lateness in ms (about 15.6 on Windows, about 1 on Linux), slowly decaying */
+  private timerLate = 2;
   readonly economy: ServerEconomy;
 
   constructor(cfg: ServerConfig, economy?: ServerEconomy) {
@@ -178,6 +191,9 @@ export class GameServer {
       const msg = parseClientMessage(raw);
       if (!msg) return this.strike(conn, 1);
       conn.lastMsg = Date.now(); // only valid messages keep a socket alive
+      // A valid message proves the peer is alive even when our ping is stuck behind a backlog of
+      // snapshots on a slow downlink: throttle such a client (room.ts), never kill it.
+      conn.alive = true;
       if (LOBBY_MSGS.has(msg.t) && !this.takeLobbyToken(conn)) return;
       if (ECONOMY_MSGS.has(msg.t) && !this.takeEconToken(conn)) return;
       try {
@@ -277,6 +293,14 @@ export class GameServer {
       this.rooms.delete(rr.code);
       this.roomOwnerIp.delete(rr.code);
     });
+    r.onEvict = (id) => {
+      // a new connection reclaimed this one's unit with its rejoin token (this socket is probably half-open)
+      const old = this.conns.get(id);
+      if (old && old.room === r) {
+        old.room = null;
+        old.send({ t: 'leftRoom' });
+      }
+    };
     r.onMatchEnd = (results) => {
       try {
         this.economy.onMatchEnd(results);
@@ -365,18 +389,19 @@ export class GameServer {
       case 'joinRoom': {
         const r = this.rooms.get(msg.code);
         if (!r) {
-          this.strike(c, 2); // guessing private codes gets you disconnected quickly
-          c.send({ t: 'error', code: 'no_room', message: `No room with code ${msg.code}.` });
-          return;
-        }
-        if (r.isFull()) {
-          c.send({ t: 'error', code: 'room_full', message: 'That room is full.' });
+          this.strike(c, msg.rejoin ? 1 : 2); // guessing private codes gets you disconnected quickly
+          c.send({ t: 'error', code: 'no_room', message: msg.rejoin ? 'That match is over.' : `No room with code ${msg.code}.` });
           return;
         }
         if (room === r) return;
+        // a valid rejoin token takes its own unit back even when the room is full
+        if (r.isFull() && !(msg.rejoin && r.canRejoin(msg.rejoin))) {
+          c.send({ t: 'error', code: 'room_full', message: 'That room is full.' });
+          return;
+        }
         this.leaveRoom(c);
         c.room = r;
-        r.join(c);
+        r.join(c, msg.rejoin);
         return;
       }
       case 'quickPlay': {
@@ -437,7 +462,10 @@ export class GameServer {
         return;
       }
       case 'input':
-        room.input(c.id, msg.i);
+        room.input(c.id, msg.i, msg.a);
+        return;
+      case 'ack':
+        room.ack(c.id, msg.a);
         return;
       case 'buy':
         room.buy(c.id, msg.item);
@@ -469,28 +497,63 @@ export class GameServer {
   // Loop
   // ------------------------------------------------------------------------------------------
 
-  private start(): void {
-    this.last = performance.now();
-    const loop = () => {
-      const now = performance.now();
-      this.acc += (now - this.last) / 1000;
-      this.last = now;
-      let steps = 0;
-      while (this.acc >= TICK_DT && steps < 5) {
-        this.acc -= TICK_DT;
-        steps++;
-        for (const r of this.rooms.values()) {
-          try {
-            r.tick();
-          } catch (err) {
-            console.error(`[room ${r.code}] tick error:`, err);
-          }
+  /**
+   * Drift-correcting tick loop. Ticks run on fixed deadlines (no accumulated error). Timers on Windows
+   * wake on the 15.6 ms system clock, which turned 33.3 ms ticks into 31/47 ms steps, so the loop
+   * sleeps with setTimeout only until just before the deadline (the margin is learned from how late
+   * timers actually fire here) and finishes the last stretch with setImmediate. With preciseTicks off
+   * it just sleeps to the deadline.
+   */
+  private readonly loop = (): void => {
+    this.loopTimer = null;
+    this.loopImmediate = null;
+    if (this.stopped) return;
+    let now = performance.now();
+    if (this.timerDue > 0) {
+      // clamp: a wake that was late because the whole process was descheduled says nothing about the
+      // timer, and must not make every later tick spin longer
+      const late = Math.min(TIMER_LATE_MAX, Math.max(0, now - this.timerDue));
+      this.timerLate = late > this.timerLate ? late : this.timerLate * 0.995 + late * 0.005;
+      this.timerDue = 0;
+    }
+    let steps = 0;
+    while (now >= this.nextTick && steps < MAX_CATCHUP) {
+      this.nextTick += TICK_MS;
+      steps++;
+      for (const r of this.rooms.values()) {
+        try {
+          r.tick();
+        } catch (err) {
+          console.error(`[room ${r.code}] tick error:`, err);
         }
       }
-      if (this.acc > TICK_DT * 5) this.acc = 0; // we fell far behind: drop time rather than spiral
-      this.loopTimer = setTimeout(loop, 2);
-    };
-    this.loopTimer = setTimeout(loop, 2);
+      now = performance.now();
+    }
+    if (now - this.nextTick > TICK_MS * MAX_CATCHUP) this.nextTick = now + TICK_MS; // far behind: drop time rather than spiral
+    if (this.stopped) return;
+    const wait = this.nextTick - now;
+    // spin only while a match runs: lobby ticks just flush state, an idle server should sleep
+    const precise = this.cfg.preciseTicks !== false && this.anyMatch();
+    const margin = precise ? this.timerLate + 0.75 : 0;
+    if (wait - margin >= 1) {
+      const ms = Math.floor(wait - margin);
+      this.timerDue = now + ms;
+      this.loopTimer = setTimeout(this.loop, ms);
+    } else if (!precise && wait > 0) {
+      this.timerDue = now + 1;
+      this.loopTimer = setTimeout(this.loop, 1);
+    } else this.loopImmediate = setImmediate(this.loop);
+  };
+
+  private anyMatch(): boolean {
+    for (const r of this.rooms.values()) if (r.phase === 'match') return true;
+    return false;
+  }
+
+  private start(): void {
+    this.stopped = false;
+    this.nextTick = performance.now() + TICK_MS;
+    this.loopTimer = setTimeout(this.loop, 1);
     this.heartbeat = setInterval(() => {
       const now = Date.now();
       for (const c of this.conns.values()) {
@@ -519,11 +582,15 @@ export class GameServer {
           this.roomOwnerIp.delete(r.code);
         }
       }
-    }, HEARTBEAT_MS);
+    }, this.cfg.heartbeatMs ?? HEARTBEAT_MS);
   }
 
   close(): void {
+    this.stopped = true;
     if (this.loopTimer) clearTimeout(this.loopTimer);
+    if (this.loopImmediate) clearImmediate(this.loopImmediate);
+    this.loopTimer = null;
+    this.loopImmediate = null;
     if (this.heartbeat) clearInterval(this.heartbeat);
     for (const c of this.conns.values()) c.ws.terminate();
     this.conns.clear();

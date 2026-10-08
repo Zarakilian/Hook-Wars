@@ -11,10 +11,13 @@ export interface TerrainUniforms {
   uSparkle: { value: number };
   uTime: { value: number };
   uEmit: { value: number };
+  /** strength and colour of the lamp light baked into the roughness map's red channel (0 = off) */
+  uLamp: { value: number };
+  uLampColor: { value: THREE.Color };
 }
 
 export function terrainUniforms(): TerrainUniforms {
-  return { uWetY: { value: -100 }, uRain: { value: 0 }, uSparkle: { value: 0 }, uTime: { value: 0 }, uEmit: { value: 1 } };
+  return { uWetY: { value: -100 }, uRain: { value: 0 }, uSparkle: { value: 0 }, uTime: { value: 0 }, uEmit: { value: 1 }, uLamp: { value: 0 }, uLampColor: { value: new THREE.Color(0xffb060) } };
 }
 
 export function terrainMaterial(color: THREE.Texture, rough: THREE.Texture, u: TerrainUniforms): THREE.MeshStandardMaterial {
@@ -49,6 +52,8 @@ uniform float uRain;
 uniform float uSparkle;
 uniform float uTime;
 uniform float uEmit;
+uniform float uLamp;
+uniform vec3 uLampColor;
 varying float vRough;
 varying float vEmit;
 varying float vUp;
@@ -74,6 +79,11 @@ roughnessFactor = mix(roughnessFactor, roughnessFactor * 0.42, uRain * vUp);`,
         `#include <emissivemap_fragment>
 totalEmissiveRadiance += diffuseColor.rgb * vEmit * uEmit;
 #ifdef USE_ROUGHNESSMAP
+if (uLamp > 0.0) {
+  // warm pools of lamp light on the ground round lanterns and gas lamps (baked), a little flicker
+  float hwLamp = texture2D(roughnessMap, vRoughnessMapUv).r;
+  if (hwLamp > 0.0) totalEmissiveRadiance += diffuseColor.rgb * uLampColor * hwLamp * uLamp * vUp * (0.93 + 0.07 * sin(uTime * 6.3 + vWPos.x * 1.7 + vWPos.z));
+}
 if (uSparkle > 0.0) {
   float hwSpk = texture2D(roughnessMap, vRoughnessMapUv).b;
   if (hwSpk > 0.0) {
@@ -86,7 +96,7 @@ if (uSparkle > 0.0) {
 #endif`,
       );
   };
-  m.customProgramCacheKey = () => 'hw-terrain-v1';
+  m.customProgramCacheKey = () => 'hw-terrain-v2';
   return m;
 }
 

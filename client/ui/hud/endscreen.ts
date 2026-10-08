@@ -1,5 +1,7 @@
 // End of match: the winner banner, final score, fun awards and the full stats table.
 import type { MatchEnd } from '../../../shared/protocol.ts';
+import { matchPearls } from '../../../shared/cosmetics.ts';
+import { SOLO_PEARL_RATE } from '../../../shared/economy.ts';
 import type { PlayerInfo, ScoreRow, Team } from '../../../shared/types.ts';
 import { TEAM_COLORS } from '../../render/contracts.ts';
 import { h } from '../dom.ts';
@@ -35,7 +37,14 @@ function confetti(): HTMLElement {
   return wrap;
 }
 
-export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null, onLobby: (() => void) | null = null): HTMLElement {
+/** Pearls the solo match paid into the offline locker (the same rule app.ts applies at match end). */
+export function soloPearls(e: MatchEnd, youId: number): number {
+  const me = e.players.find((p) => p.id === youId);
+  const row = e.rows.find((r) => r.i === youId);
+  return me && row ? Math.round(matchPearls(e.winner === me.team, row.k, row.hh, row.sv) * SOLO_PEARL_RATE) : 0;
+}
+
+export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null, onLobby: (() => void) | null = null, pearls: number | null = null): HTMLElement {
   const you = e.players.find((p) => p.id === youId);
   const myTeam = you?.team;
   const won = myTeam !== undefined && e.winner === myTeam;
@@ -88,6 +97,7 @@ export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: ()
       h('div', { class: 'end-banner' }, h('span', { class: 'eb-ico' }, icon(draw ? 'anchor' : won ? 'trophy' : myTeam === undefined ? 'crown' : 'drown')), h('span', { class: 'eb-text', text: title })),
       h('div', { class: 'end-sub', text: sub }),
       scoreRow,
+      pearls ? h('div', { class: 'end-pearls' }, icon('pearl', 'ep-ico'), h('span', { class: 'ep-num', text: `+${pearls}` }), h('span', { class: 'ep-text', text: local ? 'Pearls for your locker (solo pays half)' : 'Pearls' })) : null,
       awards,
       h('div', { class: 'end-tables' }, statsTable(e.rows, e.players, 0, youId, 'end'), statsTable(e.rows, e.players, 1, youId, 'end')),
       note,

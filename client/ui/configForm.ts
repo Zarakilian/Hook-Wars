@@ -5,7 +5,7 @@ import {
   BOT_DIFFICULTIES, HAZARD_MODES, MAP_IDS, RIVER_MODES,
   type BotDifficulty, type HazardMode, type MapId, type MatchConfig, type RiverMode,
 } from '../../shared/types.ts';
-import { mapThumb, moodGradient } from './chart.ts';
+import { mapThumb, moodGradient, moodLabel, moodSwatch } from './chart.ts';
 import { h } from './dom.ts';
 import { icon } from './icons.ts';
 import { BOT_NAMES_UI, RIVER_INFO, hazardInfo, hazardPlacement, tidalLine, tidalShort } from './info.ts';
@@ -19,6 +19,8 @@ export interface ConfigForm {
 export type FormVariant = 'solo' | 'room' | 'lobby';
 
 const KILLS = [5, 10, 15, 20, 30, 40, 50];
+/** How many maps have a tide, for the "this map has no tide" hint. */
+const TIDAL_COUNT = MAP_IDS.filter((id) => mapSupportsTidal(id)).length;
 const TIMES = [180, 300, 600, 900, 1200, 1800];
 
 export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; onChange: (c: MatchConfig) => void; locked?: boolean; extra?: HTMLElement | null }): ConfigForm {
@@ -49,8 +51,9 @@ export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; on
     );
     const thumb = h('img', { class: 'mc-thumb', alt: '', src: mapThumb(id, 'deep'), draggable: 'false' });
     mapThumbs.set(id, thumb);
-    const b = h('button', { class: 'map-card', type: 'button', role: 'radio', 'aria-label': m.name, style: `--mood:${moodGradient(m)}` },
-      h('span', { class: 'mc-art' }, thumb, h('span', { class: 'mc-mood', 'aria-hidden': 'true' }), h('span', { class: 'mc-check', 'aria-hidden': 'true' }, icon('check'))),
+    const b = h('button', { class: 'map-card', type: 'button', role: 'radio', 'aria-label': m.name, title: `${m.name}: ${m.blurb}`, style: `--mood:${moodGradient(m)}` },
+      h('span', { class: 'mc-art' }, thumb, h('span', { class: 'mc-mood', 'aria-hidden': 'true' }), h('span', { class: 'mc-check', 'aria-hidden': 'true' }, icon('check')),
+        h('span', { class: 'mc-swatch', title: `Mood: ${moodLabel(m)}` }, ...moodSwatch(m).map((c) => h('span', { class: 'mc-sw', style: `background:${c}` })), h('span', { class: 'mc-sw-label', text: moodLabel(m) }))),
       h('span', { class: 'mc-body' },
         h('span', { class: 'mc-name', text: m.name }),
         compact ? null : h('span', { class: 'mc-blurb', text: m.blurb }),
@@ -144,7 +147,7 @@ export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; on
     }
     const tl = tidalLine(m);
     river.setDisabled('tidal', !tl, tl ? '' : `${m.name} has no tide`);
-    river.setSub('tidal', tl ?? `${m.name} has no tide. Pick Coral Cove, Frostfang or Cogwater.`);
+    river.setSub('tidal', tl ?? `${m.name} has no tide. ${TIDAL_COUNT} other maps do.`);
     river.set(cfg.riverMode, locked);
     // hazard tile names follow the map's special
     hazards.set(cfg.hazards, locked);

@@ -16,7 +16,7 @@ interface Bucket {
   shadow: boolean;
   items: Item[];
 }
-interface HaloItem {
+export interface HaloItem {
   x: number;
   y: number;
   z: number;
@@ -116,7 +116,8 @@ export class StaticBatch {
 // ---------------------------------------------------------------------------------------------
 
 let haloMat: THREE.ShaderMaterial | null = null;
-function haloMaterial(): THREE.ShaderMaterial {
+/** Shared additive material for merged halo meshes. */
+export function mergedHaloMaterial(): THREE.ShaderMaterial {
   if (haloMat) return haloMat;
   haloMat = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { map: { value: null }, uTime: { value: 0 } }]),
@@ -168,7 +169,8 @@ function haloMaterial(): THREE.ShaderMaterial {
 }
 
 const _c = new THREE.Color();
-function haloMesh(list: HaloItem[]): THREE.Mesh {
+/** One geometry holding every halo of a list (4 vertices each). */
+export function haloGeometry(list: HaloItem[]): THREE.BufferGeometry {
   const n = list.length;
   const pos = new Float32Array(n * 12);
   const corner = new Float32Array(n * 8);
@@ -206,11 +208,20 @@ function haloMesh(list: HaloItem[]): THREE.Mesh {
   let maxS = 0;
   for (const h of list) maxS = Math.max(maxS, h.size);
   if (geo.boundingSphere) geo.boundingSphere.radius += maxS;
-  const mesh = new THREE.Mesh(geo, haloMaterial());
+  return geo;
+}
+
+/** A merged halo mesh. owns = true marks the geometry for disposal with the group. */
+export function haloMeshOf(geo: THREE.BufferGeometry, owns: boolean): THREE.Mesh {
+  const mesh = new THREE.Mesh(geo, mergedHaloMaterial());
   mesh.name = 'halos';
   mesh.renderOrder = 3;
-  mesh.userData.ownsGeometry = true;
+  mesh.userData.ownsGeometry = owns;
   return mesh;
+}
+
+function haloMesh(list: HaloItem[]): THREE.Mesh {
+  return haloMeshOf(haloGeometry(list), true);
 }
 
 /** Free per-match GPU buffers of a props / decor / platforms group (shared caches stay). */

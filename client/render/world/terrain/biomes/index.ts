@@ -3,10 +3,16 @@ import type { Decor, MapDef } from '../../../../../shared/maps/types.ts';
 import type { MatchConfig } from '../../../../../shared/types.ts';
 import type { Quality } from '../../../contracts.ts';
 import type { Biome } from '../field.ts';
+import type { CascadeDef } from '../cascades.ts';
 import type { BackdropRule } from '../flora.ts';
+import type { MistDef } from '../mist.ts';
+import { AuroraBiome } from './aurora.ts';
 import { CogwaterBiome } from './cogwater.ts';
 import { CoralcoveBiome } from './coralcove.ts';
 import { FrostfangBiome } from './frostfang.ts';
+import { LanternwharfBiome } from './lanternwharf.ts';
+import { MaelstromBiome } from './maelstrom.ts';
+import { MirelightBiome } from './mirelight.ts';
 import { MuckmireBiome } from './muckmire.ts';
 
 export interface PoolDef {
@@ -41,6 +47,16 @@ export interface MapBiome extends Biome {
   /** colour and height of the far fallback ground */
   readonly farColor: number;
   readonly farY: number;
+  /** optional low mist banks over the backdrop, and their colour */
+  mist?(): MistDef[];
+  readonly mistColor?: number;
+  /** optional backdrop waterfalls down the cliffs past the map edges */
+  cascades?(): CascadeDef[];
+  /** strength of the warm lamp-light pools baked round lanterns and gas lamps (night maps), and their colour */
+  readonly lampLight?: number;
+  readonly lampColor?: number;
+  /** extra lamp-light pools the biome's own backdrop lamps throw (x, z, radius, strength) */
+  lamps?(): { x: number; z: number; r: number; k: number }[];
 }
 
 export function createBiome(map: MapDef, config: MatchConfig): MapBiome {
@@ -51,6 +67,14 @@ export function createBiome(map: MapDef, config: MatchConfig): MapBiome {
       return new CoralcoveBiome(map, config);
     case 'cogwater':
       return new CogwaterBiome(map, config);
+    case 'mirelight':
+      return new MirelightBiome(map, config);
+    case 'aurora':
+      return new AuroraBiome(map, config);
+    case 'maelstrom':
+      return new MaelstromBiome(map, config);
+    case 'lanternwharf':
+      return new LanternwharfBiome(map, config);
     default:
       return new MuckmireBiome(map, config);
   }

@@ -47,7 +47,7 @@ const HEAT_HALF_LIFE = 7;
 const EAGER_SFX: readonly SfxId[] = [
   'countdown', 'go', 'hookThrow', 'hookHit', 'hookReturn', 'hookWall', 'melee', 'bash', 'death', 'corpse', 'splash', 'drown', 'bullseye',
   'hookClash', 'hookBounce', 'hookBreak', 'hookHitAlly', 'grappleThrow', 'grappleLatch', 'grappleLand', 'hurt', 'respawn', 'drownSave',
-  'rune', 'runeSpawn', 'mineArm', 'mineBoom', 'buy', 'pie', 'puff', 'iceCrack', 'victory', 'defeat', 'uiClick', 'uiHover', 'uiOpen', 'chat', 'deny', 'footstep',
+  'rune', 'runeSpawn', 'powerHook', 'mineArm', 'mineBoom', 'buy', 'pie', 'puff', 'iceCrack', 'victory', 'defeat', 'uiClick', 'uiHover', 'uiOpen', 'chat', 'deny', 'footstep',
 ];
 const ANN_MAX_AGE = 2.5;
 

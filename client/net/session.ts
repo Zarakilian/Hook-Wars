@@ -109,12 +109,13 @@ export class LocalSession implements MatchSession {
   pump(nowMs: number): void {
     if (this.last < 0) this.last = nowMs;
     if (nowMs <= this.last) return; // clocks must only move forward
-    const dt = Math.min(0.25, (nowMs - this.last) / 1000);
+    // catch up as far as the input side does (GameClient: 0.5 s, 15 ticks), so every input has its tick
+    const dt = Math.min(0.5, (nowMs - this.last) / 1000);
     this.last = nowMs;
     if (this.paused) return;
     this.acc += dt;
     let steps = 0;
-    while (this.acc >= TICK_DT && steps < 8) {
+    while (this.acc >= TICK_DT && steps < 15) {
       this.acc -= TICK_DT;
       steps++;
       this.sim.step();
@@ -138,6 +139,9 @@ export class LocalSession implements MatchSession {
 
 // ---------------------------------------------------------------------------------------------
 
+/** Spectators ack every this many snapshot ticks (players ack on every input instead). */
+const SPECTATOR_ACK_EVERY = 2;
+
 export class OnlineSession implements MatchSession {
   readonly local = false;
   start: MatchStart;
@@ -145,14 +149,28 @@ export class OnlineSession implements MatchSession {
   onPlayers: ((p: PlayerInfo[]) => void) | null = null;
   onEnd: ((e: MatchEnd) => void) | null = null;
   private conn: Connection;
+  /** newest snapshot tick received: echoed to the server, which stops streaming to us when we fall behind */
+  private lastTick = -1;
+  private ackedTick = -1;
 
   constructor(conn: Connection, start: MatchStart) {
     this.conn = conn;
     this.start = start;
   }
 
+  /** Newest snapshot tick this session has received (-1 before the first). */
+  get receivedTick(): number {
+    return this.lastTick;
+  }
+
   /** Called by the app for match messages. */
   receiveSnapshot(s: Snapshot): void {
+    if (s.t > this.lastTick) this.lastTick = s.t;
+    // a spectator sends no inputs, so it acks here; a player's ack rides on every input
+    if (this.start.you < 0 && this.lastTick - this.ackedTick >= SPECTATOR_ACK_EVERY) {
+      this.ackedTick = this.lastTick;
+      this.conn.send({ t: 'ack', a: this.lastTick });
+    }
     this.onSnapshot?.(s);
   }
   receivePlayers(p: PlayerInfo[]): void {
@@ -164,7 +182,7 @@ export class OnlineSession implements MatchSession {
   }
 
   sendInput(i: PlayerInput): void {
-    this.conn.send({ t: 'input', i });
+    this.conn.send(this.lastTick >= 0 ? { t: 'input', i, a: this.lastTick } : { t: 'input', i });
   }
   buy(item: ItemId): void {
     this.conn.send({ t: 'buy', item });

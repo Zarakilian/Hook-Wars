@@ -2,7 +2,7 @@
 // and a river flow bed that follows the RiverState when one is passed.
 import type { MapDef } from '../../shared/maps/types.ts';
 import type { MapId, RiverState } from '../../shared/types.ts';
-import { STEEL, Snd, bell, creak, drops, mulberry32, noiseHit, perc, sweep, tone, whoosh, type Kit } from './core.ts';
+import { BELL, STEEL, Snd, bell, clicks, creak, drops, mulberry32, noiseHit, perc, sweep, tone, whoosh, type Kit } from './core.ts';
 import { speak } from './voice.ts';
 
 interface Gen {
@@ -294,6 +294,138 @@ function farHiss(s: Snd): void {
   noiseHit(s, { ft: 'highpass', f: 2600, f1: 1800, a: 0.12, d: s.r(0.8, 1.4), v: 0.35, q: 0.6, pitched: false });
 }
 
+// ---- Mirelight Marsh: water lapping at the reeds and pilings, distant evening birds
+
+function lap(s: Snd): void {
+  // a slow swell of water against wood: low filtered noise in and out, then a couple of plips
+  const d = s.r(0.7, 1.3);
+  const g = s.g(0, s.out);
+  const bp = s.f('bandpass', s.r(380, 620), 1.1, g);
+  s.noise('pink', s.t, s.t + d + 0.1, bp);
+  bp.frequency.setValueAtTime(bp.frequency.value * 0.7, s.t);
+  bp.frequency.exponentialRampToValueAtTime(bp.frequency.value * 1.35, s.t + d * 0.35);
+  bp.frequency.exponentialRampToValueAtTime(bp.frequency.value * 0.8, s.t + d);
+  g.gain.setValueAtTime(0, s.t);
+  g.gain.linearRampToValueAtTime(0.55, s.t + d * 0.3);
+  g.gain.linearRampToValueAtTime(0, s.t + d);
+  tone(s, { t: s.t + d * 0.28, f: s.r(90, 130), f1: s.r(160, 220), a: 0.02, d: 0.14, v: 0.18 });
+  drops(s, { t: s.t + d * 0.35, n: s.ri(1, 3), span: d * 0.5, f0: 700, f1: 1300, d: 0.05, v: 0.1, rise: 1.8 });
+}
+
+function eveningBird(s: Snd): void {
+  const kind = s.r();
+  if (kind < 0.5) {
+    // a warbling thrush phrase: 4 to 7 quick whistles, far off
+    const lp = s.f('lowpass', 5200, 0.7, s.out);
+    const n = s.ri(4, 7);
+    const base = s.r(2300, 3200);
+    for (let i = 0; i < n; i++) {
+      const t = s.t + i * s.r(0.09, 0.15);
+      const f0 = base * s.r(0.85, 1.25);
+      tone(s, { t, f: f0, f1: f0 * s.r(0.8, 1.3), a: 0.008, d: s.r(0.05, 0.11), v: 0.16, dest: lp, vib: [s.r(30, 60), 0.02] });
+    }
+  } else if (kind < 0.8) {
+    // a two-note dusk call, falling a minor third, twice
+    const f = s.r(820, 980);
+    for (let k = 0; k < 2; k++) {
+      const t = s.t + k * 0.7;
+      tone(s, { t, f, f1: f * 0.98, a: 0.03, d: 0.22, v: 0.2, shape: 'hold' });
+      tone(s, { t: t + 0.26, f: f * 0.84, f1: f * 0.8, a: 0.03, d: 0.3, v: 0.18, shape: 'hold' });
+    }
+  } else {
+    // a heron's rough croak somewhere across the water
+    const g = s.g(0, s.f('bandpass', 900, 1.2, s.out));
+    const am = s.g(0.5, g);
+    s.osc('sine', s.r(45, 60), s.t, s.t + 0.35, s.g(0.5, am.gain));
+    const o = s.osc('sawtooth', s.r(240, 300), s.t, s.t + 0.35, am);
+    sweep(o.frequency, s.t, o.frequency.value, o.frequency.value * 0.8, 0.3);
+    perc(g.gain, s.t, 0.5, 0.02, 0.32);
+  }
+}
+
+// ---- Aurora Harbour: crackling floes and the low song of shifting ice
+
+function floeCrackle(s: Snd): void {
+  // a burst of tiny dry cracks, then a soft knock as a floe settles
+  const end = clicks(s, { n: s.ri(8, 22), i0: s.r(0.008, 0.02), i1: s.r(0.03, 0.08), f: s.r(2600, 4800), q: 2.2, cd: 0.006, v: 0.4, jitter: 0.6, fJit: 0.25 });
+  clicks(s, { t: s.t + 0.05, n: s.ri(3, 8), i0: 0.03, i1: 0.07, f: 1400, q: 3, cd: 0.01, v: 0.25, jitter: 0.7 });
+  noiseHit(s, { t: end, ft: 'lowpass', f: 600, f1: 160, a: 0.004, d: 0.18, v: 0.25, q: 0.8 });
+}
+
+function iceSong(s: Snd): void {
+  // shifting sheet ice: a gliding, resonant low groan
+  const d = s.r(1.2, 2.2);
+  const g = s.g(0, s.f('bandpass', s.r(220, 320), 4, s.out));
+  const o = s.osc('sawtooth', s.r(70, 110), s.t, s.t + d, g);
+  sweep(o.frequency, s.t, o.frequency.value, o.frequency.value * s.r(1.6, 2.4), d);
+  const o2 = s.osc('sine', s.r(300, 520), s.t, s.t + d, s.g(0.18, s.out));
+  sweep(o2.frequency, s.t, o2.frequency.value, o2.frequency.value * s.r(0.4, 0.6), d);
+  g.gain.setValueAtTime(0, s.t);
+  g.gain.linearRampToValueAtTime(0.5, s.t + d * 0.3);
+  g.gain.linearRampToValueAtTime(0, s.t + d);
+}
+
+// ---- Maelstrom Lagoon: the whirlpool's gurgle
+
+function gurgle(s: Snd): void {
+  const d = s.r(1.2, 2);
+  bubbleLoopHit(s, d);
+  const g = s.g(0, s.f('lowpass', 420, 1.4, s.out));
+  s.noise('brown', s.t, s.t + d, g);
+  g.gain.setValueAtTime(0, s.t);
+  g.gain.linearRampToValueAtTime(0.7, s.t + d * 0.4);
+  g.gain.linearRampToValueAtTime(0, s.t + d);
+  tone(s, { t: s.t, f: s.r(55, 75), f1: s.r(35, 45), a: 0.2, d: d * 0.8, v: 0.3 });
+}
+
+function bubbleLoopHit(s: Snd, d: number): void {
+  drops(s, { t: s.t + 0.1, n: s.ri(6, 12), span: d * 0.8, f0: 260, f1: 620, d: 0.07, v: 0.18, rise: 1.6 });
+}
+
+// ---- Lanternwharf: harbour bell, a ship's horn far out, cranes and chains
+
+function harbourBell(s: Snd): void {
+  // a buoy bell rocking in the swell: two to four uneven strokes
+  const f = s.r(300, 340);
+  const lp = s.f('lowpass', 2600, 0.7, s.out);
+  const n = s.ri(2, 4);
+  let t = s.t;
+  for (let i = 0; i < n; i++) {
+    bell(s, { t, f, d: 3.2, v: i === 0 ? 0.45 : s.r(0.25, 0.4), partials: BELL, dest: lp });
+    t += s.r(0.9, 1.6);
+  }
+}
+
+function shipHorn(s: Snd): void {
+  // a two-tone steamer horn far out on the water
+  const lp = s.f('lowpass', 420, 1.2, s.out);
+  const fs = [s.r(98, 110), 0];
+  fs[1] = fs[0] * 1.26;
+  const d = s.r(2.2, 3.2);
+  const g = s.g(0, lp);
+  for (const f of fs) {
+    s.osc('sawtooth', f, s.t, s.t + d + 0.6, g);
+    s.osc('sawtooth', f * 1.006, s.t, s.t + d + 0.6, g);
+  }
+  g.gain.setValueAtTime(0, s.t);
+  g.gain.linearRampToValueAtTime(0.32, s.t + 0.5);
+  g.gain.setValueAtTime(0.32, s.t + d);
+  g.gain.setTargetAtTime(0, s.t + d, 0.3);
+}
+
+function craneCreak(s: Snd): void {
+  // a loaded crane jib swinging: slow metal stick-slip groan, a ratchet, sometimes a chain rattle
+  creak(s, { d: s.r(1.0, 1.8), r0: s.r(7, 11), r1: s.r(12, 18), res: [s.r(140, 190), s.r(420, 520), s.r(1100, 1350)], v: 0.42, q: 14 });
+  if (s.chance(0.6)) clicks(s, { t: s.t + s.r(0.3, 0.8), n: s.ri(4, 9), i0: 0.07, i1: 0.1, f: 1900, q: 4, cd: 0.02, v: 0.3 });
+  if (s.chance(0.4)) bell(s, { t: s.t + s.r(0.4, 1.0), f: s.r(700, 900), d: 0.4, v: 0.12, partials: STEEL });
+}
+
+function gutter(s: Snd): void {
+  // rain pouring off a roof edge onto boards: a burst of fat drops
+  drops(s, { n: s.ri(5, 10), span: s.r(0.3, 0.6), f0: 900, f1: 2200, d: 0.04, v: 0.18 });
+  noiseHit(s, { ft: 'bandpass', f: 1600, q: 0.8, a: 0.05, d: 0.5, v: 0.14 });
+}
+
 // ---------------------------------------------------------------------------------------------
 // a bed
 // ---------------------------------------------------------------------------------------------
@@ -420,6 +552,79 @@ class Bed {
       loopNoise('white', s.f('bandpass', 1100, 0.5, s.g(0.05, this.gain)), 0.8);
       gen(wave, 4.5, 8, 0.38, 0.7, 0.15, 0.6);
       gen(gull, 4, 12, 0.18, 0.95, 0.4, 2.5);
+    } else if (id === 'mirelight') {
+      // evening marsh: a still, damp bed, a full cricket chorus, frogs, lapping water, far birds
+      loopNoise('brown', s.f('lowpass', 260, 0.7, s.g(0.26, this.gain)));
+      const cr = s.g(0.2, s.f('highpass', 2800, 0.7, this.gain));
+      loopBuf(cachedLoop(ctx, 'crickets', () => cricketLoop(ctx)), cr);
+      lfo(0.04, 0.06, cr.gain);
+      // a second, slower cricket layer pitched down a little for depth
+      const cr2 = s.g(0.08, s.f('bandpass', 3600, 0.8, this.gain));
+      const c2 = loopBuf(cachedLoop(ctx, 'crickets', () => cricketLoop(ctx)), cr2);
+      c2.playbackRate.value = 0.86;
+      gen(frog, 0.7, 2.6, 0.3, 0.9, 0.2, 0.3);
+      gen(frog, 1.8, 4.5, 0.2, 0.9, 0.35, 1.2);
+      gen(lap, 1.6, 4.2, 0.34, 0.7, 0.15, 0.8);
+      gen(eveningBird, 7, 16, 0.16, 0.9, 0.6, 3);
+      gen(owl, 24, 45, 0.14, 0.8, 0.7, 14);
+    } else if (id === 'aurora') {
+      // a cold, open harbour at night: wind over the ice, creaks, crackling floes, the ice singing
+      const wind = s.g(0.5, this.gain);
+      const w1 = s.f('bandpass', 520, 2.2, s.g(1.0, wind));
+      const w2 = s.f('bandpass', 1700, 8, s.g(0.7, wind));
+      const wl = s.f('lowpass', 380, 0.7, s.g(0.9, wind));
+      const wIn = s.g(1);
+      wIn.connect(w1);
+      wIn.connect(w2);
+      wIn.connect(wl);
+      loopNoise('pink', wIn);
+      lfo(0.052, 280, w1.frequency);
+      lfo(0.081, 700, w2.frequency);
+      lfo(0.037, 0.28, wind.gain);
+      // the faint hiss of blown snow
+      loopNoise('white', s.f('highpass', 5200, 0.6, s.g(0.025, this.gain)), 0.9);
+      gen(gust, 6, 13, 0.3, 0.9, 0.3, 2.5);
+      gen(iceCreak, 3, 8, 0.32, 0.9, 0.5, 1.5);
+      gen(floeCrackle, 2, 6, 0.3, 0.9, 0.35, 1);
+      gen(iceSong, 14, 30, 0.16, 0.8, 0.8, 8);
+      gen(icePing, 10, 22, 0.1, 0.9, 0.7, 6);
+    } else if (id === 'maelstrom') {
+      // a roaring lagoon: surf, a waterfall close by, the whirlpool's rumble in the middle, gulls
+      const surf = s.g(0.3, this.gain);
+      loopNoise('brown', s.f('lowpass', 700, 0.7, surf));
+      lfo(0.09, 0.16, surf.gain);
+      // waterfall: broadband rush, a mid body and an airy top
+      const fall = s.g(0.095, this.gain);
+      loopNoise('white', s.f('bandpass', 1300, 0.45, fall), 0.85);
+      loopNoise('pink', s.f('bandpass', 420, 0.6, s.g(1.4, fall)));
+      lfo(0.21, 0.02, fall.gain);
+      // whirlpool: deep brown rumble that swells, with a resonant swirl sweeping round
+      const whirl = s.g(0.26, this.gain);
+      loopNoise('brown', s.f('lowpass', 130, 0.9, whirl), 0.9);
+      const swirl = s.f('bandpass', 360, 3.5, s.g(0.5, whirl));
+      loopNoise('pink', swirl);
+      lfo(0.13, 180, swirl.frequency);
+      lfo(0.07, 0.14, whirl.gain);
+      gen(wave, 3.5, 7, 0.4, 0.7, 0.15, 0.4);
+      gen(gull, 3, 9, 0.2, 0.95, 0.4, 1.5);
+      gen(gurgle, 5, 11, 0.26, 0.4, 0.3, 3);
+    } else if (id === 'lanternwharf') {
+      // a rainy night harbour: heavy rain, gutters and drips, a buoy bell, a far horn, cranes
+      const rain = s.g(0.42, this.gain);
+      loopBuf(cachedLoop(ctx, 'rain', () => rainLoop(ctx)), rain);
+      const rain2 = s.g(0.22, s.f('lowpass', 2600, 0.6, this.gain));
+      const r2 = loopBuf(cachedLoop(ctx, 'rain', () => rainLoop(ctx)), rain2);
+      r2.playbackRate.value = 0.78;
+      loopNoise('pink', s.f('highpass', 2200, 0.6, s.g(0.1, this.gain)));
+      lfo(0.06, 0.08, rain.gain);
+      // the harbour's low murmur: water against the quay
+      loopNoise('brown', s.f('lowpass', 300, 0.7, s.g(0.18, this.gain)));
+      gen(drip, 0.4, 1.6, 0.22, 0.9, 0.45, 0.3);
+      gen(gutter, 3, 8, 0.18, 0.8, 0.4, 2);
+      gen(harbourBell, 14, 28, 0.2, 0.7, 0.9, 6);
+      gen(shipHorn, 40, 75, 0.14, 0.6, 0.9, 20);
+      gen(craneCreak, 9, 20, 0.2, 0.9, 0.6, 4);
+      gen(clank, 12, 26, 0.1, 0.9, 0.7, 9);
     } else {
       const rain = s.g(0.34, this.gain);
       loopBuf(cachedLoop(ctx, 'rain', () => rainLoop(ctx)), rain);

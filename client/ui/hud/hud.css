@@ -17,7 +17,7 @@
 .hud .keycap {
   min-width: 1.5rem;
   padding: 0.12rem 0.38rem 0.18rem;
-  font-size: 0.72rem;
+  font-size: max(11px, 0.72rem);
 }
 
 .dot-sep {
@@ -152,7 +152,7 @@
   display: none;
   order: -1;
   font-family: var(--font-head);
-  font-size: 0.75rem;
+  font-size: max(11px, 0.75rem);
   letter-spacing: 0.08em;
   color: #fff;
   padding: 0.12rem 0.4rem;
@@ -240,7 +240,7 @@
 }
 
 .sp-you {
-  font-size: 0.62rem;
+  font-size: max(11px, 0.62rem);
   font-weight: 900;
   letter-spacing: 0.12em;
   color: var(--ink);
@@ -303,7 +303,7 @@
 }
 
 .sp-target {
-  font-size: 0.62rem;
+  font-size: max(11px, 0.62rem);
   font-weight: 900;
   letter-spacing: 0.1em;
   opacity: 0.75;
@@ -382,7 +382,7 @@
 }
 
 .rc-hint {
-  font-size: 0.76rem;
+  font-size: max(11px, 0.76rem);
   color: rgba(255, 243, 217, 0.75);
 }
 
@@ -426,7 +426,7 @@
   padding: 0.2rem 0.6rem;
   border-radius: 0.5rem;
   background: rgba(8, 18, 26, 0.6);
-  font-size: 0.78rem;
+  font-size: max(11px, 0.78rem);
   font-variant-numeric: tabular-nums;
   color: rgba(255, 243, 217, 0.85);
 }
@@ -473,7 +473,7 @@
 }
 
 .fd-row.rune {
-  font-size: 0.78rem;
+  font-size: max(11px, 0.78rem);
   opacity: 0.92;
 }
 
@@ -502,7 +502,7 @@
 }
 
 .fd-assist {
-  font-size: 0.7rem;
+  font-size: max(11px, 0.7rem);
   opacity: 0.75;
 }
 
@@ -872,7 +872,7 @@
 }
 
 .rs-label {
-  font-size: 0.8rem;
+  font-size: max(11px, 0.8rem);
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1033,7 +1033,7 @@
   padding: 0 0.2rem;
   border-radius: 0.5rem;
   font-family: var(--font-head);
-  font-size: 0.72rem;
+  font-size: max(11px, 0.72rem);
   text-align: center;
   color: var(--ink);
   background: var(--gold);
@@ -1053,7 +1053,7 @@
   padding: 0.2rem 0.55rem;
   border-radius: 0.45rem;
   font-family: var(--font-head);
-  font-size: 0.8rem;
+  font-size: max(11px, 0.8rem);
   letter-spacing: 0.03em;
   color: #fff;
   background: rgba(8, 18, 26, 0.78);
@@ -1306,7 +1306,7 @@
   padding: 0.12rem 0.32rem 0.16rem;
   border-radius: 0.4rem;
   font-family: var(--font-head);
-  font-size: 0.68rem;
+  font-size: max(11px, 0.68rem);
   letter-spacing: 0.03em;
   color: var(--ink);
   text-align: center;
@@ -1316,7 +1316,7 @@
 
 .ab-name {
   font-family: var(--font-head);
-  font-size: 0.68rem;
+  font-size: max(11px, 0.68rem);
   letter-spacing: 0.04em;
   color: var(--cream-2);
   text-shadow: 0 0.08rem 0 rgba(0, 0, 0, 0.6);
@@ -1384,7 +1384,7 @@
   padding: 0 0.25rem;
   border-radius: 0.6rem;
   font-family: var(--font-head);
-  font-size: 0.78rem;
+  font-size: max(11px, 0.78rem);
   color: var(--ink);
   background: var(--gold);
   box-shadow: 0 0 0 0.1rem #1a0e05;
@@ -1399,7 +1399,7 @@
   top: 0.12rem;
   left: 0.28rem;
   font-family: var(--font-head);
-  font-size: 0.68rem;
+  font-size: max(11px, 0.68rem);
   color: rgba(255, 243, 217, 0.85);
   text-shadow: 0 0.08rem 0 #0a0503;
 }
@@ -1462,7 +1462,7 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.68rem;
+  font-size: max(11px, 0.68rem);
   font-weight: 800;
   opacity: 0.85;
 }
@@ -1564,7 +1564,7 @@
   height: 1.6rem;
   border-radius: 50%;
   font-family: var(--font-head);
-  font-size: 0.75rem;
+  font-size: max(11px, 0.75rem);
   color: var(--ink);
   background: radial-gradient(circle at 35% 30%, #fff6c8, #e7b54d 50%, #9a6418);
   box-shadow: 0 0 0 0.11rem #1a0e05;
@@ -1576,7 +1576,7 @@
   gap: 0.35rem;
   padding-left: 0.3rem;
   font-family: var(--font-head);
-  font-size: 0.8rem;
+  font-size: max(11px, 0.8rem);
   color: var(--cream-2);
   text-shadow: 0 0.08rem 0 rgba(0, 0, 0, 0.7);
 }
@@ -1631,7 +1631,7 @@
 
 .hc-team {
   margin-right: 0.3rem;
-  font-size: 0.7rem;
+  font-size: max(11px, 0.7rem);
   font-weight: 900;
   color: #b8f5a6;
 }
@@ -1660,7 +1660,7 @@
 
 .hc-tag {
   font-family: var(--font-head);
-  font-size: 0.75rem;
+  font-size: max(11px, 0.75rem);
   padding: 0.2rem 0.45rem;
   border-radius: 0.35rem;
   color: var(--ink);
@@ -1686,7 +1686,7 @@
 }
 
 .hc-help {
-  font-size: 0.68rem;
+  font-size: max(11px, 0.68rem);
   opacity: 0.6;
   white-space: nowrap;
 }
@@ -1747,7 +1747,7 @@
 }
 
 .shop-sign-sub {
-  font-size: 0.7rem;
+  font-size: max(11px, 0.7rem);
   font-weight: 800;
   opacity: 0.7;
 }
@@ -1860,13 +1860,13 @@
 }
 
 .sr-blurb {
-  font-size: 0.74rem;
+  font-size: max(11px, 0.74rem);
   line-height: 1.2;
   color: rgba(255, 243, 217, 0.75);
 }
 
 .si-tag {
-  font-size: 0.62rem;
+  font-size: max(11px, 0.62rem);
   font-weight: 900;
   letter-spacing: 0.04em;
   padding: 0.05rem 0.3rem;
@@ -1881,13 +1881,13 @@
 }
 
 .si-owned {
-  font-size: 0.65rem;
+  font-size: max(11px, 0.65rem);
   font-weight: 900;
   color: #b8f5a6;
 }
 
 .si-why {
-  font-size: 0.7rem;
+  font-size: max(11px, 0.7rem);
   font-weight: 900;
   color: #ffb4a6;
 }
@@ -1918,7 +1918,7 @@
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.78rem;
+  font-size: max(11px, 0.78rem);
 }
 
 .up-now {
@@ -2003,7 +2003,7 @@
   padding: 0.3rem 0.4rem;
   border-radius: 0.6rem;
   background: rgba(10, 5, 2, 0.32);
-  font-size: 0.75rem;
+  font-size: max(11px, 0.75rem);
 }
 
 .ss-key {
@@ -2031,7 +2031,7 @@
   border: 0;
   border-radius: 0.35rem;
   cursor: pointer;
-  font: 400 0.7rem var(--font-head);
+  font: 400 max(11px, 0.7rem) var(--font-head);
   color: #fff;
   background: linear-gradient(180deg, #ff8a72, #c9361f);
   box-shadow: 0 0 0 0.08rem #400c04;
@@ -2051,7 +2051,7 @@
   align-items: center;
   gap: 0.4rem;
   padding: 0.5rem 0.9rem 0.7rem;
-  font-size: 0.72rem;
+  font-size: max(11px, 0.72rem);
   color: rgba(255, 243, 217, 0.7);
 }
 
@@ -2130,7 +2130,7 @@ table.stats {
 table.stats th {
   font-family: var(--font-head);
   font-weight: 400;
-  font-size: 0.78rem;
+  font-size: max(11px, 0.78rem);
   letter-spacing: 0.04em;
   text-align: center;
   color: var(--rope);
@@ -2195,7 +2195,7 @@ table.stats tr.you td {
 }
 
 .st-bot {
-  font-size: 0.58rem;
+  font-size: max(11px, 0.58rem);
   font-weight: 900;
   padding: 0 0.25rem;
   border-radius: 0.25rem;
@@ -2408,7 +2408,7 @@ table.stats tr.you td {
 .aw-who.t1 { color: #1e5fae; }
 
 .aw-val {
-  font-size: 0.75rem;
+  font-size: max(11px, 0.75rem);
   font-weight: 800;
   color: var(--ink-soft);
 }
@@ -2472,4 +2472,264 @@ table.stats tr.you td {
   .end-tables {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ------------------------------------------------------------------------------------------
+   v2: shop tabs (Upgrades | Items) so everything fits without scrolling at 1280x720, anchored
+   on your own bank (left for Red Tide, right for Blue Gill) and clear of the minimap
+   ------------------------------------------------------------------------------------------ */
+.shop {
+  width: 33rem;
+  bottom: 15.4rem;
+}
+
+.shop.side-left {
+  left: 0.9rem;
+  right: auto;
+  animation-name: shopInLeft;
+}
+
+@keyframes shopInLeft {
+  from { opacity: 0; transform: translateX(-2rem); }
+}
+
+.shop-head {
+  padding: 0.45rem 0.7rem 0.35rem;
+}
+
+.shop-sign {
+  padding: 0.25rem 0.7rem 0.3rem;
+}
+
+.shop-sign-top {
+  font-size: 1.2rem;
+}
+
+.shop-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0 0.7rem 0.3rem;
+  padding: 0.22rem;
+  border-radius: 0.8rem;
+  background: rgba(10, 5, 2, 0.4);
+  box-shadow: inset 0 0.1rem 0.3rem rgba(0, 0, 0, 0.45);
+}
+
+.shop-tab {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  font-family: var(--font-head);
+  font-size: 0.98rem;
+  color: rgba(255, 238, 205, 0.8);
+  background: transparent;
+  transition: background 0.15s, transform 0.15s var(--spring);
+}
+
+.shop-tab:hover:not(.on) {
+  background: rgba(255, 228, 185, 0.1);
+}
+
+.shop-tab:active {
+  transform: scale(0.97);
+}
+
+.shop-tab.on {
+  color: var(--ink);
+  background: linear-gradient(180deg, #ffe9a6, #e7b54d 55%, #b77e24);
+  box-shadow: inset 0 0.1rem 0 rgba(255, 255, 255, 0.6), 0 0 0 0.11rem #3a2008;
+}
+
+.stab-ico {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.stab-badge {
+  min-width: 1.25rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.6rem;
+  font-size: max(11px, 0.72rem);
+  color: #0d2a06;
+  background: linear-gradient(180deg, #b8f59a, #62c14a);
+  box-shadow: 0 0 0 0.08rem #123a08;
+}
+
+.shop-body {
+  overflow-y: auto;
+  padding: 0.1rem 0.7rem 0.4rem;
+}
+
+.shop-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.shop-page .shop-list {
+  gap: 0.45rem;
+}
+
+.shop-page .up-row {
+  padding: 0.5rem 0.5rem 0.5rem 0.45rem;
+}
+
+.sell-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.sell-slot {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.22rem 0.3rem;
+  column-gap: 0.25rem;
+}
+
+.sell-slot .ss-key {
+  display: none;
+}
+
+.sell-slot .ss-ico {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.items-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.items-grid .shop-row {
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  row-gap: 0.12rem;
+  column-gap: 0.4rem;
+  padding: 0.24rem 0.35rem 0.26rem 0.28rem;
+}
+
+.items-grid .sr-ico {
+  width: 2rem;
+  height: 2rem;
+}
+
+.items-grid .sr-ico .ico {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+
+.items-grid .sr-main {
+  gap: 0.05rem;
+}
+
+.items-grid .sr-name {
+  font-size: 0.92rem;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.items-grid .shop-buy {
+  padding-left: 0.4rem;
+  padding-right: 0.5rem;
+}
+
+.items-grid .sr-blurb,
+.items-grid .si-why {
+  grid-column: 1 / -1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.3em;
+  line-height: 1.15;
+}
+
+.items-grid .si-why {
+  display: none;
+}
+
+.items-grid .has-why .si-why {
+  display: -webkit-box;
+}
+
+.items-grid .has-why .sr-blurb {
+  display: none;
+}
+
+/* buffs: rune-coloured timer rings; hook power-ups bigger and named */
+.buff {
+  background:
+    radial-gradient(circle, #1a2a36 0 62%, transparent 63%),
+    conic-gradient(var(--bc, #7ff0ff) calc(var(--p) * 360deg), rgba(255, 255, 255, 0.12) 0);
+}
+
+.buff.power {
+  width: 3rem;
+  height: 3rem;
+  box-shadow: 0 0 0 0.12rem #0a0503, 0 0 0.9rem var(--bc, #ffe14a), 0 0.2rem 0.3rem rgba(0, 0, 0, 0.45);
+}
+
+.buff.power .ico {
+  width: 2rem;
+  height: 2rem;
+}
+
+.bf-name {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  margin-bottom: 0.2rem;
+  transform: translateX(-50%);
+  padding: 0.04rem 0.35rem;
+  border-radius: 0.4rem;
+  font-family: var(--font-head);
+  font-size: max(11px, 0.7rem);
+  white-space: nowrap;
+  color: #1a0f05;
+  background: var(--bc, #ffe14a);
+  box-shadow: 0 0 0 0.08rem #0a0503;
+  pointer-events: none;
+}
+
+/* v2: Pearls earned, on the end screen */
+.end-pearls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.2rem auto 0.6rem;
+  padding: 0.35rem 1rem 0.35rem 0.5rem;
+  width: max-content;
+  border-radius: 1.2rem;
+  background: rgba(8, 14, 22, 0.55);
+  box-shadow: inset 0 0 0 0.12rem rgba(230, 210, 255, 0.4), 0 0 1.2rem rgba(220, 200, 255, 0.25);
+  animation: pop 0.5s var(--spring) 0.4s backwards;
+}
+
+.ep-ico {
+  width: 2rem;
+  height: 2rem;
+  filter: drop-shadow(0 0 0.5rem rgba(230, 210, 255, 0.6));
+}
+
+.ep-num {
+  font-family: var(--font-head);
+  font-size: 1.5rem;
+  color: var(--pearl, #f4ecff);
+}
+
+.ep-text {
+  font-size: max(11px, 0.85rem);
+  font-weight: 800;
+  color: rgba(255, 243, 217, 0.75);
 }

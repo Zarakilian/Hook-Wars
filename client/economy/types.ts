@@ -16,6 +16,8 @@ export interface EconomyState {
   /** a Solana wallet extension (Wallet Standard) was found in this browser */
   walletAvailable: boolean;
   network: ChainNetwork;
+  /** name of the wallet that will be used (the first suitable one found), null when none */
+  walletName?: string | null;
 }
 
 export interface EconomyClient {

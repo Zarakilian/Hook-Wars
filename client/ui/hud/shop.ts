@@ -1,7 +1,9 @@
-// The Bait & Tackle shop (B): hook upgrades with level pips, current and next values and costs;
-// items with descriptions, buy buttons that explain why they are disabled, and sell buttons.
+// The Bait & Tackle shop (B): two tabs so nothing needs scrolling at 1280x720. Upgrades: hook
+// upgrades with level pips, current and next values and costs. Items: your four slots (sell) over
+// a two-column grid of items with buy buttons that explain why they are disabled. The panel sits on
+// your own team's side so it never covers the enemy bank.
 import { HOOK_LEVELS, ITEM_IDS, ITEMS, MAX_UPGRADE, UPGRADE_COST } from '../../../shared/constants.ts';
-import { UPGRADE_STATS, type ItemId, type UpgradeStat, type YouSnap } from '../../../shared/types.ts';
+import { UPGRADE_STATS, type ItemId, type Team, type UpgradeStat, type YouSnap } from '../../../shared/types.ts';
 import { h, noFocus, pulse } from '../dom.ts';
 import { icon, setIcon, type IconId } from '../icons.ts';
 import type { AppActions } from '../types.ts';
@@ -61,6 +63,11 @@ export class Shop {
   private key = '';
   private you: YouSnap | null = null;
   private readonly actions: AppActions;
+  private tab: 'up' | 'items' = 'up';
+  private readonly tabBtns: Record<'up' | 'items', HTMLButtonElement>;
+  private readonly pages: Record<'up' | 'items', HTMLElement>;
+  private readonly tabBadge: HTMLElement;
+  private side: Team | -1 = -1;
 
   constructor(actions: AppActions, close: () => void) {
     this.actions = actions;
@@ -104,37 +111,69 @@ export class Shop {
     }
 
     // items
-    const itemList = h('div', { class: 'shop-list items-list' });
+    const itemList = h('div', { class: 'items-grid' });
     for (const id of ITEM_IDS) {
       const def = ITEMS[id];
       const btnText = h('span', { text: String(def.cost) });
       const why = h('span', { class: 'si-why' });
       const owned = h('span', { class: 'si-owned' });
       const btn = hudButton('shop-buy', () => this.tryBuy(id, btn), icon('coin', 'sb-coin'), btnText);
-      const row = h('div', { class: `shop-row item-row ${def.consumable ? 'consumable' : ''}` },
+      const row = h('div', { class: `shop-row item-row ${def.consumable ? 'consumable' : ''}`, title: `${def.name}: ${def.blurb}` },
         h('span', { class: 'sr-ico' }, icon(id)),
         h('span', { class: 'sr-main' },
-          h('span', { class: 'sr-top' }, h('span', { class: 'sr-name', text: def.name }), def.consumable ? h('span', { class: 'si-tag', text: `x${def.charges} · max ${def.maxCharges}` }) : h('span', { class: 'si-tag passive', text: 'passive' }), owned),
-          h('span', { class: 'sr-blurb', text: def.blurb }),
-          why),
-        btn);
+          h('span', { class: 'sr-name', text: def.name }),
+          h('span', { class: 'sr-top' }, def.consumable ? h('span', { class: 'si-tag', text: `x${def.charges} · max ${def.maxCharges}` }) : h('span', { class: 'si-tag passive', text: 'passive' }), owned)),
+        btn,
+        h('span', { class: 'sr-blurb', text: def.blurb }),
+        why);
       itemList.append(row);
       this.items.set(id, { row, btn, btnText, why, owned });
     }
 
+    const tabBtn = (k: 'up' | 'items', label: string, ico: IconId, extra?: HTMLElement) => {
+      const b = hudButton('shop-tab', () => {
+        if (this.tab === k) return;
+        this.actions.uiSound('click');
+        this.setTab(k);
+      }, icon(ico, 'stab-ico'), h('span', { text: label }));
+      if (extra) b.append(extra);
+      return b;
+    };
+    this.tabBadge = h('span', { class: 'stab-badge hidden' });
+    this.tabBtns = { up: tabBtn('up', 'Hook Upgrades', 'hook'), items: tabBtn('items', 'Items', 'pie', this.tabBadge) };
+    this.pages = {
+      up: h('div', { class: 'shop-page' }, upList),
+      items: h('div', { class: 'shop-page' }, sellRow, itemList),
+    };
     this.el = h('div', { class: 'shop hidden', role: 'dialog', 'aria-label': 'Shop' },
       head,
-      h('div', { class: 'shop-body' },
-        h('div', { class: 'shop-section' }, h('div', { class: 'shop-title', text: 'Hook upgrades' }), upList),
-        h('div', { class: 'shop-section' }, h('div', { class: 'shop-title', text: 'Your items' }), sellRow),
-        h('div', { class: 'shop-section' }, h('div', { class: 'shop-title', text: 'Items' }), itemList)),
+      h('div', { class: 'shop-tabs', role: 'tablist' }, this.tabBtns.up, this.tabBtns.items),
+      h('div', { class: 'shop-body' }, this.pages.up, this.pages.items),
       h('div', { class: 'shop-foot' }, h('kbd', { class: 'keycap', text: 'B' }), h('span', { text: 'close' }), h('span', { class: 'dot-sep', text: '·' }), h('span', { text: 'Right-click an item slot to sell it' })));
+    this.setTab('up');
     this.el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   reset(): void {
     this.key = '';
     this.you = null;
+  }
+
+  private setTab(k: 'up' | 'items'): void {
+    this.tab = k;
+    for (const t of ['up', 'items'] as const) {
+      this.tabBtns[t].classList.toggle('on', t === k);
+      this.tabBtns[t].setAttribute('aria-selected', t === k ? 'true' : 'false');
+      this.pages[t].classList.toggle('hidden', t !== k);
+    }
+  }
+
+  /** Anchor the panel on your own bank: left for Red Tide (west), right for Blue Gill (east). */
+  setSide(team: Team | -1): void {
+    if (team === this.side) return;
+    this.side = team;
+    this.el.classList.toggle('side-left', team === 0);
+    this.el.classList.toggle('side-right', team !== 0);
   }
 
   private tryUpgrade(st: UpgradeStat, btn: HTMLButtonElement): void {
@@ -178,6 +217,7 @@ export class Shop {
     }
 
     const free = you.items.some((s) => s === null);
+    let canBuy = 0;
     for (const id of ITEM_IDS) {
       const def = ITEMS[id];
       const r = this.items.get(id)!;
@@ -188,12 +228,16 @@ export class Shop {
       else if (!slot && !free) why = 'No free slot: sell something';
       else if (you.gold < def.cost) why = `Need ${def.cost - you.gold} more`;
       r.why.textContent = why;
+      r.row.classList.toggle('has-why', why !== '');
       r.btn.classList.toggle('no', why !== '');
       r.row.classList.toggle('owned', !!slot);
       r.owned.textContent = slot ? (def.consumable ? `have ${slot.charges}` : 'owned') : '';
       r.btn.title = why || `Buy for ${def.cost} gold`;
+      if (!why) canBuy++;
     }
 
+    this.tabBadge.textContent = String(canBuy);
+    this.tabBadge.classList.toggle('hidden', canBuy === 0);
     you.items.forEach((s, i) => {
       const ss = this.sells[i];
       const k = s ? `${s.id}:${s.charges}` : '';

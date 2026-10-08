@@ -56,6 +56,7 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
 
   const preview = new PudgyPreview();
   const thumbs = new ItemThumbs();
+  if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) (window as unknown as Record<string, unknown>).__hwUi = { preview, thumbs };
 
   // ------------------------------------------------------------------------------------ modals
   const modalStack: { el: HTMLElement; close: () => void; prevFocus: Element | null }[] = [];
@@ -108,6 +109,7 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
   // ------------------------------------------------------------------------------------ economy
   const owns = (id: string): boolean => (economy ? economy.owns(id) : DEFAULT_ITEM_IDS.includes(id));
   const pending = new Set<string>();
+  const pendingCopies = new Map<string, { item: string; count: number }>(); // listed instance -> item and copies owned before (market buys)
   const cancelled = new Set<string>();
   let prevEcon: EconomyState | null = economy ? economy.state() : null;
 
@@ -117,7 +119,20 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
     if (e.error && e.error !== prev?.error) {
       showToast(e.error, 'error');
       pending.clear();
+      pendingCopies.clear();
     }
+    if (pendingCopies.size && e.account) {
+      const owned = e.account.owned;
+      for (const [inst, want] of [...pendingCopies]) {
+        // the server may keep the listed instance id or issue a new one: either way a new copy arrived
+        const got = owned.some((o) => o.instance === inst) || owned.filter((o) => o.item === want.item).length > want.count;
+        if (!got) continue;
+        pendingCopies.delete(inst);
+        actions.uiSound('purchase');
+        showToast(`${cosmeticById(want.item)?.name ?? 'Item'} bought from the Market. Equip it in the Locker.`, 'good');
+      }
+    }
+    // Store purchases (Pearls or devnet USDC): the item is owned now
     for (const id of [...pending]) {
       if (!owns(id)) continue;
       pending.delete(id);
@@ -142,20 +157,32 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
   }
   economy?.onChange(watchEconomy);
 
-  /** Keep the saved profile in step with what this account owns and wears (offline locker). */
-  function syncProfile(s: AppState): void {
-    if (profileSynced || !economy) return;
-    profileSynced = true;
-    queueMicrotask(() => {
-      const e = economy.state();
-      if (e.mode !== 'local' || !e.account) return;
-      const p = ctx.get().profile;
-      const wear = ownedLoadout(cleanLoadout(p.family, p.loadout), owns);
-      if (!sameLoadout(wear, p.loadout)) actions.saveProfile({ ...p, loadout: wear });
-      if (!sameLoadout(wear, e.account.loadouts[p.family])) economy.equip(p.family, wear);
-    });
-    void s;
+  /**
+   * Offline, the local account is the source of truth for what each family wears: keep the saved
+   * profile (what the sim and the server see) in step with it. Online, app.ts does the same from
+   * the server's 'account' message. Never the other way round, so an old or empty profile cannot
+   * wipe the account's loadouts.
+   */
+  function syncProfile(): void {
+    if (!economy || !current) return;
+    const e = economy.state();
+    if (e.mode !== 'local' || !e.account) return;
+    const p = current.profile;
+    const raw = e.account.loadouts[p.family];
+    if (!raw) return;
+    const wear = ownedLoadout(cleanLoadout(p.family, raw), owns);
+    if (!sameLoadout(wear, p.loadout)) {
+      profileSynced = true;
+      queueMicrotask(() => {
+        profileSynced = false;
+        const now = ctx.get().profile;
+        if (now.family === p.family && !sameLoadout(wear, now.loadout)) actions.saveProfile({ ...now, loadout: wear });
+      });
+    }
   }
+  economy?.onChange(() => {
+    if (!profileSynced) syncProfile();
+  });
 
   const ctx: UiCtx = {
     actions,
@@ -187,6 +214,12 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
         pending.delete(itemId);
         showToast(err instanceof Error ? err.message : 'The purchase did not go through.', 'error');
       });
+    },
+    buyListing(l) {
+      if (!economy) return;
+      const count = economy.state().account?.owned.filter((o) => o.item === l.item).length ?? 0;
+      pendingCopies.set(l.instance, { item: l.item, count });
+      economy.buyListing(l.id);
     },
     noteCancel(_listing: string, instance: string) {
       cancelled.add(instance);
@@ -227,7 +260,7 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
   function render(s: AppState): void {
     const prev = current ?? s;
     current = s;
-    syncProfile(s);
+    if (!profileSynced) syncProfile();
     if (s.toast && s.toast.id !== lastToast) {
       lastToast = s.toast.id;
       showToast(s.toast.text, s.toast.kind);

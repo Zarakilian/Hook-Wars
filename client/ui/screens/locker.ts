@@ -213,7 +213,8 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     dName.textContent = def.name;
     const copies = copiesOf(ctx.econ()?.account, def.id);
     const serial = copies.length && copies[0].serial !== undefined ? serialText(copies[0], def) : '';
-    dMeta.replaceChildren(rarityPill(def), h('span', { class: 'lk-d-slot' }, icon(SLOT_ICON[def.slot]), h('span', { text: SLOT_NAMES[def.slot] })), serial ? h('span', { class: 'serial', text: serial }) : null);
+    dMeta.replaceChildren(rarityPill(def), h('span', { class: 'lk-d-slot' }, icon(SLOT_ICON[def.slot]), h('span', { text: SLOT_NAMES[def.slot] })));
+    if (serial) dMeta.append(h('span', { class: 'serial', text: serial }));
     dBlurb.textContent = def.blurb;
     dSource.textContent = sourceLine(def);
     if (owned) {
@@ -333,7 +334,7 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     if (!shell.el.isConnected) return;
     ctx.preview.mount(stage);
     lastLookKey = '';
-    ctx.preview.focus(slot);
+    ctx.preview.focus(navHint.lockerItem === null && selected ? slot : null);
     paint();
   });
   paint();

@@ -11,6 +11,9 @@
 //   MAX_ROOMS_PER_IP rooms one IP address can have open at once (default 2)
 //   ALLOWED_ORIGINS comma separated list of extra browser origins allowed to connect (default: same host only)
 //   STATIC_DIR      folder with the built client (default ./dist)
+//   TICK_PRECISE    "0" turns off the precise tick timer. On Windows the default timer only wakes every
+//                   15.6 ms, so the loop finishes each tick wait with a short spin (about 1 ms cadence,
+//                   some extra CPU). With 0, ticks land within about 15 ms of their deadline instead.
 
 function intEnv(name: string, def: number, lo: number, hi: number): number {
   const raw = process.env[name];
@@ -38,6 +41,10 @@ export interface ServerConfig {
   maxRoomsPerIp: number;
   allowedOrigins: string[];
   staticDir: string;
+  /** spin the last few ms of each tick wait for an even 33 ms cadence (default true) */
+  preciseTicks?: boolean;
+  /** ws ping interval; a socket that neither answers a ping nor sends anything for this long is closed */
+  heartbeatMs?: number;
 }
 
 export function loadConfig(): ServerConfig {
@@ -61,5 +68,6 @@ export function loadConfig(): ServerConfig {
       .map((s) => s.trim())
       .filter(Boolean),
     staticDir: process.env.STATIC_DIR ?? 'dist',
+    preciseTicks: (process.env.TICK_PRECISE ?? '1').trim() !== '0',
   };
 }

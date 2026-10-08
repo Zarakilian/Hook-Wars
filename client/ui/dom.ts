@@ -114,11 +114,18 @@ export function forget(el: Element): void {
   c.__a = undefined;
 }
 
-/** Restart a CSS animation class (e.g. a pop) on an element. */
+/**
+ * Restart a CSS animation class (e.g. a pop) on an element. It never reads layout (a forced reflow
+ * here cost the HUD several ms on every gold gain): a fresh class is added now; a running one is
+ * dropped now and added back on the next frame, which restarts the animation.
+ */
 export function pulse(el: Element, cls: string): void {
+  if (!el.classList.contains(cls)) {
+    el.classList.add(cls);
+    return;
+  }
   el.classList.remove(cls);
-  void (el as HTMLElement).offsetWidth; // reflow on purpose, only on discrete events
-  el.classList.add(cls);
+  requestAnimationFrame(() => el.classList.add(cls));
 }
 
 export function hex(c: number): string {

@@ -9,10 +9,16 @@
 //   plan.ts     where to stand; steer.ts how to get there; dodge.ts sidesteps and wind-up reads
 //   combat.ts   hook shots, saves, runes, the hook-then-bash combo, grappling out of the water
 //   dive.ts     bruiser grapple dives; items.ts shopping and consumables; brain.ts the per-tick loop
+//   nav.ts      runtime navigation grid from the map (docks and bridges are land, water follows the
+//               river state), A* with string pulling, the main-river bank model and hold spots
+//   navigate.ts per-bot path following, re-planning and the per-tick search budget
+import type { MapDef } from '../maps/types.ts';
 import type { Unit } from './entities.ts';
 import type { GameSim } from './sim.ts';
 import { createBrain, tickBot } from './bots/brain.ts';
 import { contextFor } from './bots/context.ts';
+import { mapInfo } from './bots/mapinfo.ts';
+import { navStatic } from './bots/nav.ts';
 import type { Brain, BotRole, BotStats, ModeId } from './bots/types.ts';
 import type { PlayerInput } from '../types.ts';
 
@@ -41,6 +47,15 @@ export function resetBotProfile(): void {
   profile.ticks = 0;
   profile.totalMs = 0;
   profile.maxMs = 0;
+}
+
+/**
+ * Build the per-map bot grids now (about 10 to 30 ms, once per map per process, shared by every
+ * match on it) instead of on the first tick that has a bot. Optional: call it while a match loads.
+ */
+export function warmBots(map: MapDef): void {
+  mapInfo(map);
+  navStatic(map);
 }
 
 function brainOf(sim: GameSim, u: Unit): Brain {

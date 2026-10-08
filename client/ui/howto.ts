@@ -1,9 +1,10 @@
 // How to Play: a tabbed field guide (goal, controls, moves, river, hazards, runes and shop).
-import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS, RUNE_NAMES } from '../../shared/constants.ts';
+import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS, RUNE_BLURBS, RUNE_COLORS, RUNE_NAMES } from '../../shared/constants.ts';
+import { MAPS } from '../../shared/maps/index.ts';
 import { HAZARD_INFO } from '../../shared/sim/hazards.ts';
-import type { ControlScheme, HazardKind, RuneType } from '../../shared/types.ts';
+import { MAP_IDS, type ControlScheme, type HazardKind, type RuneType } from '../../shared/types.ts';
 import type { UiCtx } from './ctx.ts';
-import { h } from './dom.ts';
+import { h, hex } from './dom.ts';
 import { icon, type IconId } from './icons.ts';
 import { KEY_TABLE, RIVER_INFO } from './info.ts';
 import { button, keycap, segmented } from './widgets.ts';
@@ -33,16 +34,22 @@ export function keyTable(scheme: ControlScheme): HTMLElement {
   return t;
 }
 
-const RUNE_LINES: Record<RuneType, string> = {
-  haste: `+${Math.round((BAL.hasteMul - 1) * 100)}% speed for ${BAL.hasteTime} s`,
-  double: `Double hook damage for ${BAL.doubleTime} s`,
-  ironskin: `A ${BAL.ironskinShield} HP shield for ${BAL.ironskinTime} s`,
-  ghost: `Invisible to enemies for ${BAL.ghostTime} s`,
-  bounty: `+${BAL.goldBounty} gold, right now`,
-  bendy: `Your hook curves toward your cursor for ${BAL.powerHookTime} s`,
-  bouncy: `Your hook ricochets off everything for ${BAL.powerHookTime} s`,
-  longshot: `+${Math.round((BAL.longshotRangeMul - 1) * 100)}% hook range for ${BAL.powerHookTime} s`,
-};
+/** Classic runes and hook power-ups, as two groups. Names, blurbs and colours live in shared/constants.ts. */
+const BUFF_RUNES: RuneType[] = ['haste', 'double', 'ironskin', 'ghost', 'bounty'];
+const POWER_RUNES: RuneType[] = ['bendy', 'bouncy', 'longshot'];
+
+/** Maps grouped by how they do Tidal, e.g. "Coral Cove, Maelstrom Lagoon and Mirelight Marsh". */
+function tidalMaps(style: 'tide' | 'locks' | 'freeze'): string {
+  const names = MAP_IDS.map((id) => MAPS[id]).filter((m) => m.tide?.style === style).map((m) => m.name);
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+function runeCard(r: RuneType): HTMLElement {
+  const c = card(r, RUNE_NAMES[r], RUNE_BLURBS[r], 'mini');
+  c.style.setProperty('--rune', hex(RUNE_COLORS[r].main));
+  return c;
+}
 
 export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el: HTMLElement } {
   let scheme: ControlScheme = ctx.get().settings.controls;
@@ -101,9 +108,9 @@ export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el:
         h('div', { class: 'ht-grid' },
           card('wave', RIVER_INFO.deep.name, `Nobody can walk in. Fall, get bashed or get dropped in and you drown in ${BAL.drownTime} s, unless you grapple out or a friend hooks you.`),
           card('dry', RIVER_INFO.dry.name, 'The channel is a walkable river bed. A little slower, and hazards may wait down there.'),
-          card('tidal', 'Tidal: Coral Cove', 'The sea rolls out (walk the bed), rises with a horn warning (wading), floods (deep), then drains.'),
-          card('lock', 'Tidal: Cogwater Canal', 'The lock gates open on a timer and flood the canal, then drain it again.'),
-          card('ice', 'Tidal: Frostfang Fjord', 'The river freezes solid (slippery ice), cracks with a warning, thaws into deep water, then freezes again.'),
+          card('tidal', 'Tidal: tides', `${tidalMaps('tide')}. The sea rolls out (walk the bed), rises with a horn warning (wading), floods (deep), then drains.`),
+          card('lock', 'Tidal: lock gates', `${tidalMaps('locks')}. The lock gates open on a timer and flood the canal, then drain it again.`),
+          card('ice', 'Tidal: freeze and thaw', `${tidalMaps('freeze')}. The water freezes solid (slippery ice), cracks with a warning, thaws into deep water, then freezes again.`),
           card('drown', 'Drowning', 'A countdown appears when you are in deep water. Grapple to anything solid, or pray for an ally hook.'),
         )),
     },
@@ -121,7 +128,8 @@ export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el:
       icon: 'coin',
       body: () => h('div', { class: 'ht-page' },
         h('p', { class: 'ht-lead', text: `Runes appear on river spots every ${BAL.runeEvery} s. Hook one to drag it home, or walk over it when the bed is dry.` }),
-        h('div', { class: 'ht-runes' }, ...(Object.keys(RUNE_LINES) as RuneType[]).map((r) => card(r, RUNE_NAMES[r], RUNE_LINES[r], 'mini'))),
+        h('div', { class: 'ht-rune-group' }, h('span', { class: 'ht-rg-title', text: 'Runes' }), h('div', { class: 'ht-runes' }, ...BUFF_RUNES.map(runeCard))),
+        h('div', { class: 'ht-rune-group power' }, h('span', { class: 'ht-rg-title', text: `Hook power-ups · ${BAL.powerHookTime} s` }), h('div', { class: 'ht-runes power' }, ...POWER_RUNES.map(runeCard))),
         h('p', { class: 'ht-lead', text: `Press B for the shop. Gold comes from kills, hook hits and time. Upgrade your hook (damage up to ${HOOK_LEVELS.damage[5]}, range up to ${HOOK_LEVELS.range[5]} m) or buy items. With the shop open, right-click an item slot to sell it.` }),
         h('div', { class: 'ht-items' }, ...ITEM_IDS.map((id) => h('span', { class: 'ht-item', title: `${ITEMS[id].name}: ${ITEMS[id].blurb}` }, icon(id), h('span', { text: ITEMS[id].name })))),
       ),

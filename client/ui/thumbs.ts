@@ -5,7 +5,7 @@
 // never shows the wrong thing. Work is time-sliced (one item per frame) and only runs while a
 // screen holds the renderer.
 import * as THREE from 'three';
-import { cosmeticById, type CosmeticSlot, type Loadout } from '../../shared/cosmetics.ts';
+import { cosmeticById, DEFAULT_LOADOUT, type CosmeticSlot, type Loadout } from '../../shared/cosmetics.ts';
 import { UnitState, type FamilyId } from '../../shared/types.ts';
 import type { PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
@@ -29,6 +29,8 @@ export class ItemThumbs {
   private readonly waiting = new Map<string, Cb[]>();
   private readonly order: string[] = [];
   private readonly baseSig = new Map<FamilyId, string>();
+  /** signature of the family's default item in each slot, keyed `${family}.${slot}` */
+  private readonly defaultSig = new Map<string, string>();
   private renderer: THREE.WebGLRenderer | null = null;
   private scene: THREE.Scene | null = null;
   private camera: THREE.PerspectiveCamera | null = null;
@@ -128,17 +130,12 @@ export class ItemThumbs {
     return true;
   }
 
+  /** Stop pumping. The small renderer stays for the session: re-creating and force-losing contexts
+   * on every screen change gets WebGL blocked for the page. */
   private disposeGl(): void {
     if (this.holders > 0) return;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
-    if (this.renderer) {
-      this.renderer.dispose();
-      this.renderer.forceContextLoss();
-    }
-    this.renderer = null;
-    this.scene = null;
-    this.camera = null;
   }
 
   private build(family: FamilyId, loadout: Loadout): PudgyView {
@@ -160,6 +157,52 @@ export class ItemThumbs {
     return `${verts}|${sz.x.toFixed(2)}|${sz.y.toFixed(2)}|${sz.z.toFixed(2)}`;
   }
 
+  /** World-space key per visible mesh: vertex count plus its rounded world box. */
+  private meshKeys(root: THREE.Object3D): Map<string, THREE.Box3> {
+    const out = new Map<string, THREE.Box3>();
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.visible || !m.geometry) return;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox!.clone().applyMatrix4(m.matrixWorld);
+      const n = m.geometry.getAttribute('position')?.count ?? 0;
+      const r = (v: number) => v.toFixed(2);
+      let k = `${n}|${r(b.min.x)},${r(b.min.y)},${r(b.min.z)}|${r(b.max.x)},${r(b.max.y)},${r(b.max.z)}`;
+      while (out.has(k)) k += '+';
+      out.set(k, b);
+    });
+    return out;
+  }
+
+  private readonly baseKeys = new Map<string, Set<string>>();
+
+  /** Box around the meshes that differ from the bare base in the same pose, or null if none do. */
+  private itemBox(family: FamilyId, yaw: number, root: THREE.Object3D): THREE.Box3 | null {
+    const ck = `${family}|${yaw.toFixed(3)}`;
+    let base = this.baseKeys.get(ck);
+    if (!base) {
+      const b = this.build(family, {});
+      b.root.rotation.y = yaw;
+      b.root.updateMatrixWorld(true);
+      base = new Set(this.meshKeys(b.root).keys());
+      b.dispose();
+      this.baseKeys.set(ck, base);
+    }
+    const box = new THREE.Box3();
+    let any = false;
+    for (const [k, b] of this.meshKeys(root)) {
+      if (base.has(k)) continue;
+      box.union(b);
+      any = true;
+    }
+    if (!any || box.isEmpty()) return null;
+    // a change that spans most of the body (a re-meshed torso) is no help for framing
+    const full = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
+    const sz = box.getSize(new THREE.Vector3());
+    if (sz.y > full.y * 0.85 && sz.x > full.x * 0.85) return null;
+    return box;
+  }
+
   private renderItem(id: string): string | null {
     const def = cosmeticById(id);
     if (!def || !this.ensureGl() || !this.renderer || !this.scene || !this.camera) return null;
@@ -174,20 +217,44 @@ export class ItemThumbs {
         this.baseSig.set(def.family, base);
       }
       view = this.build(def.family, { [def.slot]: id });
-      if (this.signature(view.root) === base) return null;
+      const sig = this.signature(view.root);
+      if (sig === base) return null;
+      // an item the model does not draw yet may fall back to the family's default piece: keep the glyph
+      const dflt = DEFAULT_LOADOUT[def.family][def.slot];
+      if (dflt && dflt !== id) {
+        const k = `${def.family}.${def.slot}`;
+        let ds = this.defaultSig.get(k);
+        if (ds === undefined) {
+          const d = this.build(def.family, { [def.slot]: dflt });
+          ds = this.signature(d.root);
+          d.dispose();
+          this.defaultSig.set(k, ds);
+        }
+        if (sig === ds) return null;
+      }
       const f = FRAME[def.slot];
       view.root.rotation.y = f.yaw;
       view.root.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(view.root);
-      const size = box.getSize(new THREE.Vector3());
-      const H = Math.max(1.2, size.y);
-      const centre = new THREE.Vector3(0, box.min.y + H * f.y, 0);
-      if (def.slot === 'hands') {
-        const hand = view.getHandWorld(new THREE.Vector3());
-        centre.set(hand.x * 0.6, hand.y, hand.z * 0.6);
-      }
-      const region = H * f.s;
       const cam = this.camera;
+      // frame on the item itself: the meshes this view has that the bare base (same pose) does not
+      const itemBox = this.itemBox(def.family, f.yaw, view.root);
+      let centre: THREE.Vector3;
+      let region: number;
+      if (itemBox) {
+        const sz = itemBox.getSize(new THREE.Vector3());
+        centre = itemBox.getCenter(new THREE.Vector3());
+        region = Math.max(0.42, Math.max(sz.x, sz.y, sz.z) * 1.22);
+      } else {
+        const box = new THREE.Box3().setFromObject(view.root);
+        const size = box.getSize(new THREE.Vector3());
+        const H = Math.max(1.2, size.y);
+        centre = new THREE.Vector3(0, box.min.y + H * f.y, 0);
+        if (def.slot === 'hands') {
+          const hand = view.getHandWorld(new THREE.Vector3());
+          centre.set(hand.x * 0.6, hand.y, hand.z * 0.6);
+        }
+        region = H * f.s;
+      }
       const dist = (region / 2) / Math.tan((cam.fov * Math.PI) / 360) * 1.12;
       cam.position.set(centre.x, centre.y + dist * 0.28, centre.z + dist);
       cam.lookAt(centre);

@@ -11,6 +11,8 @@ import * as THREE from 'three';
 import { hashVox, mix, shade } from '../voxel/voxel.ts';
 
 const EMPTY = -1;
+/** current tube segment frame (n1, n2), shared scratch: tubes are built one at a time */
+const FR = new Float64Array(6);
 
 /** Surface classes. Index into SURF. */
 export const Surf = {
@@ -34,23 +36,25 @@ export const Surf = {
 export type SurfId = (typeof Surf)[keyof typeof Surf];
 
 /** roughness, metalness, emissive per surface */
+// Metalness stays moderate: the game scenes light with a dim environment (intensity ~0.25), and
+// fully metallic voxels would read nearly black from the game camera.
 const SURF: readonly (readonly [number, number, number])[] = [
-  [0.62, 0.55, 0], // Iron
-  [0.28, 0.85, 0], // Steel
-  [0.88, 0.22, 0], // Rust
-  [0.46, 0.08, 0], // Paint
+  [0.58, 0.32, 0], // Iron
+  [0.3, 0.55, 0], // Steel
+  [0.86, 0.08, 0], // Rust
+  [0.44, 0.04, 0], // Paint
   [0.93, 0, 0], // Rope
-  [0.5, 0.05, 0], // Tar
-  [0.4, 0, 0], // Ivory
+  [0.46, 0.04, 0], // Tar
+  [0.42, 0, 0], // Ivory
   [0.9, 0, 0], // Wood
   [0.72, 0, 0], // Leaf
-  [0.28, 0, 0.02], // Wet
-  [0.24, 0.92, 0.04], // Gold
-  [0.16, 0.12, 0.18], // Pearl
+  [0.3, 0, 0.02], // Wet
+  [0.3, 0.55, 0.14], // Gold
+  [0.18, 0.08, 0.22], // Pearl
   [0.4, 0, 2.6], // Glow
   [0.7, 0, 0], // Rubber
-  [0.14, 0.95, 0], // Chrome
-  [0.34, 0.8, 0], // Brass
+  [0.2, 0.6, 0.04], // Chrome
+  [0.36, 0.5, 0.03], // Brass
 ];
 
 /** Colour 0xRRGGBB plus a surface class, packed into one grid value. */
@@ -58,9 +62,21 @@ export function pk(color: number, surf: SurfId): number {
   return (color & 0xffffff) + surf * 0x1000000;
 }
 
+/**
+ * Team tint flag. A voxel with this bit is painted neutral light grey and multiplied by the team
+ * colour in the shader (surfMaterial(kind, team)), so one geometry serves both teams.
+ */
+export const TEAM_BIT = 0x10000000;
+export function pkTeam(color: number, surf: SurfId): number {
+  return pk(color, surf) + TEAM_BIT;
+}
+
 export type Paint = (x: number, y: number, z: number) => number;
-/** Paint for tube stamps: s = 0..1 along the path, d = 0..1 distance from the axis to the surface. */
-export type TubePaint = (x: number, y: number, z: number, s: number, d: number) => number;
+/**
+ * Paint for tube stamps: s = 0..1 along the path, d = 0..1 distance from the axis to the surface,
+ * a = 0..1 angle round the axis (stable frame per segment), for strands, ribs and lay patterns.
+ */
+export type TubePaint = (x: number, y: number, z: number, s: number, d: number, a: number) => number;
 
 export interface TubePt {
   x: number;
@@ -165,6 +181,32 @@ export class Sculpt {
       const b = pts[i];
       const segL = lens[i] - lens[i - 1];
       const steps = Math.max(1, Math.ceil(segL / 0.3));
+      // stable frame across the segment for the angle round the axis
+      const il = 1 / Math.max(1e-6, segL);
+      const tx = (b.x - a.x) * il;
+      const ty = (b.y - a.y) * il;
+      const tz = (b.z - a.z) * il;
+      let ux = 0;
+      let uy = 1;
+      let uz = 0;
+      if (Math.abs(ty) > 0.9) {
+        ux = 1;
+        uy = 0;
+      }
+      // n1 = up x t, n2 = t x n1
+      let n1x = uy * tz - uz * ty;
+      let n1y = uz * tx - ux * tz;
+      let n1z = ux * ty - uy * tx;
+      const nl = 1 / Math.max(1e-6, Math.hypot(n1x, n1y, n1z));
+      n1x *= nl;
+      n1y *= nl;
+      n1z *= nl;
+      FR[0] = n1x;
+      FR[1] = n1y;
+      FR[2] = n1z;
+      FR[3] = ty * n1z - tz * n1y;
+      FR[4] = tz * n1x - tx * n1z;
+      FR[5] = tx * n1y - ty * n1x;
       for (let k = i === 1 ? 0 : 1; k <= steps; k++) {
         const t = k / steps;
         const cx = a.x + (b.x - a.x) * t;
@@ -190,7 +232,11 @@ export class Sculpt {
           const d2 = dx * dx + dy * dy + dz * dz;
           if (d2 > 1) continue;
           if (onlyEmpty && this.solid(x, y, z)) continue;
-          this.set(x, y, z, paint(x, y, z, s, Math.sqrt(d2)));
+          const px = x + 0.5 - cx;
+          const py = y + 0.5 - cy;
+          const pz = z + 0.5 - cz;
+          const ang = Math.atan2(px * FR[3] + py * FR[4] + pz * FR[5], px * FR[0] + py * FR[1] + pz * FR[2]) / (Math.PI * 2) + 0.5;
+          this.set(x, y, z, paint(x, y, z, s, Math.sqrt(d2), ang));
         }
   }
 
@@ -255,7 +301,10 @@ export function colorOf(v: number): number {
   return v & 0xffffff;
 }
 export function surfOf(v: number): number {
-  return Math.floor(v / 0x1000000);
+  return Math.floor(v / 0x1000000) & 15;
+}
+export function isTeam(v: number): boolean {
+  return (v & TEAM_BIT) !== 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -426,7 +475,10 @@ export function meshSculpt(sc: Sculpt, o: SculptMeshOptions): THREE.BufferGeomet
     const packed = Math.floor(key / 256);
     const aoKey = key % 256;
     const color = packed & 0xffffff;
-    const surf = SURF[Math.min(SURF.length - 1, Math.floor(packed / 0x1000000))];
+    const surf = SURF[Math.min(SURF.length - 1, Math.floor(packed / 0x1000000) & 15)];
+    // team voxels carry their emissive as -(1 + e): the shader decodes the sign as the tint flag
+    const team = (packed & TEAM_BIT) !== 0;
+    const em = team ? -1 - surf[2] : surf[2];
     const plane = sign > 0 ? slice + 1 : slice;
     const base = positions.length / 3;
     const cs = [
@@ -451,7 +503,7 @@ export function meshSculpt(sc: Sculpt, o: SculptMeshOptions): THREE.BufferGeomet
       const lit = 1 - aoStrength * (1 - AO_CURVE[a]);
       colors.push(col.r * lit, col.g * lit, col.b * lit);
       const ht = o.heat ? Math.max(0, Math.min(1, o.heat(pos[0], pos[1], pos[2]))) : 0;
-      surfs.push(surf[0], surf[1], surf[2], ht);
+      surfs.push(surf[0], surf[1], em, ht);
     }
     const flip = aos[0] + aos[2] < aos[1] + aos[3];
     if (sign > 0) {
@@ -500,22 +552,28 @@ const LONG_EMIT = /* glsl */ `
   float hwP = 0.5 + 0.5 * sin(vInst * 0.55 + uTime * 17.0);
   totalEmissiveRadiance += uLong * (0.55 + 1.5 * hwP * hwP) + diffuseColor.rgb * uLong * 0.6;`;
 
-const matCache = new Map<SurfMatKind, THREE.MeshStandardMaterial>();
+const matCache = new Map<string, THREE.MeshStandardMaterial>();
+
+/** Team tint colours (linear), matching TEAM_COLORS main. */
+const TEAM_TINT: readonly THREE.Color[] = [new THREE.Color(0xe0533d), new THREE.Color(0x3d8be0), new THREE.Color(1, 1, 1)];
 
 /**
  * The one material every sculpted mesh uses (per-vertex roughness / metalness / emissive from aSurf).
  * 'ember' heats the business end (aSurf.w) red to yellow; 'longshot' makes chain links glow with
  * pulses running down the line toward the head (instanced meshes only).
  */
-export function surfMaterial(kind: SurfMatKind = 'base'): THREE.MeshStandardMaterial {
-  let m = matCache.get(kind);
+export function surfMaterial(kind: SurfMatKind = 'base', team: 0 | 1 | 2 = 2): THREE.MeshStandardMaterial {
+  const key = `${kind}:${team}`;
+  let m = matCache.get(key);
   if (m) return m;
   m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2, envMapIntensity: 1 });
-  m.name = `hw-surf-${kind}`;
+  m.name = `hw-surf-${kind}-${team}`;
+  const tint = { value: TEAM_TINT[team] };
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = fxUniforms.uTime;
     sh.uniforms.uHeat = fxUniforms.uHeat;
     sh.uniforms.uLong = fxUniforms.uLong;
+    sh.uniforms.uTeam = tint;
     const inst = kind === 'longshot';
     sh.vertexShader =
       'attribute vec4 aSurf;\nvarying vec4 vSurf;\n' +
@@ -524,18 +582,21 @@ export function surfMaterial(kind: SurfMatKind = 'base'): THREE.MeshStandardMate
         '#include <begin_vertex>',
         '#include <begin_vertex>\n  vSurf = aSurf;' + (inst ? '\n#ifdef USE_INSTANCING\n  vInst = float(gl_InstanceID);\n#else\n  vInst = 0.0;\n#endif' : ''),
       );
-    let fs = 'uniform float uTime;\nuniform float uHeat;\nuniform vec3 uLong;\nvarying vec4 vSurf;\n' + (inst ? 'varying float vInst;\n' : '') + sh.fragmentShader;
-    if (kind === 'ember') fs = fs.replace('#include <color_fragment>', '#include <color_fragment>' + EMBER_COLOR);
+    let fs = 'uniform float uTime;\nuniform float uHeat;\nuniform vec3 uLong;\nuniform vec3 uTeam;\nvarying vec4 vSurf;\n' + (inst ? 'varying float vInst;\n' : '') + sh.fragmentShader;
+    fs = fs.replace(
+      '#include <color_fragment>',
+      '#include <color_fragment>\n  float hwTm = step(vSurf.z, -0.5);\n  float hwEm = mix(vSurf.z, -vSurf.z - 1.0, hwTm);\n  diffuseColor.rgb *= mix(vec3(1.0), uTeam, hwTm);' + (kind === 'ember' ? EMBER_COLOR : ''),
+    );
     fs = fs.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = vSurf.x;');
     fs = fs.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vSurf.y;');
     fs = fs.replace(
       '#include <emissivemap_fragment>',
-      '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * vSurf.z;' + (kind === 'ember' ? EMBER_EMIT : kind === 'longshot' ? LONG_EMIT : ''),
+      '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * hwEm;' + (kind === 'ember' ? EMBER_EMIT : kind === 'longshot' ? LONG_EMIT : ''),
     );
     sh.fragmentShader = fs;
   };
   m.customProgramCacheKey = () => `hw-surf-${kind}`;
-  matCache.set(kind, m);
+  matCache.set(key, m);
   return m;
 }
 

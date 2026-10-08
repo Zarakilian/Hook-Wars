@@ -2,15 +2,17 @@
 // the hook-then-bash combo, close-range bashes, and grappling out of the water.
 // Everything is decided from what the bot's team can see, with the bot's own perception delay.
 import { BAL, HOOK_LEVELS, TICK_DT, UNIT_RADIUS } from '../../constants.ts';
-import { dist, dist2 } from '../../math.ts';
+import { dist, dist2, distToSegment } from '../../math.ts';
 import { Btn, HookKind, HookPhase, UFlag, UnitState, type PlayerInput, type RuneType } from '../../types.ts';
 import type { Hook, Unit } from '../entities.ts';
 import type { GameSim } from '../sim.ts';
 import { HookPath, intercept, scanPath, traceHook, type Body, type Intercept, type ScanResult } from './aim.ts';
 import type { BotContext, Seen } from './context.ts';
 import { bankOf, bestBash, bestComboBash, moversClear, sideOf, type BashAim, type P2 } from './geom.ts';
-import { hookLineClear } from './mapinfo.ts';
-import type { Brain, Intent, TargetKind } from './types.ts';
+import { cellBlocked, hookLineClear } from './mapinfo.ts';
+import { compAt, NAV_LAND } from './nav.ts';
+import { runeWorth } from './plan.ts';
+import { Mode, type Brain, type Intent, type TargetKind } from './types.ts';
 
 // ---------------------------------------------------------------------------------------------
 // Scratch (module level, reused every call: no allocations in the hot path)
@@ -47,16 +49,47 @@ export interface Shot {
 }
 const shot: Shot = { ang: 0, bend: 0, t: 0, d: 0, first: -1, bank: false };
 const bankShot: Shot = { ang: 0, bend: 0, t: 0, d: 0, first: -1, bank: true };
+const curveShot: Shot = { ang: 0, bend: 0, t: 0, d: 0, first: -1, bank: false };
+
+/** Intent purposes for hooks: a solved angle that must be thrown as is. */
+const P_BANK = 9;
+const P_CURVE = 8;
+
+/**
+ * The hook a throw pressed now would leave with: the bot's own kit, exact. Power-up runes count only
+ * if they are still running when the hook leaves the hand (`margin` covers the reaction delay).
+ * Mirrors GameSim.spawnHook: Long Line multiplies range and speed, Boing Barb gives the bigger of the
+ * two bounce counts, Bendy Eel steers.
+ */
+interface Kit {
+  speed: number;
+  hr: number;
+  range: number;
+  bounces: number;
+  bendy: boolean;
+  long: boolean;
+  bouncy: boolean;
+}
+const kit: Kit = { speed: 0, hr: 0, range: 0, bounces: 0, bendy: false, long: false, bouncy: false };
+
+function loadKit(u: Unit, margin: number): Kit {
+  const left = BAL.hookWindup + margin;
+  kit.long = u.longshot > left;
+  kit.bouncy = u.bouncy > left;
+  kit.bendy = u.bendy > left + 0.3;
+  kit.speed = HOOK_LEVELS.speed[u.up.speed] * (kit.long ? BAL.longshotSpeedMul : 1);
+  kit.hr = HOOK_LEVELS.width[u.up.width];
+  kit.range = HOOK_LEVELS.range[u.up.range] * (kit.long ? BAL.longshotRangeMul : 1);
+  kit.bounces = kit.bouncy ? Math.max(BAL.ricochetBounces, BAL.bouncyBounces) : hasItem(u, 'ricochet') ? BAL.ricochetBounces : 0;
+  return kit;
+}
 
 /** Hook stats of a unit (its own, exact: it is the bot's own kit). */
 function hookSpeed(u: Unit): number {
-  return HOOK_LEVELS.speed[u.up.speed];
+  return HOOK_LEVELS.speed[u.up.speed] * (u.longshot > BAL.hookWindup ? BAL.longshotSpeedMul : 1);
 }
 function hookWidth(u: Unit): number {
   return HOOK_LEVELS.width[u.up.width];
-}
-function hookRange(u: Unit): number {
-  return HOOK_LEVELS.range[u.up.range];
 }
 function hookDamage(u: Unit): number {
   return HOOK_LEVELS.damage[u.up.damage] * (u.double > 0 ? 2 : 1);
@@ -166,9 +199,9 @@ function hitIsGood(focus: number, first: number): boolean {
  */
 function solveDirect(sim: GameSim, ctx: BotContext, u: Unit, focus: number, windup: number, out: Shot): boolean {
   const B = bodies[focus];
-  const speed = hookSpeed(u);
-  const hr = hookWidth(u);
-  const range = hookRange(u);
+  const speed = kit.speed;
+  const hr = kit.hr;
+  const range = kit.range;
   intercept(u.x, u.z, B.x, B.z, B.vx, B.vz, speed, windup, 1, ic);
   if (ic.d > range + BAL.hookHand + hr + B.r - 0.25) return false;
   const ang = Math.atan2(ic.ax - u.x, ic.az - u.z);
@@ -176,26 +209,40 @@ function solveDirect(sim: GameSim, ctx: BotContext, u: Unit, focus: number, wind
   out.d = ic.d;
   out.bank = false;
   const wp = sim.map.whirlpool;
-  const bounces = u.items.some((s) => s && s.id === 'ricochet') ? BAL.ricochetBounces : 0;
+  const bounces = kit.bounces;
   // static prefilter: a wall in the way means no direct shot (bank shots are searched separately)
   if (!hookLineClear(ctx.info, u.x, u.z, ic.ax, ic.az, 0.9, B.r + 0.2)) return false;
   let bend = 0;
   let prevBend = 0;
   let prevMiss = 0;
-  for (let it = 0; it < 4; it++) {
+  // a bent path (whirlpool) that only grazes the target is kept as a fallback while the secant
+  // search looks for one through its middle: a graze plus the usual release error is a miss
+  let fbMiss = Infinity;
+  let fbBend = 0;
+  let fbT = 0;
+  let fbFirst = -1;
+  for (let it = 0; it < 5; it++) {
     const a = ang + bend;
     const dx = Math.sin(a);
     const dz = Math.cos(a);
     traceHook(sim.world, wp, u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz, speed, hr, range, bounces, windup, path);
     scanPath(path, hr, bodies, nb, focus, scan);
     if (scan.first >= 0) {
-      if (!hitIsGood(focus, scan.first)) return false;
-      out.bend = bend;
-      out.t = scan.firstT;
-      out.first = scan.first;
-      return true;
+      if (!hitIsGood(focus, scan.first)) return fbFirst >= 0 ? useFallback(out, fbBend, fbT, fbFirst) : false;
+      if (!path.bent || scan.first !== focus || scan.miss < 0.4) {
+        out.bend = bend;
+        out.t = scan.firstT;
+        out.first = scan.first;
+        return true;
+      }
+      if (scan.miss < fbMiss) {
+        fbMiss = scan.miss;
+        fbBend = bend;
+        fbT = scan.firstT;
+        fbFirst = scan.first;
+      }
     }
-    if (!path.bent || !Number.isFinite(scan.miss)) return false;
+    if (!path.bent || !Number.isFinite(scan.miss)) return fbFirst >= 0 ? useFallback(out, fbBend, fbT, fbFirst) : false;
     // secant step on the signed miss distance to undo the whirlpool's bend
     const m = scan.side * scan.miss;
     let next: number;
@@ -208,23 +255,36 @@ function solveDirect(sim: GameSim, ctx: BotContext, u: Unit, focus: number, wind
     prevMiss = m;
     bend = Math.max(-0.9, Math.min(0.9, next));
   }
-  return false;
+  return fbFirst >= 0 ? useFallback(out, fbBend, fbT, fbFirst) : false;
 }
 
-/** Search for a bank shot (Ricochet bounces or bouncy posts) at bodies[focus]. */
-function solveBank(sim: GameSim, u: Unit, focus: number, windup: number, bouncyOnly: boolean, out: Shot): boolean {
+function useFallback(out: Shot, bend: number, t: number, first: number): boolean {
+  out.bend = bend;
+  out.t = t;
+  out.first = first;
+  return true;
+}
+
+/**
+ * Search for a bank shot at bodies[focus]: off bouncy posts (always), and off any wall or rock while
+ * the hook bounces (Ricochet Spring, or a Boing Barb rune with its four bounces).
+ */
+function solveBank(sim: GameSim, u: Unit, focus: number, windup: number, out: Shot): boolean {
   const B = bodies[focus];
-  const speed = hookSpeed(u);
-  const hr = hookWidth(u);
-  const range = hookRange(u);
-  const bounces = bouncyOnly ? 0 : BAL.ricochetBounces;
+  const speed = kit.speed;
+  const hr = kit.hr;
+  const range = kit.range;
+  const bounces = kit.bounces;
   const wp = sim.map.whirlpool;
   const base = Math.atan2(B.x - u.x, B.z - u.z);
   let bestT = Infinity;
   let bestA = 0;
-  for (let i = -12; i <= 12; i++) {
+  // Boing Barb: four bounces off anything make far more banks possible, so fan wider and finer
+  const fan = kit.bouncy ? 22 : 12;
+  const stepA = kit.bouncy ? 0.075 : 0.1;
+  for (let i = -fan; i <= fan; i++) {
     if (i === 0) continue;
-    const a = base + i * 0.1;
+    const a = base + i * stepA;
     const dx = Math.sin(a);
     const dz = Math.cos(a);
     traceHook(sim.world, wp, u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz, speed, hr, range, bounces, windup, path);
@@ -242,6 +302,91 @@ function solveBank(sim: GameSim, u: Unit, focus: number, windup: number, bouncyO
   out.d = dist(u.x, u.z, B.x, B.z);
   out.first = focus;
   out.bank = true;
+  return true;
+}
+
+const BENDY_STEP = 0.35;
+
+/**
+ * Fly a Bendy Eel hook the way steerBendy will steer it: straight on until the head can see the
+ * target, then turn toward where the target will be at the sim's turn rate. Static obstacles come
+ * from the hook grid. Returns the time from the press until it touches the target, or Infinity.
+ */
+function traceCurve(sim: GameSim, ctx: BotContext, u: Unit, focus: number, a0: number, windup: number): number {
+  const info = ctx.info;
+  const movers = sim.world.moverPoses;
+  const B = bodies[focus];
+  const speed = kit.speed;
+  const hr = kit.hr;
+  let dx = Math.sin(a0);
+  let dz = Math.cos(a0);
+  let x = u.x + dx * BAL.hookHand;
+  let z = u.z + dz * BAL.hookHand;
+  if (cellBlocked(info, info.hookGrid, x, z)) return Infinity;
+  const maxTurn = BAL.bendyTurn * (BENDY_STEP / speed);
+  let t = windup;
+  let clear = false;
+  for (let k = 0, traveled = 0; traveled < kit.range; k++, traveled += BENDY_STEP) {
+    const bx = B.x + B.vx * t;
+    const bz = B.z + B.vz * t;
+    if (k % 3 === 0) clear = hookLineClear(info, x, z, bx, bz, 0, B.r + 0.2);
+    if (clear) {
+      const cur = Math.atan2(dx, dz);
+      let d = Math.atan2(bx - x, bz - z) - cur;
+      d -= Math.round(d / (Math.PI * 2)) * Math.PI * 2;
+      if (Math.abs(d) <= 2.6) {
+        const a = cur + (d > maxTurn ? maxTurn : d < -maxTurn ? -maxTurn : d);
+        dx = Math.sin(a);
+        dz = Math.cos(a);
+      }
+    }
+    x += dx * BENDY_STEP;
+    z += dz * BENDY_STEP;
+    t += BENDY_STEP / speed;
+    if (cellBlocked(info, info.hookGrid, x, z)) return Infinity;
+    // drifting logs and barges block a hook too (where they are now: close enough for one flight)
+    for (let m = 0; m < movers.length; m++) {
+      const p = movers[m];
+      if (p.active && distToSegment(p.ax, p.az, p.bx, p.bz, x, z) < p.r + hr) return Infinity;
+    }
+    for (let j = 0; j < nb; j++) {
+      const o = bodies[j];
+      if (t < o.after) continue;
+      const ox = o.x + o.vx * t - x;
+      const oz = o.z + o.vz * t - z;
+      const R = hr + o.r;
+      if (ox * ox + oz * oz < R * R) return hitIsGood(focus, j) ? t : Infinity;
+    }
+  }
+  return Infinity;
+}
+
+/** Bendy Eel: find a throw that curves around the cover between us and bodies[focus]. */
+function solveCurve(sim: GameSim, ctx: BotContext, u: Unit, focus: number, windup: number, out: Shot): boolean {
+  const B = bodies[focus];
+  const d = dist(u.x, u.z, B.x, B.z);
+  if (d > kit.range + BAL.hookHand + 1) return false;
+  const base = Math.atan2(B.x - u.x, B.z - u.z);
+  let bestT = Infinity;
+  let bestA = 0;
+  for (let i = 1; i <= 8; i++) {
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const a = base + sgn * i * 0.13;
+      const tt = traceCurve(sim, ctx, u, focus, a, windup);
+      if (tt < bestT) {
+        bestT = tt;
+        bestA = a;
+      }
+    }
+    if (Number.isFinite(bestT)) break; // the smallest swing that gets round is the surest
+  }
+  if (!Number.isFinite(bestT)) return false;
+  out.ang = bestA;
+  out.bend = 0;
+  out.t = bestT;
+  out.d = d;
+  out.first = focus;
+  out.bank = false;
   return true;
 }
 
@@ -334,7 +479,9 @@ function allyValue(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, a: Unit, t:
     return 2.3;
   }
   if (a.state !== UnitState.Alive && a.state !== UnitState.Casting) return 0;
-  const onEnemySide = bankOf(sim, a.x, a.z) !== u.team && sim.world.channel(a.x, a.z) <= 0;
+  const dry = sim.world.channel(a.x, a.z) <= 0;
+  // on the far bank, or on an island or floe our side cannot walk back from
+  const onEnemySide = dry && (bankOf(sim, a.x, a.z) !== u.team || (sim.river.deep && cutOff(ctx, a)));
   // stranded on the far bank in deep water: bring them home when they are hurt or done
   if (onEnemySide && sim.river.deep) {
     if (a.hp < a.maxHp * 0.55 || (a.isBot && a.cdBash > 2 && a.cdGrapple > 2)) return 1.1;
@@ -347,21 +494,16 @@ function allyValue(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, a: Unit, t:
   return 0;
 }
 
-function runeValue(t: RuneType | null): number {
-  switch (t) {
-    case 'double':
-      return 1.5;
-    case 'haste':
-      return 1.25;
-    case 'ironskin':
-      return 0.95;
-    case 'ghost':
-      return 0.85;
-    case 'bounty':
-      return 0.8;
-    default:
-      return 0;
-  }
+/** Standing on dry ground its own fountain cannot be walked to from (an island, a floe, the far bank). */
+function cutOff(ctx: BotContext, a: Unit): boolean {
+  const ns = ctx.nav;
+  const home = ns.homeComp[a.team];
+  const c = compAt(ns, NAV_LAND, a.x, a.z, 2);
+  return c >= 0 && home >= 0 && c !== home;
+}
+
+function runeValue(u: Unit, t: RuneType | null): number {
+  return t ? runeWorth(u, t) : 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -382,17 +524,24 @@ export function thinkHook(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
   const bar = tune.throwBar * Math.max(0.45, 1 - (waited / tune.patience) * 0.55);
   gatherBodies(sim, ctx, u, b);
   const windup = BAL.hookWindup;
-  const hr = hookWidth(u);
+  // what the hook will be when the press lands after our reaction delay
+  loadKit(u, tune.decide + 0.25);
+  const hr = kit.hr;
   const role = b.roleDef;
-  const canBank = tune.bankShots > 0 && t - b.lastBankSearch >= tune.bankShotEvery
-    && (hasItem(u, 'ricochet') || (tune.bankShots > 1 && ctx.info.bouncy));
+  // Boing Barb makes every wall a cushion: even easy bots look for bank shots while it lasts
+  const bankEvery = kit.bouncy ? Math.min(tune.bankShotEvery, 1.2) : tune.bankShotEvery;
+  const canBank = (tune.bankShots > 0 || kit.bouncy) && t - b.lastBankSearch >= bankEvery
+    && (kit.bounces > 0 || (tune.bankShots > 1 && ctx.info.bouncy));
+  const canCurve = kit.bendy && t - b.lastBankSearch >= Math.min(bankEvery, 0.6);
   let best = -1;
   let bestScore = 0;
   let bestP = 0;
   let bestBend = 0;
   let bestAng = 0;
   let bestBank = false;
+  let bestCurve = false;
   let bankTried = false;
+  let curveTried = false;
   for (let i = 0; i < nb; i++) {
     const B = bodies[i];
     let v = 0;
@@ -402,18 +551,26 @@ export function thinkHook(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
       if (unit.id === b.diveTarget && t < b.diveUntil) v += 3; // we flew over here for this one
     }
     else if ((B.kind === K_ALLY || B.kind === K_AVOID) && unit) v = allyValue(sim, ctx, u, b, unit, 0.4) * role.saveBias;
-    else if (B.kind === K_RUNE) v = ctx.claimedByOther(u.team, B.id, u.id) ? 0 : runeValue(bodyRune[i]) * role.runeBias;
+    else if (B.kind === K_RUNE) v = ctx.claimedByOther(u.team, B.id, u.id) ? 0 : runeValue(u, bodyRune[i]) * role.runeBias;
     if (v <= 0.05) continue;
-    const reach = hookRange(u) + 2.5;
+    const reach = kit.range + 2.5;
     if (dist2(u.x, u.z, B.x, B.z) > reach * reach) continue;
     // ally being dragged by an enemy hook counts as K_AVOID for blockers, but it is our focus here
     const kindSave = B.kind;
     if (B.kind === K_AVOID) B.kind = K_ALLY;
     let ok = solveDirect(sim, ctx, u, i, windup, shot);
     let s: Shot = shot;
+    let curved = false;
+    // Bendy Eel: swing the throw wide of the cover and let it curve in (one target per think)
+    if (!ok && canCurve && !curveTried) {
+      curveTried = true;
+      ok = solveCurve(sim, ctx, u, i, windup, curveShot);
+      s = curveShot;
+      curved = ok;
+    }
     if (!ok && canBank && !bankTried && B.kind !== K_RUNE) {
       bankTried = true;
-      ok = solveBank(sim, u, i, windup, !hasItem(u, 'ricochet'), bankShot);
+      ok = solveBank(sim, u, i, windup, bankShot);
       s = bankShot;
     }
     B.kind = kindSave;
@@ -421,6 +578,8 @@ export function thinkHook(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
     let p = hitChance(unit, s.t, hr, B.vx, B.vz);
     if (unit && B.kind !== K_ENEMY) p = Math.min(0.95, p + 0.25); // allies hold still for a save
     if (s.bank) p *= 0.75;
+    // a Bendy Eel hook keeps chasing a target that sidesteps (we steer it all the way in)
+    if (kit.bendy) p = 1 - (1 - p) * (curved ? 0.55 : 0.4);
     const score = p * v;
     if (score > bestScore) {
       bestScore = score;
@@ -429,9 +588,10 @@ export function thinkHook(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
       bestBend = s.bend;
       bestAng = s.ang;
       bestBank = s.bank;
+      bestCurve = curved;
     }
   }
-  if (bankTried) b.lastBankSearch = t;
+  if (bankTried || curveTried) b.lastBankSearch = t;
   if (best < 0 || bestScore < bar) return;
   const B = bodies[best];
   const unit = bodyUnit[best];
@@ -450,7 +610,8 @@ export function thinkHook(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
   b.intent = makeIntent(b, 'hook', tk, B.id, u.x + Math.sin(bestAng) * 8, u.z + Math.cos(bestAng) * 8,
     planned ? t : t + tune.decide * (0.6 + 0.8 * b.rng.next()), bestScore, bestBend + (bestBank ? bestAng - Math.atan2(B.x - u.x, B.z - u.z) : 0));
   if (planned) b.diveTarget = -1;
-  if (bestBank) b.intent.purpose = 9; // bank shot: keep the solved angle
+  if (bestBank) b.intent.purpose = P_BANK; // bank shot: keep the solved angle
+  else if (bestCurve) b.intent.purpose = P_CURVE; // curve shot: keep the solved angle, steer it in
   if (tk !== 0) ctx.claim(u.team, B.id, u.id, t + 1.5);
 }
 
@@ -494,9 +655,11 @@ export function runIntent(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, inpu
     const B = bodies[fi];
     const kindSave = B.kind;
     if (B.kind === K_AVOID) B.kind = K_ALLY;
+    loadKit(u, 0.02);
     let ang: number;
     let bend = 0;
-    if (it.purpose === 9) {
+    const locked = it.purpose === P_BANK || it.purpose === P_CURVE;
+    if (locked) {
       ang = Math.atan2(it.x - u.x, it.z - u.z);
     } else {
       const ok = solveDirect(sim, ctx, u, fi, BAL.hookWindup, shot);
@@ -513,13 +676,19 @@ export function runIntent(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, inpu
       const sp = Math.hypot(B.vx, B.vz) / Math.max(0.2, b.tune.leadSkill);
       err *= 0.7 + Math.min(0.6, sp / 10);
     } else err *= 0.5;
+    if (kit.bendy) err *= 0.5; // the steering takes out most of a sloppy release
     const a = ang + bend + err;
     press(input, Btn.Hook, u.x + Math.sin(a) * 8, u.z + Math.cos(a) * 8);
     b.aim = { kind: 'hook', tk: it.tk, id: it.id, x: u.x + Math.sin(a) * 8, z: u.z + Math.cos(a) * 8, err, bend, lead: 1 };
-    if (it.purpose === 9) {
+    if (locked) {
       b.aim.tk = 3; // locked angle
-      b.stats.bankShots++;
+      if (it.purpose === P_BANK) b.stats.bankShots++;
     }
+    // remember what a Bendy Eel hook should chase once it is out
+    b.steerTk = kit.bendy ? it.tk : -1;
+    b.steerId = it.id;
+    if (kit.bendy) b.stats.bendyThrows++;
+    if (kit.long && dist(u.x, u.z, B.x, B.z) > HOOK_LEVELS.range[u.up.range] + BAL.hookHand) b.stats.longshots++;
     b.hookReadySince = -1;
     b.stats.hooks++;
     if (it.tk === 1) b.stats.saves++;
@@ -624,6 +793,110 @@ export function holdAim(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input:
   input.az = a.z;
 }
 
+/**
+ * Bendy Eel in flight: the sim turns our flying hook toward our live cursor (GameSim.steerHook), so
+ * every tick we put the cursor where the target will be when the head gets there. Until the head
+ * can see the target (it is still swinging round cover) the cursor stays dead ahead, so the hook
+ * flies on instead of turning into the rock. A target that is lost or behind the head is swapped for
+ * any visible enemy ahead; with nothing to chase the hook just flies straight.
+ */
+export function steerBendy(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: PlayerInput): void {
+  if (u.activeHook < 0) return;
+  let h: Hook | null = null;
+  for (const x of sim.hooks) {
+    if (x.id === u.activeHook && !x.dead) {
+      h = x;
+      break;
+    }
+  }
+  if (!h || !h.steer || h.phase !== HookPhase.Out || h.kind !== HookKind.Hook) return;
+  const hx = h.x;
+  const hz = h.z;
+  let ok = bendyTarget(sim, ctx, u, b);
+  if (ok) {
+    // behind the head (we flew past it): the sim would refuse to loop back anyway
+    const rx = seen.x - hx;
+    const rz = seen.z - hz;
+    const rl = Math.sqrt(rx * rx + rz * rz);
+    if (rl > 1 && (rx * h.dx + rz * h.dz) / rl < -0.45) ok = false;
+  }
+  if (!ok && b.steerTk !== 1 && b.steerTk !== 2) {
+    // anyone else in front of the head and within what is left of its flight?
+    const left = h.range - h.traveled;
+    let bestD = Infinity;
+    let pick = -1;
+    for (const e of ctx.foes[u.team]) {
+      if (e.state === UnitState.Dead || e.spawnProt > 0 || hookedByTeam(sim, e, u.team)) continue;
+      if (!ctx.perceive(e, u.team, b.tune.perceiveTicks, seen)) continue;
+      const rx = seen.x - hx;
+      const rz = seen.z - hz;
+      const d = Math.sqrt(rx * rx + rz * rz);
+      if (d > left + 1 || d < 0.5 || (rx * h.dx + rz * h.dz) / d < 0.35) continue;
+      if (d < bestD && hookLineClear(ctx.info, hx, hz, seen.x, seen.z, 0, 0.6)) {
+        bestD = d;
+        pick = e.id;
+      }
+    }
+    if (pick >= 0) {
+      b.steerTk = 0;
+      b.steerId = pick;
+      ok = bendyTarget(sim, ctx, u, b);
+    }
+  }
+  let ax = hx + h.dx * 30;
+  let az = hz + h.dz * 30;
+  if (ok) {
+    const d = dist(hx, hz, seen.x, seen.z);
+    const tt = d / h.speed;
+    const px = seen.x + seen.vx * tt;
+    const pz = seen.z + seen.vz * tt;
+    // turn in only on a line that is clear of rocks and of the logs and barges drifting by
+    if (hookLineClear(ctx.info, hx, hz, px, pz, 0, 0.6) && moversClear(sim, hx, hz, px, pz, h.r + 0.15)) {
+      // the sim ignores a cursor within 1 m of the head: put it beyond the target, on the same line
+      const dx = px - hx;
+      const dz = pz - hz;
+      const l = Math.sqrt(dx * dx + dz * dz) || 1;
+      const k = Math.max(3, l) / l;
+      ax = hx + dx * k;
+      az = hz + dz * k;
+      b.stats.bendySteers++;
+    }
+  }
+  input.ax = ax;
+  input.az = az;
+}
+
+/** Where the Bendy Eel's target is (as we perceive it), into `seen`. False if it is gone. */
+function bendyTarget(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): boolean {
+  if (b.steerTk === 2) {
+    for (const r of sim.runes) {
+      if (r.id === b.steerId && !r.dragged) {
+        seen.x = r.x;
+        seen.z = r.z;
+        seen.vx = 0;
+        seen.vz = 0;
+        return true;
+      }
+    }
+    return false;
+  }
+  if (b.steerTk !== 0 && b.steerTk !== 1) return false;
+  const tg = sim.unitById.get(b.steerId);
+  if (!tg || tg.state === UnitState.Dead) return false;
+  if (tg.team === u.team) {
+    seen.x = tg.x;
+    seen.z = tg.z;
+    seen.vx = tg.vx;
+    seen.vz = tg.vz;
+    return true;
+  }
+  if (!ctx.perceive(tg, u.team, b.tune.perceiveTicks, seen)) return false;
+  const lead = b.tune.leadSkill;
+  seen.vx *= lead;
+  seen.vz *= lead;
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Combo: our hook is reeling in an enemy -> bash them into the river the moment they land
 // ---------------------------------------------------------------------------------------------
@@ -652,7 +925,9 @@ function ticksToHand(u: Unit, h: Hook, face: number): number {
  * Clumsier bots sometimes fumble the timing and bash a moment later instead.
  */
 export function comboWatch(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, input: PlayerInput): void {
-  b.holdStill = false;
+  // plant our feet through our own hook or grapple wind-up: the throw leaves from wherever the hand
+  // is at release, so walking on would bend a carefully led shot off its line
+  b.holdStill = u.castKind === 'hook' || u.castKind === 'grapple';
   b.reeling = false;
   const t = sim.time;
   if (u.activeHook >= 0) {
@@ -818,10 +1093,26 @@ export function escapeWater(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, in
   b.stats.grappleEscapes++;
 }
 
+/**
+ * Wading when the water is about to turn deep and we will not make it to dry ground on foot (knocked
+ * or dragged out into a wide lagoon): grapple to anything that lands us on dry ground, now.
+ */
+export function thinkGrappleOut(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
+  if (b.intent || sim.river.deep || sim.phase !== 'playing' || !canCast(u, 'grapple')) return;
+  if (ctx.untilDeep > 3.2 || sim.world.channel(u.x, u.z) <= -0.1) return;
+  const mul = sim.river.shallow ? BAL.shallowSlow : sim.river.frozen ? 0.8 : BAL.mudSlow;
+  const eta = (dist(u.x, u.z, b.goalX, b.goalZ) + 0.4) / (BAL.moveSpeed * mul);
+  if (ctx.untilDeep > eta + 0.25 + b.tune.tideMargin * 0.2) return;
+  if (!findAnchor(sim, ctx, u, b, -1, p2)) return;
+  b.intent = makeIntent(b, 'grapple', 3, -1, p2.x, p2.z, sim.time + b.tune.decide * 0.5, 1, 0);
+  b.intent.purpose = 0;
+  b.stats.grappleEscapes++;
+}
+
 /** Stranded on the far bank in deep water: grapple home when the way is clear. */
 export function thinkGrappleHome(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
   if (b.intent || !canCast(u, 'grapple') || sim.phase !== 'playing' || !sim.river.deep) return;
-  if (bankOf(sim, u.x, u.z) === u.team || sim.world.channel(u.x, u.z) > 0) return;
+  if ((bankOf(sim, u.x, u.z) === u.team && b.mode !== Mode.Stranded) || sim.world.channel(u.x, u.z) > 0) return;
   if (!findAnchor(sim, ctx, u, b, u.team, p2)) return;
   b.intent = makeIntent(b, 'grapple', 3, -1, p2.x, p2.z, sim.time + b.tune.decide, 1, 0);
   b.intent.purpose = 2;

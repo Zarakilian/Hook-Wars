@@ -7,8 +7,8 @@ import { MAX_RIPPLES, RIPPLE_GLSL } from './ripples.ts';
 import { MAX_WAVES } from './waves.ts';
 
 export const MAX_MOVERS = 6;
-export const MAX_POURS = 4;
-export const MAX_LAMPS = 8;
+export const MAX_POURS = 6;
+export const MAX_LAMPS = 10;
 
 /** Shared GLSL: ice coverage from the freeze front. uIce = (front m, on, crack, break). */
 export const ICE_MASK_GLSL = /* glsl */ `
@@ -18,6 +18,38 @@ float iceCover(float chan, float n) {
   // ragged but mostly continuous shelf: few isolated open holes behind the front
   float d = chan + (n - 0.5) * 1.6;
   return 1.0 - smoothstep(uIce.x - 0.4, uIce.x, d);
+}
+`;
+
+/**
+ * Shared GLSL: the end caps. uCap = (north end z, south end z, north cap length, south cap length),
+ * length 0 = that end has no cap (it stops under a waterfall). capFade is 1 on the river, falling to 0
+ * at the far edge of a cap.
+ * The end zone is where the terrain's backdrop water runs beside the river (past the play area):
+ * uEnd = (north zone start z, south zone start z, ramp metres, backdrop look gain); endZone ramps
+ * 0 -> 1 into it. uBand = (metres past the channel edge the main sheet reaches there, side band width):
+ * the cap mesh (uCapMesh = 1) fades out across that band, over the backdrop water.
+ */
+export const CAP_GLSL = /* glsl */ `
+uniform vec4 uCap;
+uniform float uCapExt;
+uniform vec4 uEnd;
+uniform vec2 uBand;
+uniform float uCapMesh;
+float endZone(float z) {
+  float k = 0.0;
+  if (uCap.z > 0.0) k = max(k, smoothstep(-uEnd.z, 0.0, uEnd.x - z));
+  if (uCap.w > 0.0) k = max(k, smoothstep(-uEnd.z, 0.0, z - uEnd.y));
+  return k;
+}
+float bandFade(float chan) {
+  return uCapMesh > 0.5 ? smoothstep(-uBand.x - uBand.y, -uBand.x, chan) : 1.0;
+}
+float capFade(float z) {
+  float k = 1.0;
+  if (uCap.z > 0.0) k *= 1.0 - smoothstep(0.0, uCap.z, uCap.x - z);
+  if (uCap.w > 0.0) k *= 1.0 - smoothstep(0.0, uCap.w, z - uCap.y);
+  return k;
 }
 `;
 
@@ -40,6 +72,7 @@ const vertex = /* glsl */ `
 #include <fog_pars_vertex>
 ${FIELD_GLSL}
 ${RIPPLE_GLSL}
+${CAP_GLSL}
 attribute float aFixed;
 uniform vec4 uWaveA[${MAX_WAVES}];
 uniform vec4 uWaveB[${MAX_WAVES}];
@@ -63,9 +96,10 @@ void main() {
   float chan = fieldChan(f);
   float baseY = mix(uLevelY, uFullY, aFixed);
   // puddles and the low-tide film hug the bed, so they show whatever height the bed has
-  baseY = max(baseY, mix(baseY, bed + 0.035, uPuddleMode));
+  // (lock reservoirs stay full: they never turn into puddles)
+  baseY = max(baseY, mix(baseY, bed + 0.035, uPuddleMode * (1.0 - step(0.5, aFixed))));
   float depth = baseY - bed;
-  float damp = uWaveDamp * smoothstep(-0.8, 1.4, chan) * smoothstep(0.02, 0.7, depth);
+  float damp = uWaveDamp * smoothstep(-0.8, 1.4, chan) * smoothstep(0.02, 0.7, depth) * capFade(p.z);
   vec3 disp = vec3(0.0);
   vec3 n = vec3(0.0, 1.0, 0.0);
   float crest = 0.0;
@@ -93,6 +127,8 @@ void main() {
     disp.y -= D * fun;
     n.xz += (dv / dl) * (D * funP / uWhirl.z);
   }
+  // never dip through the bed (deep funnels over a shallow lagoon floor)
+  disp.y = max(disp.y, min(0.0, bed + 0.12 - baseY));
   vec4 rip = rippleField(p.xz, false);
   disp.y += rip.x * smoothstep(0.0, 0.3, depth);
   vec3 wp = vec3(p.x + disp.x, baseY + disp.y, p.z + disp.z);
@@ -116,6 +152,7 @@ ${FIELD_GLSL}
 ${RIPPLE_GLSL}
 ${ICE_MASK_GLSL}
 ${HASH_GLSL}
+${CAP_GLSL}
 uniform float uTime;
 uniform vec4 uScroll;
 uniform vec4 uScroll2;
@@ -130,11 +167,15 @@ uniform vec4 uMovA[${MAX_MOVERS}];
 uniform vec4 uMovB[${MAX_MOVERS}];
 uniform int uMovN;
 uniform vec4 uPour[${MAX_POURS}];
+uniform vec2 uPourD[${MAX_POURS}];
 uniform int uPourN;
 uniform vec4 uLampP[${MAX_LAMPS}];
 uniform vec3 uLampC[${MAX_LAMPS}];
+uniform vec4 uLampQ[${MAX_LAMPS}];
 uniform int uLampN;
 uniform vec4 uStyleE; // hue depth (m), scum colour gain, shore band scale, 0
+uniform vec4 uStyleF; // sunset glow, aurora reflection, lamp streak, 0
+uniform vec4 uWhirlStyle; // spiral arms, foam gain, reach (x radius), eye darkness
 uniform sampler2D uSlope;
 uniform sampler2D uNoise;
 uniform vec3 uShallow;
@@ -197,6 +238,8 @@ vec3 rainField(vec2 p) {
 
 void main() {
   vec2 p = vWorld.xz;
+  // lock reservoirs (held at full level) never turn into low-tide puddles
+  float puddleM = uPuddleMode * (1.0 - step(0.5, vFixed));
   vec4 f = fieldAt(p);
   float bed = fieldBed(f);
   float chan = fieldChan(f);
@@ -210,11 +253,11 @@ void main() {
   // puddles / low-tide film: wet rim (darkened sand) around the actual water
   float pmask = 1.0;
   float wetRim = 0.0;
-  if (uPuddleMode > 0.001) {
+  if (puddleM > 0.001) {
     float raw = max(f.b, f.a * uStyleD.w) + (noiseA - 0.5) * 0.3;
-    float wet = mix(1.0, smoothstep(0.06, 0.24, raw), uPuddleMode);
+    float wet = mix(1.0, smoothstep(0.06, 0.24, raw), puddleM);
     if (wet < 0.01) { gl_FragColor = vec4(0.0); return; }
-    pmask = mix(1.0, smoothstep(0.24, 0.42, raw), uPuddleMode);
+    pmask = mix(1.0, smoothstep(0.24, 0.42, raw), puddleM);
     wetRim = (1.0 - pmask) * wet;
   }
 
@@ -223,13 +266,17 @@ void main() {
   vec3 V = toCam / viewDist;
 
   // --- whirlpool swirl (two cross-faded phases, like a flow map, so it never winds up)
+  // whirlK: the swirl, reaching uWhirlStyle.z radii out (the great whirlpool drags the whole lagoon);
+  // whirlIn: the pool itself, one radius, which darkens and calms the water
   float whirlK = 0.0;
+  float whirlIn = 0.0;
   vec2 pA = p;
   vec2 pB = p;
   if (uWhirl.w > 0.0) {
     vec2 d = p - uWhirl.xy;
     float dist = length(d);
-    whirlK = (1.0 - smoothstep(0.0, uWhirl.z, dist)) * uWhirl.w;
+    whirlK = (1.0 - smoothstep(0.0, uWhirl.z * uWhirlStyle.z, dist)) * uWhirl.w;
+    whirlIn = min((1.0 - smoothstep(0.0, uWhirl.z, dist)) * uWhirl.w, 1.0);
     float g = whirlK * (uWhirl.z / (dist + 0.9));
     pA = uWhirl.xy + rot2(-uWhirlSpin.x * g * uWhirlSign) * d;
     pB = uWhirl.xy + rot2(-uWhirlSpin.y * g * uWhirlSign) * d;
@@ -244,18 +291,23 @@ void main() {
   sl += slopeAt(pA * 1.31 - uScroll.zw * 1.7).rg * 0.07 * uStyleA.y * detailFade;
   #endif
   vec3 gn = normalize(vGN);
+  // the small-ripple slope alone (no long swells): lamps and the aurora glint off ripples, so a broad
+  // swell facing a light never lights up as one big blotch
+  vec2 slDet = sl;
   sl += -gn.xz / max(gn.y, 0.2);
   vec4 rip = rippleField(p, true);
   sl += rip.yz;
+  slDet += rip.yz;
   float rainRing = 0.0;
   if (uStyleB.z > 0.0) {
     vec3 rf = rainField(p);
     sl += rf.xy * 0.22 * uStyleB.z;
+    slDet += rf.xy * 0.3 * uStyleB.z;
     rainRing = rf.z * uStyleB.z;
   }
   // flatten in puddles and very thin water
   float thickA = max(vWorld.y - bed, 0.0);
-  sl *= mix(1.0, 0.35, uPuddleMode) * smoothstep(0.0, 0.08, thickA);
+  sl *= mix(1.0, 0.35, puddleM) * smoothstep(0.0, 0.08, thickA);
   vec3 N = normalize(vec3(-sl.x, 1.0, -sl.y));
 
   // --- thickness and refraction
@@ -283,7 +335,7 @@ void main() {
   float fogT = 1.0 - exp(-thick / clar);
   float hueT = 1.0 - exp(-thick / uStyleE.x);
   vec3 body = mix(uShallow, uDeep, smoothstep(0.0, 1.0, hueT) * (1.0 - uMurk));
-  body *= 1.0 - 0.7 * whirlK * whirlK;
+  body *= 1.0 - 0.7 * whirlIn * whirlIn;
   // the funnel: a dark, deep-looking eye that also swallows the refracted bed
   float whirlEye = 0.0;
   if (uWhirl.w > 0.0) whirlEye = (1.0 - smoothstep(0.0, uWhirl.z * 0.5, length(p - uWhirl.xy))) * min(uWhirl.w, 1.0);
@@ -297,10 +349,10 @@ void main() {
   if (cap) {
     // the bed seen through the water takes the water's hue: turquoise at the edges, blue in the middle
     vec3 hue = body / max(max(body.r, body.g), max(body.b, 1e-3));
-    vec3 tint = mix(vec3(1.0), hue, clamp(thick * 0.7 + 0.12 + 0.3 * uPuddleMode, 0.0, 0.85));
+    vec3 tint = mix(vec3(1.0), hue, clamp(thick * 0.7 + 0.12 + 0.3 * puddleM, 0.0, 0.85));
     // sand under a film of water looks darker and richer
     tint *= mix(0.7, 1.0, smoothstep(0.0, 0.45, thick));
-    under = mix(refr * tint, bodyLit, max(fogT, 0.18 * uPuddleMode));
+    under = mix(refr * tint, bodyLit, max(fogT, 0.18 * puddleM));
     alpha = 1.0;
   } else {
     // no capture: a tinted veil over the bed (the bed shows through, coloured like shallow water)
@@ -308,14 +360,61 @@ void main() {
     alpha = mix(0.5, 1.0, max(fogT, hueT * 0.6));
   }
 
-  under *= 1.0 - 0.55 * whirlEye * whirlEye;
+  // the eye goes deep and dark, keeping a little of the deep-water hue so it reads as a funnel, not a hole
+  // great whirlpools (foam gain > 1) get a wide, steep funnel profile instead of a soft dimple
+  float bigW = clamp((uWhirlStyle.y - 1.0) * 3.0, 0.0, 1.0);
+  float eyeP = mix(whirlEye * whirlEye, smoothstep(0.0, 0.85, whirlEye), bigW);
+  under = mix(under, uDeep * (irr + uStyleC.z) * mix(0.45, 0.32, bigW), uWhirlStyle.w * eyeP);
+
+  // past the play area the terrain's backdrop water runs beside and beyond the river: take on its look
+  // (its slow depth tint and its see-through veil over the bed) so the two meet without an edge
+  float endK = endZone(p.y);
+  if (endK > 0.0) {
+    float bd = max(vWorld.y - bed, 0.0);
+    float bkA = mix(0.42, 0.93, smoothstep(0.0, 1.4, bd));
+    vec3 bkU = mix(uShallow, uDeep, smoothstep(0.3, 7.0, bd)) * (irr + uStyleC.z) * uEnd.w;
+    if (cap) bkU = mix(refr, bkU, bkA);
+    else alpha = mix(alpha, bkA, endK);
+    under = mix(under, bkU, endK);
+  }
 
   // --- reflection
   // reflections use a slightly calmer normal so long swells don't paint big sky-coloured blotches
-  vec3 Nr = normalize(mix(N, vec3(0.0, 1.0, 0.0), 0.35));
+  // (still, mirror-like swamp water on sunset maps: calmer still, so the warm sky never turns blotchy)
+  vec3 Nr = normalize(mix(N, vec3(0.0, 1.0, 0.0), 0.35 + 0.45 * uStyleF.x));
   vec3 R = reflect(-V, Nr);
   float ry = clamp(R.y, 0.0, 1.0);
-  vec3 sky = mix(uSkyHorizon, uSkyTop, pow(ry, 0.65));
+  // sunset maps keep more of the glowing horizon in the reflection (a warm sky mirrored in still water)
+  vec3 sky = mix(uSkyHorizon, uSkyTop, pow(ry, 0.65 + 0.9 * uStyleF.x));
+  // a low sun lays a glowing path across the water toward it (judged by azimuth only: at this camera
+  // pitch the true mirror image of a sunset sun would fall off the top of the screen)
+  if (uStyleF.x > 0.0) {
+    vec3 Rs = reflect(-V, normalize(mix(N, vec3(0.0, 1.0, 0.0), 0.75)));
+    vec2 sAz = normalize(uSunDir.xz + vec2(1e-4, 0.0));
+    vec2 rAz = normalize(Rs.xz + vec2(0.0, 1e-4));
+    float az = max(dot(rAz, sAz), 0.0);
+    float low = 1.0 - smoothstep(0.15, 0.65, uSunDir.y);
+    float path = pow(az, 160.0) * 1.1 + pow(az, 34.0) * 0.16;
+    // broken into ripple-lit dashes across the path
+    path *= 0.45 + 1.1 * smoothstep(0.55, 0.95, texture2D(uNoise, vec2(pA.x * 1.6, pA.y * 0.5) + uScroll.xy * 2.0).g);
+    sky += (uSunCol * 0.3 + uSkyHorizon * 0.9) * path * low * uStyleF.x;
+  }
+  // aurora curtains mirrored in the water: two wavy ribbons over the far sky, shimmering rays
+  if (uStyleF.y > 0.0) {
+    vec3 Ra = reflect(-V, normalize(vec3(-slDet.x * 0.7, 1.0, -slDet.y * 0.7)));
+    float iy = 1.0 / max(Ra.y, 0.08);
+    vec2 P = Ra.xz * iy * 12.0 + p * 0.25;
+    float c1 = -9.0 + 4.0 * sin(P.x * 0.075 + uTime * 0.045) + 2.0 * sin(P.x * 0.21 - uTime * 0.07);
+    float c2 = -15.0 + 5.0 * sin(P.x * 0.055 - uTime * 0.03 + 1.7) + 1.5 * sin(P.x * 0.17 + uTime * 0.05);
+    float q1 = (P.y - c1) * 0.2;
+    float q2 = (P.y - c2) * 0.15;
+    float b1 = exp(-q1 * q1);
+    float b2 = exp(-q2 * q2) * 0.75;
+    float rays = 0.35 + 0.65 * texture2D(uNoise, vec2(P.x * 0.035 + uTime * 0.006, 0.37)).g;
+    vec3 ag = mix(vec3(0.1, 1.0, 0.5), vec3(0.15, 0.8, 1.0), smoothstep(-0.6, 0.8, sin(P.x * 0.04 - uTime * 0.02)));
+    vec3 ac = ag * b1 + mix(ag, vec3(0.7, 0.28, 1.0), 0.7) * b2;
+    sky += ac * rays * uStyleF.y * 0.75;
+  }
   if (uHasReflect > 0.5) {
     vec4 rp = uReflectMat * vec4(vWorld, 1.0);
     vec2 ruv2 = rp.xy / rp.w + sl * 0.035;
@@ -376,20 +475,36 @@ void main() {
   vec3 lampSpec = vec3(0.0);
   vec3 lampDiff = vec3(0.0);
   #if DETAIL >= 1
+  // streaks: the pool stretches from the light's anchor (open water in front of it) toward the camera
+  vec2 fw = normalize(uCamFwd.xz + vec2(0.0, 1e-4));
+  float stretch = 1.0 + uStyleF.z * 2.8;
+  // ripple dashes that chop a streak into broken bars (fetched once, outside the loop)
+  vec2 fside = vec2(fw.y, -fw.x);
+  float dashN = texture2D(uNoise, vec2(dot(p, fside) * 0.35, dot(p, fw) * 1.9) + uScroll.xy * 1.3).g;
+  float dashes = mix(1.0, 0.08 + 1.9 * smoothstep(0.42, 0.85, dashN), uStyleF.z);
   for (int i = 0; i < ${MAX_LAMPS}; i++) {
     if (i >= uLampN) break;
     vec3 toL = uLampP[i].xyz - vWorld;
-    float dh2 = dot(toL.xz, toL.xz);
     float rr = uLampP[i].w;
-    if (dh2 > rr * rr * 6.0) continue;
-    float d2 = dh2 + toL.y * toL.y;
+    vec2 rel = vWorld.xz - uLampQ[i].xy;
+    float rl2 = dot(rel, rel);
+    if (rl2 > rr * rr * stretch * stretch * 2.2) continue;
+    float along = -dot(rel, fw);
+    float lat = rel.x * fw.y - rel.y * fw.x;
+    float L = along > 0.0 ? stretch : 0.85;
+    float W = 1.0 - 0.4 * uStyleF.z;
+    float pool = exp(-(lat * lat) / (rr * rr * W * W) - (along * along) / (rr * rr * L * L));
+    pool *= 1.0 - smoothstep(0.5, 1.0, rl2 / (rr * rr * stretch * stretch * 2.2));
+    float d2 = dot(toL, toL);
     vec3 Ld = toL * inversesqrt(d2);
     vec3 Hl = normalize(V + Ld);
-    float pool = exp(-dh2 / (rr * rr));
     // high-contrast ripple highlights: broken golden streaks rather than a smooth glow
-    float shimmer = pow(max(dot(Nf, Hl), 0.0), 40.0);
+    vec3 Nl = normalize(vec3(-slDet.x - fineS.x, 1.0, -slDet.y - fineS.y));
+    float shimmer = pow(max(dot(Nl, Hl), 0.0), 70.0 - 30.0 * uStyleF.z);
     float sparkle = pow(max(dot(Nm, Hl), 0.0), 90.0) * step(0.45, gh) * gdot * (0.6 + 0.4 * tw);
-    lampSpec += uLampC[i] * pool * (0.01 + shimmer * 2.2 + sparkle * 4.0);
+    // streak maps: horizontal ripple bands chop the streak into dashes, like lamplight on a canal
+    float bands = dashes;
+    lampSpec += uLampC[i] * pool * (0.006 + (shimmer * (1.5 + uStyleF.z * 2.6) + sparkle * 4.0 + uStyleF.z * 0.07) * bands);
     lampDiff += uLampC[i] * pool;
   }
   #endif
@@ -410,7 +525,7 @@ void main() {
   // crisp bright line where the water meets the land, advancing and retreating as it laps
   float lapEdge = 0.05 + 0.07 * lap + uSurge * 0.06;
   float edgeLine = (1.0 - smoothstep(lapEdge * 0.55, lapEdge, thick)) * (0.7 + 0.3 * foamN);
-  foam = max(foam, edgeLine * uStyleA.w * mix(1.0, 0.4, uPuddleMode));
+  foam = max(foam, edgeLine * uStyleA.w * mix(1.0, 0.4, puddleM));
   // flowing streaks
   vec2 su = vec2(pA.x * 0.26, pA.y * 0.045) + uScroll2.xy;
   float sn = texture2D(uNoise, su).r;
@@ -460,20 +575,38 @@ void main() {
     vec2 d = p - uWhirl.xy;
     float dist = length(d);
     float ang = atan(d.y, d.x);
-    float arms = sin(ang * 3.0 + (log(dist + 0.25) * 7.5 - uTime * 2.4) * uWhirlSign);
-    float arms2 = sin(ang * 5.0 + (log(dist + 0.25) * 11.0 - uTime * 3.1) * uWhirlSign + 1.3);
-    float spiral = (smoothstep(0.5, 0.95, arms) + smoothstep(0.75, 1.0, arms2) * 0.5) * whirlK * smoothstep(0.2, 1.2, dist);
-    foam = max(foam, spiral * (0.35 + foamN) * 0.95);
+    float N = uWhirlStyle.x;
+    float lr = log(dist + 0.25);
+    float wk = min(whirlK, 1.0);
+    float arms = sin(ang * N + (lr * 7.5 - uTime * 2.4) * uWhirlSign);
+    float arms2 = sin(ang * (N + 2.0) + (lr * 11.0 - uTime * 3.1) * uWhirlSign + 1.3);
+    float bigA = clamp((uWhirlStyle.y - 1.0) * 3.0, 0.0, 1.0);
+    // big pools: thinner arms, torn by the lace, so blue water shows between them
+    float armA = smoothstep(mix(0.5, 0.66, bigA), mix(0.95, 0.99, bigA), arms) * mix(1.0, 0.45 + foamN * 0.9, bigA);
+    float spiral = (armA + smoothstep(0.75, 1.0, arms2) * 0.5) * wk * smoothstep(0.2, 1.2, dist);
+    // great whirlpools (foam gain > 1): long streaky arms torn by the swirled lace, a churning white
+    // lip around the funnel mouth and a fine spray of streaks all round it
+    float big = max(uWhirlStyle.y - 1.0, 0.0);
+    float rel = dist / uWhirl.z;
+    float lq = (rel - 0.3) / 0.09;
+    float lip = exp(-lq * lq) * (0.55 + 0.45 * sin(ang * 9.0 + lr * 14.0 * uWhirlSign - uTime * 5.0)) * min(uWhirl.w, 1.0);
+    float fine = smoothstep(0.82, 1.0, sin(ang * (N * 3.0) + (lr * 16.0 - uTime * 4.2) * uWhirlSign + foamN * 2.5)) * wk * smoothstep(0.25, 0.6, rel);
+    spiral = max(spiral, (lip * (0.6 + foamN * 0.6) + fine * 0.6) * big * 2.4);
+    // the throat of a great whirlpool stays dark: foam thins out as it is sucked down the funnel
+    spiral *= mix(1.0, smoothstep(0.1, 0.27, rel), bigA);
+    foam = max(foam, spiral * (0.35 + foamN) * 0.95 * min(uWhirlStyle.y, 1.15));
   }
   // pours (waterfall base, lock sluices)
   for (int i = 0; i < ${MAX_POURS}; i++) {
     if (i >= uPourN) break;
     vec4 pr = uPour[i];
-    // radius sign = the direction the water pours along z; the boil trails off downstream
+    // uPourD = the direction the water pours; the boil trails off downstream
     float rad = abs(pr.z);
-    vec2 dd = (p - pr.xy) / rad;
-    float down = dd.y * sign(pr.z);
-    dd.y *= down > 0.0 ? 0.42 : 1.0;
+    vec2 pd = uPourD[i];
+    vec2 dl = (p - pr.xy) / rad;
+    float down = dot(dl, pd);
+    float side = dl.x * pd.y - dl.y * pd.x;
+    vec2 dd = vec2(side, down * (down > 0.0 ? 0.42 : 1.0));
     float d = length(dd);
     if (d > 1.0) continue;
     float churn = (1.0 - smoothstep(0.15, 1.0, d)) * pr.w;
@@ -495,8 +628,8 @@ void main() {
   }
   // slush at the ice edge
   foam = max(foam, smoothstep(0.05, 0.6, ice) * (0.6 + foamN * 0.4));
-  foam = clamp(foam, 0.0, 1.0) * mix(1.0, 0.1, uPuddleMode);
-  foam = max(foam, clamp(rip.w, 0.0, 1.0) * (0.4 + foamN * 0.75) * uPuddleMode * 0.7);
+  foam = clamp(foam, 0.0, 1.0) * mix(1.0, 0.1, puddleM);
+  foam = max(foam, clamp(rip.w, 0.0, 1.0) * (0.4 + foamN * 0.75) * puddleM * 0.7);
 
   // --- swamp film (duckweed) and drifting specks
   float scum = 0.0;
@@ -511,7 +644,7 @@ void main() {
     // duckweed reads as dots at the ragged edge of each mat
     float dots = smoothstep(0.5, 0.82, lace2);
     scum = max(mat * (0.75 + lace * 0.3), smoothstep(0.6, 0.71, sm) * dots * 0.75);
-    scum *= uStyleB.x * (1.0 - whirlK);
+    scum *= uStyleB.x * (1.0 - min(whirlK, 1.0));
     scum = clamp(scum, 0.0, 0.95);
   }
   float speck = 0.0;
@@ -529,7 +662,8 @@ void main() {
   col += body * lampDiff * 0.35 * (1.0 - F);
   col += spec * (1.0 - foam) * (1.0 - scum);
   col += lampSpec * (1.0 - foam * 0.7) * (1.0 - scum * 0.8);
-  col += uFoamCol * rainRing * 0.04 * (irr + 0.05);
+  // rain rings: faint in the dark, catching the lamplight near lamps
+  col += uFoamCol * rainRing * (0.04 * (irr + 0.05) + lampDiff * 0.12);
   // ripple crests catch the light so rings read even on calm, dark water
   col += uFoamCol * (irr + uStyleC.z * 2.0 + 0.01) * clamp(rip.x * 6.0, 0.0, 0.5) * (1.0 - foam);
   vec3 scumLit = uScumCol * (irr * 0.9 + uStyleC.z + lampDiff * 0.3) * (0.75 + lace * 0.4) * uStyleE.y;
@@ -549,6 +683,9 @@ void main() {
     alpha = max(alpha, wetRim * wetA * smoothstep(0.0, 0.03, thickA + 0.02));
   }
   alpha *= 1.0 - smoothstep(0.3, 0.65, ice);
+  // end caps: fade into the backdrop water past the river ends, and the cap mesh's side bands fade out
+  // over the backdrop beside the river (the main sheet never fades there: no backdrop under it)
+  alpha *= smoothstep(0.0, 1.0, capFade(p.y)) * bandFade(chan);
   gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>

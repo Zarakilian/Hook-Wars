@@ -49,6 +49,8 @@ export interface NavStatic {
   edgeX: [Float32Array, Float32Array];
   /** Per team, per row: metres of dry ground behind the edge before water again (0 = no bank). */
   frontLen: [Float32Array, Float32Array];
+  /** Per team: the NAV_LAND component its spawns stand in (-1 if none): "home ground". */
+  homeComp: [number, number];
 }
 
 const cache = new WeakMap<MapDef, NavStatic>();
@@ -87,17 +89,22 @@ export function navStatic(map: MapDef): NavStatic {
   const oz = info.oz;
   const n = nx * nz;
   const depth = new Float32Array(n);
+  const water = new Float32Array(n); // waterDepthAt: where the water really is (decks do not count)
   const wet = new Uint8Array(n);
   const dryLand = new Uint8Array(n); // waterDepthAt <= 0: real ground, decks are not ground here
+  const decks = !!map.platforms && map.platforms.length > 0;
   for (let iz = 0; iz < nz; iz++) {
     const z = oz + (iz + 0.5) * NAV_CELL;
     for (let ix = 0; ix < nx; ix++) {
       const x = ox + (ix + 0.5) * NAV_CELL;
       const i = ix + iz * nx;
-      const d = channelDepthAt(map, x, z);
+      const w = waterDepthAt(map, x, z);
+      water[i] = w;
+      // decks only ever lower the depth, so away from the water's edge they change nothing we test
+      const d = decks && w > -WATER_PAD - 0.05 ? channelDepthAt(map, x, z) : w;
       depth[i] = d;
       if (d > 0) wet[i] = 1;
-      if (waterDepthAt(map, x, z) <= 0) dryLand[i] = 1;
+      if (w <= 0) dryLand[i] = 1;
     }
   }
   const walk = info.walkGrid;
@@ -113,10 +120,11 @@ export function navStatic(map: MapDef): NavStatic {
   labelComponents(nx, nz, (i) => blockLand[i] === 0, compLand, queue);
   labelComponents(nx, nz, (i) => blockWade[i] === 0, compWade, queue);
 
-  // Bank model. Ground components ignore obstacles and decks: a floe, a pier island or the far side
-  // of a bridge is not "our bank" even though you can stand on it.
+  // Bank model. "Our bank" is dry ground our fountain can walk to: decks count as links (a dock over
+  // a side channel joins the forward strip to the home bank) but not as bank themselves, so a floe,
+  // an island or a pier standing in the river is never mistaken for the edge.
   const ground = new Int32Array(n);
-  labelComponents(nx, nz, (i) => dryLand[i] === 1, ground, queue);
+  labelComponents(nx, nz, (i) => depth[i] <= 0, ground, queue);
   const cellOf = (x: number, z: number): number => {
     const ix = Math.floor((x - ox) / NAV_CELL);
     const iz = Math.floor((z - oz) / NAV_CELL);
@@ -132,28 +140,35 @@ export function navStatic(map: MapDef): NavStatic {
   const edgeX: [Float32Array, Float32Array] = [new Float32Array(nz), new Float32Array(nz)];
   const frontLen: [Float32Array, Float32Array] = [new Float32Array(nz), new Float32Array(nz)];
   const halfW = map.w / 2;
-  const STEP = 0.25;
+  const limX = halfW - UNIT_RADIUS - 0.2;
+  // Scan each row on the cell grid; the water depth is a signed distance, so the exact edge sits
+  // where it crosses zero between two cell centres.
+  const cross = (xa: number, wa: number, xb: number, wb: number): number => (wa === wb ? xb : xa + ((xb - xa) * wa) / (wa - wb));
   for (let iz = 0; iz < nz; iz++) {
     const z = oz + (iz + 0.5) * NAV_CELL;
     const r = riverAt(map.river.points, z);
+    const row = iz * nx;
+    const c0 = Math.max(0, Math.min(nx - 1, Math.floor((r.x - ox) / NAV_CELL)));
     for (const t of [0, 1] as const) {
       const side = t === 0 ? -1 : 1;
       let seenWater = false;
       let edge = NaN;
-      for (let k = 0; ; k++) {
-        const x = r.x + side * k * STEP;
+      let ix = c0;
+      for (; ix >= 0 && ix < nx; ix += side) {
+        const x = ox + (ix + 0.5) * NAV_CELL;
         if (Math.abs(x) > halfW - 0.5) break;
-        if (waterDepthAt(map, x, z) > 0) {
+        const i = row + ix;
+        if (water[i] > 0) {
           seenWater = true;
           continue;
         }
         if (!seenWater) {
-          if (k * STEP > r.hw + 3) break; // no water on this row at all
+          if (Math.abs(x - r.x) > r.hw + 3) break; // no water on this row at all
           continue; // an island on the centreline
         }
-        const c = cellOf(x, z);
-        if (c >= 0 && home[t] >= 0 && ground[c] !== home[t]) continue; // a floe or island, not our bank
-        edge = x;
+        if (home[t] >= 0 && ground[i] !== home[t]) continue; // an island cut off by water, not our bank
+        const p = i - side;
+        edge = water[p] > 0 ? cross(x - side * NAV_CELL, water[p], x, water[i]) : x;
         break;
       }
       if (!Number.isFinite(edge)) {
@@ -162,20 +177,45 @@ export function navStatic(map: MapDef): NavStatic {
         continue;
       }
       let last = edge;
-      for (let k = 1; ; k++) {
-        const x = edge + side * k * STEP;
-        if (Math.abs(x) > halfW - UNIT_RADIUS - 0.2) break;
-        if (waterDepthAt(map, x, z) > 0) break;
+      for (ix += side; ix >= 0 && ix < nx; ix += side) {
+        const x = ox + (ix + 0.5) * NAV_CELL;
+        const i = row + ix;
+        if (Math.abs(x) > limX) {
+          last = side * limX;
+          break;
+        }
+        if (water[i] > 0) {
+          last = cross(x - side * NAV_CELL, water[i - side], x, water[i]);
+          break;
+        }
         last = x;
       }
       edgeX[t][iz] = edge;
-      frontLen[t][iz] = Math.abs(last - edge);
+      frontLen[t][iz] = Math.max(0, (last - edge) * side);
     }
   }
   const ns: NavStatic = {
     map, nx, nz, ox, oz, inv: 1 / NAV_CELL, depth, wet,
-    block: [blockLand, blockWade], comp: [compLand, compWade], edgeX, frontLen,
+    block: [blockLand, blockWade], comp: [compLand, compWade], edgeX, frontLen, homeComp: [-1, -1],
   };
+  for (const t of [0, 1] as const) {
+    // the component most of the team's spawns stand in (the fountain if the spawns say nothing)
+    let best = -1;
+    let bestN = 0;
+    const sp = map.spawns[t];
+    for (const a of sp) {
+      const c = compAt(ns, NAV_LAND, a.x, a.z, 4);
+      if (c < 0) continue;
+      let k = 0;
+      for (const o of sp) if (compAt(ns, NAV_LAND, o.x, o.z, 4) === c) k++;
+      if (k > bestN) {
+        bestN = k;
+        best = c;
+      }
+    }
+    if (best < 0) best = compAt(ns, NAV_LAND, map.fountains[t].x, map.fountains[t].z, 6);
+    ns.homeComp[t] = best;
+  }
   cache.set(map, ns);
   return ns;
 }
@@ -230,6 +270,153 @@ export function holdPoint(ns: NavStatic, team: Team, z: number, s: number, out: 
   out.x = ns.edgeX[team][iz] + (team === 0 ? -ss : ss);
   out.z = z;
   return true;
+}
+
+/** Signed metres from `team`'s main-river edge at depth z, positive on the dry side (away from the river). */
+export function edgeDist(ns: NavStatic, team: Team, x: number, z: number): number {
+  return (x - ns.edgeX[team][rowOf(ns, z)]) * (team === 0 ? -1 : 1);
+}
+
+/**
+ * Where `team` can hold at depth z, `s` metres back from the water in front of it, standing in walk
+ * component `comp` (of NAV_LAND; -1 = any). Normally that is the forward strip on the main river.
+ * When the strip is cut off (no dock, or the bot is stuck behind a side channel), it is the first
+ * ground behind the channel that `comp` can stand on, so a bot never paths to a spot it cannot reach.
+ * The spot stays at least 0.5 m clear of the water behind it. Returns false where nothing fits.
+ */
+export function holdSpot(ns: NavStatic, team: Team, z: number, s: number, comp: number, out: { x: number; z: number }): boolean {
+  const iz = rowOf(ns, z);
+  const side = team === 0 ? -1 : 1;
+  const block = ns.block[NAV_LAND];
+  const cmp = ns.comp[NAV_LAND];
+  const zc = ns.oz + (iz + 0.5) * NAV_CELL;
+  const lim = ns.map.w / 2 - 1;
+  const ex = ns.edgeX[team][iz];
+  let first = NaN;
+  for (let k = 0; k < ns.nx; k++) {
+    const x = ex + side * k * NAV_CELL;
+    if (Math.abs(x) > lim) break;
+    const c = navCell(ns, x, zc);
+    if (c < 0) break;
+    if (block[c] === 0 && (comp < 0 || cmp[c] === comp)) {
+      first = x;
+      break;
+    }
+  }
+  if (!Number.isFinite(first)) return false;
+  const onStrip = Math.abs(first - ex) < 1.2;
+  const edge = onStrip ? ex : first - side * 0.45;
+  let depth: number;
+  if (onStrip) depth = ns.frontLen[team][iz]; // the forward strip: measured once per map
+  else {
+    // dry run behind the channel (obstacles do not end it: the caller nudges spots off trees and rocks)
+    let last = first;
+    for (let k = 1; k < ns.nx; k++) {
+      const x = first + side * k * NAV_CELL;
+      if (Math.abs(x) > lim) break;
+      const c = navCell(ns, x, zc);
+      if (c < 0 || ns.depth[c] > -WATER_PAD) break;
+      last = x;
+    }
+    depth = Math.abs(last - edge);
+  }
+  const maxS = depth - 0.5;
+  if (maxS < 0.9) return false;
+  const ss = s > maxS ? maxS : s < 0.9 ? 0.9 : s;
+  out.x = edge + side * ss;
+  out.z = z;
+  return true;
+}
+
+/** Walk component (of variant v) of the free cell nearest (x, z) within R cells, -1 if none. */
+export function compAt(ns: NavStatic, v: NavVariant, x: number, z: number, R = 3): number {
+  const c = navCell(ns, x, z);
+  if (c < 0) return -1;
+  if (ns.block[v][c] === 0) return ns.comp[v][c];
+  const f = snapFree(ns, v, c, R, -1);
+  return f < 0 ? -1 : ns.comp[v][f];
+}
+
+/** True if (x, z) is free on variant v and in walk component `comp`. */
+export function inComp(ns: NavStatic, v: NavVariant, x: number, z: number, comp: number): boolean {
+  const c = navCell(ns, x, z);
+  return c >= 0 && ns.block[v][c] === 0 && ns.comp[v][c] === comp;
+}
+
+let bfsQ = new Int32Array(0);
+let bfsD = new Float32Array(0);
+let bfsSeen = new Uint32Array(0);
+let bfsStamp = 0;
+
+/**
+ * Nearest dry ground (free on NAV_LAND) from a unit wading in the water, by a breadth-first walk over
+ * wadeable cells. Prefers ground on `team`'s side of the main river when it is at most `bias` metres
+ * further. Writes the cell centre to out and returns the walking distance in metres (Infinity if none
+ * within `maxM`). Used when the tide turns: get out of whichever channel we stand in, not only the main one.
+ */
+export function nearestDry(ns: NavStatic, x: number, z: number, team: Team, bias: number, maxM: number, out: { x: number; z: number }): number {
+  const n = ns.nx * ns.nz;
+  if (bfsQ.length < n) {
+    bfsQ = new Int32Array(n);
+    bfsD = new Float32Array(n);
+    bfsSeen = new Uint32Array(n);
+    bfsStamp = 0;
+  }
+  const st = ++bfsStamp;
+  let s = navCell(ns, x, z);
+  if (s < 0) return Infinity;
+  const wade = ns.block[NAV_WADE];
+  const land = ns.block[NAV_LAND];
+  if (wade[s] === 1) s = snapFree(ns, NAV_WADE, s, 3, -1);
+  if (s < 0) return Infinity;
+  const nx = ns.nx;
+  let head = 0;
+  let tail = 0;
+  bfsQ[tail++] = s;
+  bfsD[s] = 0;
+  bfsSeen[s] = st;
+  let anyD = Infinity;
+  let anyC = -1;
+  let ownD = Infinity;
+  let ownC = -1;
+  const pts = ns.map.river.points;
+  while (head < tail) {
+    const i = bfsQ[head++];
+    const d = bfsD[i];
+    if (d > maxM || d > ownD || d > anyD + bias) break;
+    const ix = i % nx;
+    const iz = (i - ix) / nx;
+    if (land[i] === 0) {
+      const cx = ns.ox + (ix + 0.5) * NAV_CELL;
+      const cz = ns.oz + (iz + 0.5) * NAV_CELL;
+      const own = (cx < riverAt(pts, cz).x ? 0 : 1) === team;
+      if (own && d < ownD) {
+        ownD = d;
+        ownC = i;
+      }
+      if (d < anyD) {
+        anyD = d;
+        anyC = i;
+      }
+      continue; // do not walk on through dry ground
+    }
+    for (let k = 0; k < 4; k++) {
+      const jx = ix + (k === 0 ? 1 : k === 1 ? -1 : 0);
+      const jz = iz + (k === 2 ? 1 : k === 3 ? -1 : 0);
+      if (jx < 0 || jz < 0 || jx >= nx || jz >= ns.nz) continue;
+      const j = jx + jz * nx;
+      if (bfsSeen[j] === st || wade[j] === 1) continue;
+      bfsSeen[j] = st;
+      bfsD[j] = d + NAV_CELL;
+      bfsQ[tail++] = j;
+    }
+  }
+  const c = ownC >= 0 && ownD <= anyD + bias ? ownC : anyC;
+  if (c < 0) return Infinity;
+  const cx = c % nx;
+  out.x = ns.ox + (cx + 0.5) * NAV_CELL;
+  out.z = ns.oz + ((c - cx) / nx + 0.5) * NAV_CELL;
+  return c === ownC ? ownD : anyD;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -403,11 +590,13 @@ export function newNavPath(): NavPath {
 
 /**
  * A* from (x0, z0) to (x1, z1) on a variant, then string-pull the cell path into at most NAV_MAXWP
- * waypoints. `waterMul` is the cost of a wet cell relative to dry ground (NAV_WADE only), `avoid`
+ * waypoints. `waterMul` is the cost of a wet cell relative to dry ground (NAV_WADE only), `keepOut`
+ * a circle to stay out of when there is any other way (the enemy fountain), `avoid`
  * an optional per-cell flag (hazards) that costs extra. Deterministic and allocation-free.
  */
 export function findPath(
   ns: NavStatic, v: NavVariant, x0: number, z0: number, x1: number, z1: number, waterMul: number, avoid: Uint8Array | null, out: NavPath,
+  keepOut: { x: number; z: number; r: number } | null = null,
 ): boolean {
   out.n = 0;
   out.expanded = 0;
@@ -473,6 +662,11 @@ export function findPath(
       let mul = 1;
       if (wm !== 0 && wet[j] === 1) mul += wm;
       if (avoid !== null && avoid[j] === 1) mul += 3;
+      if (keepOut !== null) {
+        const kx = ns.ox + (jx + 0.5) * NAV_CELL - keepOut.x;
+        const kz = ns.oz + (jz + 0.5) * NAV_CELL - keepOut.z;
+        if (kx * kx + kz * kz < keepOut.r * keepOut.r) mul += 12;
+      }
       c *= mul;
       const ng = gi + c;
       if (seenAt[j] === st && ng >= gScore[j]) continue;

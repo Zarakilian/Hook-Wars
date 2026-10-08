@@ -298,6 +298,16 @@ export class RGrid extends VoxelGrid {
     for (let n = 0; n < touched.length; n += 2) this.data[touched[n]] = touched[n + 1];
   }
 
+  /** Change the channel of filled voxels: fn gets the stored value, returns a channel or -1 to keep it. */
+  rechannel(fn: (c: number) => number): void {
+    for (let i = 0; i < this.data.length; i++) {
+      const c = this.data[i];
+      if (c < 0) continue;
+      const ch = fn(c);
+      if (ch >= 0) this.data[i] = (c & ~7) | ch;
+    }
+  }
+
   /** Repaint filled fine voxels passing a test with a new colour and channel. */
   repaint(test: Test, ch: Channel, color: Paint, onlySurface = false): void {
     const r = this.res;

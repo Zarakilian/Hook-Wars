@@ -44,6 +44,24 @@ export interface WaterStyle {
   hueDepth: number;
   /** brightness of the swamp film */
   scumGain: number;
+  /** whirlpool: funnel depth (m), spiral arm count, foam gain, how far the arms reach (x radius), eye darkness */
+  whirlDepth: number;
+  whirlArms: number;
+  whirlFoam: number;
+  whirlReach: number;
+  whirlEye: number;
+  /** reflected sun path toward a low sun (sunset maps) */
+  sunsetGlow: number;
+  /** aurora curtains reflected in the water (needs atmosphere.aurora) */
+  auroraRefl: number;
+  /** lamp reflections stretched toward the camera into long broken streaks (canal maps) */
+  lampStreak: number;
+  /** blue light glowing up through the ice from below (freeze maps) */
+  underGlow: number;
+  /** waterfall mist amount (1 = the Coral Cove falls) */
+  mist: number;
+  /** brightness of the backdrop-water look the river takes on past the play area (match the terrain's) */
+  endGain: number;
 }
 
 const BASE: WaterStyle = {
@@ -69,6 +87,17 @@ const BASE: WaterStyle = {
   speck: 0,
   hueDepth: 0,
   scumGain: 1,
+  whirlDepth: 0.42,
+  whirlArms: 3,
+  whirlFoam: 1,
+  whirlReach: 1,
+  whirlEye: 0.55,
+  sunsetGlow: 0,
+  auroraRefl: 0,
+  lampStreak: 0,
+  underGlow: 0,
+  mist: 1,
+  endGain: 1,
 };
 
 const BY_MAP: Partial<Record<MapDef['id'], Partial<WaterStyle>>> = {
@@ -144,6 +173,100 @@ const BY_MAP: Partial<Record<MapDef['id'], Partial<WaterStyle>>> = {
     speckColor: 0,
     speck: 0,
     hueDepth: 0.7,
+    lampStreak: 0.5,
+  },
+  // braided sunset marsh: murky tea water, mirror-calm, the low sun laying a path across it
+  mirelight: {
+    clarity: 0.62,
+    waveAmp: 0.38,
+    waveLen: 1.2,
+    choppy: 0.26,
+    caustics: 0.12,
+    streaks: 0.28,
+    shoreFoam: 0.55,
+    scum: 0.45,
+    scumColor: 0x5f7a2c,
+    // the dark tea-brown water must show through: a stronger mirror turns the whole marsh mauve
+    reflect: 1.0,
+    glitter: 0.75,
+    sss: 0.3,
+    nightLift: 0.02,
+    plips: 0.8,
+    refract: 0.7,
+    murk: 0.3,
+    speckColor: 0xc8903e,
+    speck: 0.55,
+    hueDepth: 0.5,
+    scumGain: 0.75,
+    sunsetGlow: 1,
+    lampStreak: 0.35,
+  },
+  // night harbour of floes: deep teal, the aurora rippling in it, ice that glows from below
+  aurora: {
+    clarity: 2.6,
+    waveAmp: 0.7,
+    choppy: 0.42,
+    caustics: 0.28,
+    streaks: 0.55,
+    shoreFoam: 1.0,
+    reflect: 1.3,
+    glitter: 1.0,
+    sss: 0.8,
+    nightLift: 0.04,
+    plips: 0.2,
+    speckColor: 0xeaf4ff,
+    speck: 0.45,
+    hueDepth: 1.0,
+    auroraRefl: 1,
+    underGlow: 1,
+    lampStreak: 0.4,
+  },
+  // bright turquoise cove around a great whirlpool, waterfalls pouring off the cliffs
+  maelstrom: {
+    // a saturated turquoise that deepens to teal fast, with a light mirror so the warm sky never
+    // washes it out (measured against the reference: saturation ~0.35 instead of ~0.24)
+    clarity: 3.4,
+    waveAmp: 0.95,
+    choppy: 0.36,
+    caustics: 1.0,
+    streaks: 0.5,
+    shoreFoam: 1.25,
+    reflect: 0.6,
+    glitter: 1.15,
+    sss: 1.1,
+    nightLift: 0,
+    plips: 0.35,
+    refract: 1.2,
+    speckColor: 0xfff2a8,
+    speck: 0.2,
+    hueDepth: 0.8,
+    whirlDepth: 1.15,
+    whirlArms: 4,
+    whirlFoam: 1.35,
+    whirlReach: 1.65,
+    whirlEye: 1.0,
+    mist: 1.5,
+  },
+  // rainy canal city: blue-black water, warm lamp streaks, rain rings everywhere
+  lanternwharf: {
+    clarity: 0.85,
+    waveAmp: 0.36,
+    choppy: 0.42,
+    caustics: 0,
+    streaks: 0.14,
+    shoreFoam: 0.55,
+    oil: 0.55,
+    murk: 0.1,
+    reflect: 1.65,
+    glitter: 0.7,
+    sss: 0.25,
+    nightLift: 0.03,
+    plips: 0.15,
+    refract: 0.8,
+    speckColor: 0,
+    speck: 0,
+    hueDepth: 0.6,
+    lampStreak: 1,
   },
 };
 

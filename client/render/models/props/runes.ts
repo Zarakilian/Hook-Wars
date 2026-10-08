@@ -30,37 +30,70 @@ function framed(inside: (x: number, y: number) => boolean, detail?: (x: number, 
   };
 }
 
-const SHAPES: Record<RuneType, { mask: Mask; depth: number }> = {
+const SHAPES: Record<RuneType, { mask: Mask; depth: number; frame?: number }> = {
   bendy: {
-    // an S-curved eel line with a hook head
-    mask: framed((x, y) => {
-      const cx = x + 0.5;
-      const cy = y + 0.5;
-      const wave = 10 + Math.sin((cy - 2) * 0.33) * 5.5;
-      return cy > 1 && cy < 19 && Math.abs(cx - wave) < 2.2;
-    }, (x, y) => y === 17 && (x === 9 || x === 10)),
+    // an eel swimming up in an S: wide head with an eye at the top, tapering to a forked tail fin
+    mask: framed(
+      (x, y) => {
+        const cx = x + 0.5;
+        const cy = y + 0.5;
+        if (cy < 1 || cy > 20) return false;
+        const mid = 10 + Math.sin((cy - 3) * 0.36) * 4.6;
+        const w = cy > 15.5 ? 2.9 - Math.max(0, cy - 18.2) * 1.1 : 1.15 + (cy / 15.5) * 1.4;
+        if (Math.abs(cx - mid) < w) return true;
+        // forked tail
+        if (cy < 3.2) {
+          const t0 = 10 + Math.sin((3 - 3) * 0.36) * 4.6;
+          return Math.abs(cx - t0 - (3.2 - cy) * 1.4) < 0.9 || Math.abs(cx - t0 + (3.2 - cy) * 1.4) < 0.9;
+        }
+        return false;
+      },
+      (x, y) => {
+        const mid = 10 + Math.sin((y + 0.5 - 3) * 0.36) * 4.6;
+        if (y === 17 && Math.abs(x + 0.5 - (mid + 1.1)) < 0.6) return true; // eye
+        if (y === 15 && Math.abs(x + 0.5 - (mid + 1.6)) < 0.6) return true; // gill
+        return y > 4 && y < 14 && y % 3 === 0 && Math.abs(x + 0.5 - mid) < 0.6; // spine spots
+      },
+    ),
     depth: 4,
+    frame: 0.2,
   },
   bouncy: {
-    // a zig-zag spring
+    // a coil spring on a base plate with a ball bouncing off the top
     mask: framed((x, y) => {
-      const cy = y + 0.5;
       const cx = x + 0.5;
-      const t = ((cy - 2) / 4) % 2;
-      const zig = t < 1 ? 4 + t * 12 : 16 - (t - 1) * 12;
-      return cy > 1 && cy < 19 && Math.abs(cx - zig) < 2;
-    }),
+      const cy = y + 0.5;
+      if (cy > 1 && cy < 3.2 && Math.abs(cx - 10) < 6) return true; // base
+      if (Math.hypot(cx - 10, cy - 16.8) < 3.4) return true; // ball
+      if (cy >= 3.2 && cy <= 12.5) {
+        const t = ((cy - 3.2) / 2.4) % 2;
+        const zig = t < 1 ? 5 + t * 10 : 15 - (t - 1) * 10;
+        return Math.abs(cx - zig) < 2.3;
+      }
+      return false;
+    }, (x, y) => Math.hypot(x + 0.5 - 8.8, y + 0.5 - 18) < 0.9),
     depth: 4,
+    frame: 0.12,
   },
   longshot: {
-    // a long arrow
-    mask: framed((x, y) => {
-      const cx = x + 0.5;
-      const cy = y + 0.5;
-      if (cy < 7) return Math.abs(cx - 10) < cy * 0.9;
-      return cy < 19 && Math.abs(cx - 10) < 1.6;
-    }),
+    // a long-shank fishing hook with an eye and a barb, speed lines trailing beside it
+    mask: framed(
+      (x, y) => {
+        const cx = x + 0.5;
+        const cy = y + 0.5;
+        if (cy > 5 && cy < 17.5 && Math.abs(cx - 12.5) < 1.9) return true; // shank
+        const er = Math.hypot(cx - 12.5, cy - 18.6);
+        if (er < 2.4 && er > 0.9) return true; // eye
+        const br = Math.hypot(cx - 9, cy - 5.6);
+        if (cy <= 5.6 && br < 5.4 && br > 1.8) return true; // bend
+        if (cy > 5.6 && cy < 10 && Math.abs(cx - 5.4) < 1.8) return true; // point
+        if (cy > 7.2 && cy < 9.2 && cx > 5.4 && cx < 8.2 && cy - 7.2 > (cx - 5.4) * 0.6) return true; // barb
+        if (cx > 15.5 && cx < 20 && (Math.abs(cy - 9) < 0.7 || Math.abs(cy - 12.5) < 0.7 || Math.abs(cy - 16) < 0.7) && cx > 15.5 + Math.abs(cy - 12.5) * 0.3) return true; // speed lines
+        return false;
+      },
+    ),
     depth: 4,
+    frame: 0.12,
   },
   haste: {
     // lightning bolt
@@ -126,7 +159,7 @@ const SHAPES: Record<RuneType, { mask: Mask; depth: number }> = {
 function runeModel(type: RuneType): PropModel {
   const V = 0.045;
   const st = RUNE_STYLE[type];
-  const { mask, depth } = SHAPES[type];
+  const { mask, depth, frame = 0.45 } = SHAPES[type];
   const g = new PGrid(22, 22, depth + 4);
   const z0 = 2;
   for (let y = 0; y < 21; y++)
@@ -135,7 +168,8 @@ function runeModel(type: RuneType): PropModel {
       if (!m) continue;
       for (let z = z0; z < z0 + depth; z++) {
         const face = z === z0 || z === z0 + depth - 1;
-        if (m === 1) g.on(CH.metal, () => g.set(x + 1, y + 1, z, shade(mix(st.main, st.dark, 0.45), 0.9 + h3(x, y, z) * 0.2)));
+        // thin power-up glyphs glow along their outline too (a dark metal frame would swallow the stroke)
+        if (m === 1) g.on(frame < 0.3 ? CH.glow : CH.metal, () => g.set(x + 1, y + 1, z, shade(mix(st.main, st.dark, frame < 0.3 ? 0.42 : frame), 0.9 + h3(x, y, z) * 0.2)));
         else if (m === 3) g.on(CH.metal, () => g.set(x + 1, y + 1, z, face ? mix(st.main, st.dark, 0.3) : st.dark));
         else g.on(CH.glow, () => g.set(x + 1, y + 1, z, face ? mix(st.main, st.light, 0.25 + h3(x, y, z) * 0.25) : st.main));
       }

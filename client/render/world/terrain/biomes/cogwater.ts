@@ -32,7 +32,7 @@ const ROOFS = [
   [0x3e4a3a, 0x465442, 0x36422f],
 ];
 
-interface Bld {
+export interface Bld {
   h: number; // eave height above the base
   ridge: number; // extra gable height
   alongX: boolean;
@@ -48,7 +48,7 @@ interface Bld {
 export class CogwaterBiome extends BaseBiome implements MapBiome {
   private readonly zone = { z: 0, t: 0 };
   readonly sparkle = 0;
-  readonly farColor = 0x24242a;
+  readonly farColor: number = 0x24242a;
   readonly farY: number;
   private readonly cobble: number[];
   private readonly quayZ: number;
@@ -74,7 +74,7 @@ export class CogwaterBiome extends BaseBiome implements MapBiome {
   }
 
   /** Building at (x,z), or null. Lots on a grid with streets between. */
-  private building(x: number, z: number): Bld | null {
+  protected building(x: number, z: number): Bld | null {
     const T = this.T;
     const ax = Math.abs(x);
     const sideZone = ax > this.halfW && this.od(x, z) > 5.6;

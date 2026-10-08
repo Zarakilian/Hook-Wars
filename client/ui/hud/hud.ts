@@ -10,7 +10,7 @@ import { button, setButtonLabel } from '../widgets.ts';
 import { Announcer } from './announcer.ts';
 import { BottomBar } from './bottombar.ts';
 import { HudChat } from './chat.ts';
-import { buildEnd } from './endscreen.ts';
+import { buildEnd, soloPearls } from './endscreen.ts';
 import { KillFeed } from './feed.ts';
 import './hud.css';
 import { Minimap } from './minimap.ts';
@@ -40,6 +40,9 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
   const shop = new Shop(actions, () => api.toggleShop(false));
   const board = new Scoreboard();
   const chat = new HudChat(actions);
+  if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) {
+    (window as unknown as Record<string, unknown>).__hwHud = { overheads, status, top, feed, ann, minimap, bottom, shop, board, chat };
+  }
 
   // ---------------------------------------------------------------- Esc menu
   const leaveBtn = button('Leave match', () => {
@@ -155,7 +158,10 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
       ann.frame(f);
       minimap.frame(f, now / 1000);
       bottom.frame(f, settings);
-      if (shopVisible) shop.update(f.you);
+      if (shopVisible) {
+        shop.setSide(f.youId >= 0 ? f.players.get(f.youId)?.team ?? -1 : -1);
+        shop.update(f.you);
+      }
       board.frame(f);
       setClass(root, 'dead', !!f.me && f.me.st === UnitState.Dead);
     },
@@ -200,7 +206,10 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
       if (shopVisible) {
         actions.uiSound('open');
         shop.reset();
-        if (last) shop.update(last.you);
+        if (last) {
+          shop.setSide(last.youId >= 0 ? last.players.get(last.youId)?.team ?? -1 : -1);
+          shop.update(last.you);
+        }
       }
     },
     shopOpen() {
@@ -230,7 +239,7 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
             actions.startSolo(s.soloConfig, s.soloTeam);
           }
         : null;
-      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch, local ? null : () => actions.backToLobby()));
+      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch, local ? null : () => actions.backToLobby(), local && ctx.economy ? soloPearls(e, youId) : null));
     },
     toggleMenu(open?: boolean) {
       setMenu(open ?? !menuVisible);

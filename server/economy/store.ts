@@ -4,13 +4,14 @@
 // economy.json (rename replaces in one step on Windows and POSIX). A crash mid-write leaves the old
 // file untouched. Saves are debounced; money-critical steps call flush() for an immediate write.
 //
-// Recovery on load, in order: economy.json -> the newest temp file that parses -> economy.json.bak
-// (a copy taken at every start). A file that exists but does not parse is never overwritten: it is
-// moved aside to economy.json.corrupt-<time> and logged.
+// Recovery on load: the newest complete file (by savedAt) among economy.json and any temp files
+// (a crash after fsync but before rename leaves a newer temp file), then economy.json.bak (a copy
+// taken at every start). A file that exists but does not parse is never overwritten: it is moved
+// aside to economy.json.corrupt-<time> and logged.
 //
 // One process owns a data folder at a time (economy.lock holds its pid). A second server pointed at
 // the same folder keeps its accounts in memory only and says so in the log.
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Loadout } from '../../shared/cosmetics.ts';
 import type { Listing, OwnedItem } from '../../shared/economy.ts';
@@ -160,7 +161,8 @@ export class AccountStore {
     return false;
   }
 
-  private parse(raw: string): EconomyDb | null {
+  /** Parse one file. Null if it is not a complete economy file; throws StoreVersionError for a newer schema. */
+  private parse(raw: string): { db: EconomyDb; savedAt: string } | null {
     let j: unknown;
     try {
       j = JSON.parse(raw);
@@ -168,49 +170,46 @@ export class AccountStore {
       return null;
     }
     if (typeof j !== 'object' || j === null || typeof (j as EconomyDb).v !== 'number') return null;
-    const d = j as EconomyDb;
+    const d = j as EconomyDb & { savedAt?: unknown };
     if (d.v > SCHEMA_VERSION) throw new StoreVersionError(`economy.json has schema ${d.v}, newer than this server (${SCHEMA_VERSION}). Refusing to touch it.`);
     // v1 is the only schema so far; later migrations go here (if (d.v === 1) { ...; d.v = 2 })
     const obj = (v: unknown) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, never>) : {});
-    return { v: SCHEMA_VERSION, accounts: obj(d.accounts), listings: obj(d.listings), orders: obj(d.orders), serials: obj(d.serials) };
+    return {
+      db: { v: SCHEMA_VERSION, accounts: obj(d.accounts), listings: obj(d.listings), orders: obj(d.orders), serials: obj(d.serials) },
+      savedAt: typeof d.savedAt === 'string' ? d.savedAt : '',
+    };
   }
 
   private load(dir: string): EconomyDb {
     const main = join(dir, FILE);
     const bak = join(dir, `${FILE}.bak`);
     const tmps = readdirSync(dir).filter((f) => f.startsWith(`${FILE}.tmp-`)).map((f) => join(dir, f));
-    let db: EconomyDb | null = null;
-    let from = '';
+    // Candidates: the main file and every complete temp file. A crash after fsync but before the
+    // rename leaves a temp file that is NEWER than the main file, so the newest savedAt wins.
+    const found: { path: string; db: EconomyDb; savedAt: string }[] = [];
     if (existsSync(main)) {
-      db = this.parse(readFileSync(main, 'utf8'));
-      if (db) from = FILE;
+      const got = this.parse(readFileSync(main, 'utf8'));
+      if (got) found.push({ path: main, ...got });
       else {
         const aside = join(dir, `${FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`);
         renameSync(main, aside);
-        this.log(`[economy] ${main} could not be read. It was moved to ${aside} untouched; trying the newest temp file, then the backup.`);
+        this.log(`[economy] ${main} could not be read. It was moved to ${aside} untouched; trying the temp files, then the backup.`);
       }
     }
-    if (!db) {
-      // newest complete temp file (a crash between fsync and rename leaves a good one behind)
-      const sorted = tmps
-        .map((p) => {
-          try {
-            return { p, d: this.parse(readFileSync(p, 'utf8')), t: statSync(p).mtimeMs };
-          } catch (err) {
-            if (err instanceof StoreVersionError) throw err;
-            return { p, d: null, t: 0 };
-          }
-        })
-        .filter((x): x is { p: string; d: EconomyDb; t: number } => !!x.d);
-      const best = sorted.sort((a, b) => b.t - a.t)[0];
-      if (best) {
-        db = best.d;
-        from = best.p;
+    for (const t of tmps) {
+      try {
+        const got = this.parse(readFileSync(t, 'utf8'));
+        if (got) found.push({ path: t, ...got });
+      } catch (err) {
+        if (err instanceof StoreVersionError) throw err;
+        // unreadable temp file: ignore it
       }
     }
-    if (!db && existsSync(bak)) {
-      db = this.parse(readFileSync(bak, 'utf8'));
-      if (db) from = `${FILE}.bak`;
+    found.sort((a, b) => (a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : a.path === main ? -1 : 1));
+    let best: { path: string; db: EconomyDb } | null = found[0] ?? null;
+    if (!best && existsSync(bak)) {
+      const got = this.parse(readFileSync(bak, 'utf8'));
+      if (got) best = { path: bak, db: got.db };
     }
     for (const t of tmps) {
       try {
@@ -219,9 +218,10 @@ export class AccountStore {
         // already gone
       }
     }
-    if (!db) return emptyDb();
-    if (from !== FILE) {
-      this.log(`[economy] recovered the economy data from ${from}`);
+    if (!best) return emptyDb();
+    const db = best.db;
+    if (best.path !== main) {
+      this.log(`[economy] recovered the economy data from ${best.path}`);
       this.db = db;
       this.writeNow(dir);
     }

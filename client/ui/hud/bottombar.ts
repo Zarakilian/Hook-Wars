@@ -1,9 +1,9 @@
 // Bottom of the HUD: buffs and status tags, the HP bar (damage trail, shield, ticks), the three
 // ability portholes with cooldown sweeps, four item crates and the gold purse.
-import { BAL, ITEMS, RUNE_NAMES } from '../../../shared/constants.ts';
+import { BAL, ITEMS, RUNE_BLURBS, RUNE_COLORS, RUNE_NAMES } from '../../../shared/constants.ts';
 import { UFlag, UnitState, type BuffSnap, type ItemSlot } from '../../../shared/types.ts';
 import type { Settings } from '../../settings.ts';
-import { h, noFocus, pulse, setClass, setDisplay, setText, setTransform, setVar } from '../dom.ts';
+import { h, hex, noFocus, pulse, setClass, setDisplay, setText, setTransform, setVar } from '../dom.ts';
 import { icon, setIcon, type IconId } from '../icons.ts';
 import { ABILITY_KEYS } from '../info.ts';
 import type { AppActions, HudFrame } from '../types.ts';
@@ -35,6 +35,10 @@ const BUFF_ICON: Record<BuffSnap['t'], IconId> = {
   bendy: 'bendy', bouncy: 'bouncy', longshot: 'longshot',
 };
 const BUFF_BAD: Partial<Record<BuffSnap['t'], boolean>> = { burn: true };
+/** Hook power-ups: shown bigger, with their name, because they change how you aim. */
+const BUFF_POWER: Partial<Record<BuffSnap['t'], boolean>> = { bendy: true, bouncy: true, longshot: true };
+const isRune = (t: BuffSnap['t']): t is keyof typeof RUNE_COLORS => t in RUNE_COLORS;
+const BUFF_TITLE = (t: BuffSnap['t']): string => (isRune(t) ? `${RUNE_NAMES[t]}: ${RUNE_BLURBS[t]}` : BUFF_NAME[t]);
 
 interface Ability {
   el: HTMLElement;
@@ -303,7 +307,9 @@ export class BottomBar {
       let el = this.buffs.get(b.t);
       if (!el) {
         const secs = h('span', { class: 'bf-secs' });
-        const node = h('span', { class: `buff ${BUFF_BAD[b.t] ? 'bad' : ''}`, title: BUFF_NAME[b.t] }, icon(BUFF_ICON[b.t]), secs);
+        const node = h('span', { class: `buff ${BUFF_BAD[b.t] ? 'bad' : ''} ${BUFF_POWER[b.t] ? 'power' : ''}`.trim(), title: BUFF_TITLE(b.t) }, icon(BUFF_ICON[b.t]), secs);
+        if (isRune(b.t)) node.style.setProperty('--bc', hex(RUNE_COLORS[b.t].main));
+        if (BUFF_POWER[b.t]) node.append(h('span', { class: 'bf-name', text: RUNE_NAMES[b.t as keyof typeof RUNE_NAMES] }));
         el = { el: node, secs, seen: stamp, maxSeen: b.left };
         this.buffs.set(b.t, el);
         this.buffsEl.prepend(node);

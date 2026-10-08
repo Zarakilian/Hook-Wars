@@ -1,5 +1,7 @@
-// Live 3D preview of your Pudgy for the profile card: its own small WebGLRenderer, a wooden dock
-// pedestal, a turntable you can drag, and an idle animation. Fully disposed when hidden.
+// Live 3D preview of your Pudgy (menu, Locker, Store): one small WebGLRenderer for the whole session,
+// a wooden dock pedestal, a turntable you can drag, and an idle animation. Leaving a screen stops
+// rendering and frees the model, but keeps the context: creating and force-losing a context on every
+// screen change makes Chrome block WebGL for the page.
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { CosmeticSlot, Loadout } from '../../shared/cosmetics.ts';
@@ -12,13 +14,13 @@ const ONE_SHOTS: PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'grapple', 'mel
 
 /** Camera framing per slot: look-at height (fraction of the model height) and distance multiplier. */
 const FOCUS: Record<CosmeticSlot | 'all', { y: number; d: number }> = {
-  all: { y: 0.5, d: 1 },
-  head: { y: 0.84, d: 0.56 },
-  face: { y: 0.74, d: 0.5 },
-  body: { y: 0.5, d: 0.78 },
-  hands: { y: 0.52, d: 0.86 },
-  feet: { y: 0.16, d: 0.6 },
-  back: { y: 0.6, d: 0.8 },
+  all: { y: 0.42, d: 1.14 },
+  head: { y: 0.74, d: 0.74 },
+  face: { y: 0.7, d: 0.68 },
+  body: { y: 0.5, d: 0.9 },
+  hands: { y: 0.5, d: 0.92 },
+  feet: { y: 0.3, d: 0.8 },
+  back: { y: 0.56, d: 0.92 },
 };
 
 export interface PreviewLook {
@@ -54,9 +56,11 @@ export class PudgyPreview {
   private target = new THREE.Vector3(0, 1, 0);
   private dist = 5;
   private failed = false;
-  private used = false;
+  private failedAt = 0;
   private focusKey: CosmeticSlot | 'all' = 'all';
-  private modelH = 2.5;
+  private modelH = 0;
+  /** seconds until the model is measured again (after a spawn pop or a one-shot settles) */
+  private refitIn = 0;
   private baseDist = 5;
   private camY = 1.25;
   private camDist = 0;
@@ -106,14 +110,14 @@ export class PudgyPreview {
 
   /** Attach to a container and start rendering. */
   mount(parent: HTMLElement): void {
-    if (this.failed) return;
-    if (!this.renderer) {
-      // a canvas whose context was force-lost cannot host a new renderer: start fresh
-      if (this.used) this.canvas = this.makeCanvas();
-      this.used = true;
-    }
+    // a failed context creation is retried after a pause instead of disabling the preview for good
+    if (this.failed && performance.now() - this.failedAt < 3000) return;
     if (this.canvas.parentElement !== parent) parent.append(this.canvas);
-    if (!this.renderer) this.init();
+    if (!this.renderer) {
+      if (this.failed) this.canvas = this.replaceCanvas(parent);
+      this.failed = false;
+      this.init();
+    }
     if (!this.renderer) return;
     if (this.look && this.key === '') this.show(this.look, 'spawn');
     this.resizeObs?.disconnect();
@@ -121,6 +125,14 @@ export class PudgyPreview {
     this.resizeObs.observe(this.canvas);
     this.resize();
     this.start();
+  }
+
+  /** A fresh canvas element in place of one whose context creation failed. */
+  private replaceCanvas(parent: HTMLElement): HTMLCanvasElement {
+    const c = this.makeCanvas();
+    this.canvas.remove();
+    parent.append(c);
+    return c;
   }
 
   private init(): void {
@@ -136,8 +148,11 @@ export class PudgyPreview {
       this.renderer = r;
     } catch {
       this.failed = true;
+      this.failedAt = performance.now();
+      this.renderer = null;
       return;
     }
+    this.canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
     const scene = new THREE.Scene();
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const room = new RoomEnvironment();
@@ -222,7 +237,23 @@ export class PudgyPreview {
     const side = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
     const rope = new THREE.MeshStandardMaterial({ color: 0xc9a062, roughness: 0.95 });
     const brass = new THREE.MeshStandardMaterial({ color: 0xd9a441, roughness: 0.32, metalness: 0.9 });
-    const water = new THREE.MeshStandardMaterial({ color: 0x1d6f8a, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.55 });
+    // soft contact shadow under the post (radial gradient, no lighting)
+    const sc = document.createElement('canvas');
+    sc.width = 128;
+    sc.height = 128;
+    const sctx = sc.getContext('2d');
+    let shadowTex: THREE.CanvasTexture | null = null;
+    if (sctx) {
+      const g = sctx.createRadialGradient(64, 64, 20, 64, 64, 64);
+      g.addColorStop(0, 'rgba(0,0,0,0.75)');
+      g.addColorStop(0.55, 'rgba(0,0,0,0.35)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      sctx.fillStyle = g;
+      sctx.fillRect(0, 0, 128, 128);
+      shadowTex = new THREE.CanvasTexture(sc);
+    }
+    const water = new THREE.MeshBasicMaterial({ map: shadowTex, color: 0xffffff, transparent: true, depthWrite: false });
+    if (shadowTex) (water as THREE.MeshBasicMaterial & { userData: { tex?: THREE.Texture } }).userData.tex = shadowTex;
     this.pedestalMats.push(top, side, rope, brass, water);
     if (tex) (top as THREE.MeshStandardMaterial & { userData: { tex?: THREE.Texture } }).userData.tex = tex;
     add(new THREE.CylinderGeometry(1.15, 1.2, 0.32, 40), [side, top, side], -0.16);
@@ -234,7 +265,7 @@ export class PudgyPreview {
       b.position.x = Math.cos(a) * 1.21;
       b.position.z = Math.sin(a) * 1.21;
     }
-    add(new THREE.CircleGeometry(2.4, 48), water, -0.34, true).rotation.x = -Math.PI / 2;
+    add(new THREE.CircleGeometry(1.55, 40), water, -0.33, false).rotation.x = -Math.PI / 2;
     return g;
   }
 
@@ -255,6 +286,7 @@ export class PudgyPreview {
     const firstBuild = this.key === '';
     const familyChanged = !firstBuild && this.key.split('|')[0] !== look.family;
     this.key = key;
+    if (familyChanged || firstBuild) this.modelH = 0;
     this.disposePudgy();
     try {
       const v = createPudgy({ family: look.family, loadout: look.loadout, team: look.team, name: look.name ?? 'Pudgy', isLocal: true, quality: 'high', detail: 'showcase' });
@@ -272,6 +304,7 @@ export class PudgyPreview {
       this.frameModel();
       const shot = anim === undefined ? (familyChanged || firstBuild ? 'spawn' : 'celebrate') : anim;
       if (shot) v.play(shot);
+      this.refitIn = shot === 'spawn' ? 0.9 : 0.15;
     } catch (err) {
       console.warn('[preview] could not build the Pudgy model', err);
       this.pudgy = null;
@@ -304,21 +337,23 @@ export class PudgyPreview {
     if (!this.camera) return;
     // Pudgies are roughly 2 to 3 m tall. Clamp the measured box so a one-shot pose (or a model
     // that starts its spawn pop at scale 0) never makes the camera crop or lose the character.
-    let height = 2.5;
-    let width = 2;
+    let height = this.modelH > 0 ? this.modelH : 2;
+    let width = 1.8;
     if (this.pudgy) {
+      this.pudgy.root.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(this.pudgy.root);
-      if (!box.isEmpty()) {
-        const size = box.getSize(new THREE.Vector3());
-        height = Math.max(2.1, Math.min(3.2, size.y));
-        width = Math.max(1.6, Math.min(3, Math.max(size.x, size.z)));
-      }
+      const size = box.isEmpty() ? null : box.getSize(new THREE.Vector3());
+      if (size && size.y > 0.8) {
+        // a real pose; a spawn pop that starts near scale 0 is ignored and re-measured later
+        height = Math.max(1.2, Math.min(3.4, size.y));
+        width = Math.max(1.2, Math.min(3, Math.max(size.x, size.z)));
+      } else this.refitIn = Math.max(this.refitIn, 0.3);
     }
     const fov = (this.camera.fov * Math.PI) / 180;
     const aspect = Math.max(0.6, this.camera.aspect);
-    const fitH = (height * 1.4) / 2 / Math.tan(fov / 2);
-    const fitW = (width * 1.5) / 2 / Math.tan(fov / 2) / aspect;
-    this.baseDist = Math.max(fitH, fitW) + width * 0.5;
+    const fitH = (height * 1.18) / 2 / Math.tan(fov / 2);
+    const fitW = (width * 1.3) / 2 / Math.tan(fov / 2) / aspect;
+    this.baseDist = Math.max(fitH, fitW) + width * 0.3;
     this.modelH = height;
     const f = FOCUS[this.focusKey];
     this.dist = this.baseDist * f.d;
@@ -362,6 +397,16 @@ export class PudgyPreview {
     if (!this.dragging) {
       this.yawVel *= Math.exp(-dt * 3);
       this.yaw += ((this.idleSpin ? 0.32 : 0) + this.yawVel * 0.02) * dt;
+    }
+    if (this.refitIn > 0 && dt > 0) {
+      this.refitIn -= dt;
+      if (this.refitIn <= 0) {
+        this.refitIn = 0;
+        const yaw = this.spinner.rotation.y;
+        this.spinner.rotation.y = 0;
+        this.frameModel();
+        this.spinner.rotation.y = yaw;
+      }
     }
     const f = FOCUS[this.focusKey];
     const wantD = this.baseDist * f.d;
@@ -414,13 +459,22 @@ export class PudgyPreview {
     this.pudgy = null;
   }
 
-  /** Stop and free every GPU resource (the canvas element itself stays reusable). */
+  /** Leave the screen: stop rendering, free the model, keep the renderer and pedestal for the next screen. */
   unmount(): void {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.resizeObs?.disconnect();
     this.resizeObs = null;
     this.disposePudgy();
+    this.key = '';
+    this.camDist = 0;
+    this.dragging = false;
+    this.canvas.remove();
+  }
+
+  /** Free every GPU resource for good (not used by the screens, which share one preview). */
+  dispose(): void {
+    this.unmount();
     for (const g of this.pedestalGeoms) g.dispose();
     for (const m of this.pedestalMats) {
       const t = (m.userData as { tex?: THREE.Texture }).tex;
@@ -434,13 +488,7 @@ export class PudgyPreview {
     this.pedestal = null;
     this.scene = null;
     this.camera = null;
-    if (this.renderer) {
-      this.renderer.dispose();
-      this.renderer.forceContextLoss();
-      this.renderer = null;
-    }
-    this.key = '';
-    this.camDist = 0;
-    this.canvas.remove();
+    this.renderer?.dispose();
+    this.renderer = null;
   }
 }

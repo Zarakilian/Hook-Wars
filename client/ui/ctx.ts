@@ -1,4 +1,5 @@
 // Shared context handed to every screen and to the HUD.
+import type { Listing } from '../../shared/economy.ts';
 import type { EconomyClient, EconomyState } from '../economy/types.ts';
 import type { PudgyPreview } from './preview.ts';
 import type { ItemThumbs } from './thumbs.ts';
@@ -28,6 +29,8 @@ export interface UiCtx {
   buyPearls(itemId: string): void;
   /** Buy a Limited item with devnet USDC (wallet flow); same feedback as buyPearls. */
   buyUsdc(itemId: string): void;
+  /** Buy a market listing; plays the purchase sound and toasts when the copy lands in the inventory. */
+  buyListing(l: Listing): void;
   /** Remember that the player cancelled this listing, so its disappearance is not reported as a sale. */
   noteCancel(listingId: string, instance: string): void;
   /** Open the wallet panel. */

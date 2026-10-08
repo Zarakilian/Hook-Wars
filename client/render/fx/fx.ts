@@ -5,10 +5,15 @@
 // a fixed set of flash lights, pooled damage-number sprites and pooled chain views. Counts scale with
 // the quality tier. Effect methods only read p.x / p.y / p.z, so plain {x,y,z} objects work too.
 import * as THREE from 'three';
+import { RUNE_COLORS } from '../../../shared/constants.ts';
 import type { FamilyId, HazardKind, RuneType, Team } from '../../../shared/types.ts';
 import { TEAM_COLORS, type ChainView, type DamageKind, type Engine, type FxSystem, type PudgyPalette, type Quality } from '../contracts.ts';
 import { shade } from '../voxel/voxel.ts';
+import { AuraSystem } from './auras.ts';
 import { ChainFactory, type ChainImpl } from './chains.ts';
+import { FLY_SCALE, createHeldHook, prebuildSkins, skinGeometry, skinStats } from './hookSkins.ts';
+import { fxUniforms, surfMaterial } from './sculpt.ts';
+import { SKIN_RECIPES } from './skinModels.ts';
 import { DamageNumbers } from './numbers.ts';
 import { CubeBatch, LightPool, PF, Shape, SpriteBatch, rand, type CubeSpec, type SpriteSpec } from './particles.ts';
 
@@ -29,16 +34,10 @@ const TIERS: Record<Quality, Tier> = {
   ultra: { sprites: 4200, cubes: 1600, lights: 3, numbers: 40, crits: 6, k: 1.3, cubeShadow: true },
 };
 
-export const RUNE_FX_COLORS: Record<RuneType, number> = {
-  haste: 0xff4a3a,
-  double: 0x4a8cff,
-  ironskin: 0xffc030,
-  ghost: 0xbdf4ff,
-  bounty: 0xffe060,
-  bendy: 0x3fd6a0,
-  bouncy: 0xff70d0,
-  longshot: 0xffa030,
-};
+/** @deprecated use RUNE_COLORS (shared/constants.ts); kept as an alias of its main colours. */
+export const RUNE_FX_COLORS: Record<RuneType, number> = Object.fromEntries(
+  (Object.keys(RUNE_COLORS) as RuneType[]).map((t) => [t, RUNE_COLORS[t].main]),
+) as Record<RuneType, number>;
 
 type Surface = 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud';
 type P = { x: number; y: number; z: number };
@@ -71,6 +70,9 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
   const chains = new ChainFactory(root, sprites, quality);
   // one chain of every style, built now and rendered once invisibly on the first frame
   let warmChains: ChainImpl[] | null = chains.prebuild();
+  const auras = new AuraSystem(sprites, quality);
+  root.add(auras.group);
+  let lineupGroup: THREE.Group | null = null;
   let warmState = 0; // 0 = warm next frame, 1 = release next frame, 2 = done
 
   const emitters: Emitter[] = [];
@@ -384,15 +386,33 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
     chips(x, y, z, n(8), DUST, 0.12, 0.2, y - 0.95, 2.5, 5, 2, 5, 1.1);
   }
 
+  /** Ricochet Spring / Boing Barb bounce: a pink "boing" (springy rings, sparks, bouncing stars). */
   function hookBounce(p: P): void {
     const { x, y, z } = p;
-    glow(x, y, z, 0x7fd0ff, 1.1, 1.2, 1.8, 0.08);
-    burst(x, y, z, 0x5ab8ff, 1, 1, 2.4, 0.13, 0.45);
-    ring(x, y, z, false, 0x9fe0ff, 2, 0.3, 2.8, 0.26, 0.2);
-    ring(x, y, z, false, 0x9fe0ff, 1.6, 0.2, 1.8, 0.34, 0.22);
-    sparks(x, y, z, n(18), 6, 13, 0xbfeaff, 0x2a8aff, 2.4, 0.32, 0.1, 0.13);
-    swirl(x, y - 0.2, z, n(10), 0x7fd0ff, 0x3a9aff, 2.6, 0.2, 2.6, 14, 1, 2, 0.42, 0.16);
-    lights.flash(x, y + 0.4, z, 0x7fd0ff, 25, 8, 0.2);
+    const c = RUNE_COLORS.bouncy;
+    glow(x, y, z, c.light, 1.2, 1.2, 1.9, 0.08);
+    burst(x, y, z, c.main, 1.1, 1, 2.6, 0.13, 0.45);
+    ring(x, y, z, false, c.light, 2, 0.3, 2.8, 0.26, 0.2);
+    ring(x, y, z, false, c.main, 1.8, 0.2, 1.9, 0.36, 0.22);
+    ring(x, y - 0.9, z, true, c.main, 1.8, 0.3, 2.2, 0.32, 0.18, 0, 0.85);
+    sparks(x, y, z, n(18), 6, 13, c.light, c.main, 2.4, 0.32, 0.1, 0.13);
+    for (let i = 0, k = n(8); i < k; i++) {
+      // stars that bounce on the ground
+      const s = sprites.begin(Shape.Star);
+      const a = Math.random() * TAU;
+      const v = rand(1.5, 3.5);
+      s.pos(x, y, z).vel(Math.cos(a) * v, rand(3, 5.5), Math.sin(a) * v);
+      s.color(i & 1 ? c.light : c.main, 2.6).size(0.32, 0.12);
+      s.flags = PF.FloorBounce;
+      s.floorY = y - 0.92;
+      s.bounce = 0.62;
+      s.grav = -16;
+      s.life = rand(0.7, 1);
+      s.rotV = (Math.random() - 0.5) * 9;
+      s.fin = 0.02;
+      if (!sprites.emit(s)) break;
+    }
+    lights.flash(x, y + 0.4, z, c.main, 28, 8, 0.2);
   }
 
   function splash(p: P, strength: number): void {
@@ -581,7 +601,8 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
 
   function runePickup(p: P, type: RuneType): void {
     const { x, y, z } = p;
-    const c = RUNE_FX_COLORS[type] ?? 0xffffff;
+    const rc = RUNE_COLORS[type] ?? RUNE_COLORS.ghost;
+    const c = rc.main;
     const g = y - 1.2;
     glow(x, y, z, c, 2.6, 2.6, 3.4, 0.2, 0.9);
     ring(x, g + 0.05, z, true, c, 2, 0.4, 3.6, 0.5, 0.16, 0, 0.95);
@@ -603,11 +624,34 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
         }
         break;
       case 'double':
+        // a splash of kraken ink
         ring(x, y, z, false, c, 2.4, 0.5, 3.2, 0.3, 0.12);
-        ring(x, g + 0.06, z, true, 0xbfd8ff, 1.8, 0.2, 2.4, 0.8, 0.1, 0, 0.8);
+        ring(x, g + 0.06, z, true, rc.light, 1.8, 0.2, 2.4, 0.8, 0.1, 0, 0.8);
+        droplets(x, y, z, n(14), rc.dark, 0.95, 0.12, 0.22, 1.5, 4, 3, 6, g + 0.02, 1);
         break;
       case 'ironskin':
         chips(x, y, z, n(10), IRONSKIN, 0.08, 0.15, g, 1.5, 3.5, 3, 6, 1.2, 1.2);
+        break;
+      case 'bendy':
+        // an eel of light coiling up round the unit
+        swirl(x, g + 0.1, z, n(26), rc.light, c, 2.8, 0.5, 0.9, -9, 2.4, 3.6, 0.9, 0.2);
+        break;
+      case 'bouncy':
+        hookBounce({ x, y: y - 0.2, z });
+        break;
+      case 'longshot':
+        for (let i = 0, k = n(12); i < k; i++) {
+          const s = sprites.begin(Shape.Spark);
+          const a = (i / k) * TAU;
+          const v = rand(12, 18);
+          s.pos(x, y - 0.3, z).vel(Math.cos(a) * v, rand(-0.5, 0.5), Math.sin(a) * v);
+          s.flags = PF.Stretch;
+          s.stretch = 0.06;
+          s.color(rc.light, 2.6).colorEnd(c, 1.6).size(0.12, 0.05);
+          s.life = 0.3;
+          s.drag = 5;
+          sprites.emit(s);
+        }
         break;
       case 'ghost':
         for (let i = 0, k = n(8); i < k; i++) {
@@ -916,7 +960,7 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
   // system
   // ------------------------------------------------------------------------------------------
 
-  const fx: FxSystem & { readonly debug: unknown } = {
+  const fx: FxSystem & { readonly debug: unknown; prepareSkins(players: readonly { family: FamilyId; loadout?: { hands?: string } }[]): void } = {
     update(dt: number, _time: number, camera: THREE.Camera) {
       if (disposed) return;
       const d = Math.min(Math.max(dt, 0), 0.1);
@@ -931,6 +975,7 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
           sprites.warm(wx, wy, wz);
           cubes.warm(wx, wy, wz);
           numbers.warm(wx, wy, wz);
+          auras.warm(wx, wy, wz);
           for (const c of warmChains ?? []) c.warm(wx, wy, wz);
           warmState = 1;
         } else {
@@ -946,13 +991,16 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
       const k = Math.min(1.05, Math.max(0.35, 0.4 + 0.6 * (sun.intensity / 3.2)));
       sprites.setLight(k * (0.65 + 0.35 * (c.r / peak)), k * (0.65 + 0.35 * (c.g / peak)), k * (0.65 + 0.35 * (c.b / peak)));
       updateEmitters(d);
+      // game clock for the sculpted materials (Long Line pulses running down the line)
+      fxUniforms.uTime.value = _time;
+      auras.update(d, _time);
       sprites.update(d);
       cubes.update(d);
       lights.update(d);
       numbers.update(d);
     },
-    createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number, radius?: number): ChainView {
-      return chains.acquire(kind === 1 ? 1 : 0, family, team, fxBits | 0, radius);
+    createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number, radius?: number, skin?: string): ChainView {
+      return chains.acquire(kind === 1 ? 1 : 0, family, team, fxBits | 0, radius, skin);
     },
     hookHit,
     hookClash,
@@ -969,13 +1017,25 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
     respawn,
     drownBubbles,
     footstep,
-    aura() {
-      // buff auras arrive with the fx pass
+    aura(id: number, p: THREE.Vector3, flags: number, team: Team) {
+      if (disposed) return;
+      auras.aura(id, p, flags, team);
+    },
+    /**
+     * Build the hook skins the players of a match wear (and pool a chain for each), so no throw
+     * ever builds geometry mid-match. Not part of the FxSystem contract; see integration notes.
+     */
+    prepareSkins(players: readonly { family: FamilyId; loadout?: { hands?: string } }[]) {
+      if (disposed) return;
+      for (const pl of players) chains.prepare(0, pl.family, pl.loadout?.hands);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       scene.remove(root);
+      lineupGroup?.removeFromParent();
+      lineupGroup = null;
+      auras.dispose();
       chains.dispose();
       sprites.dispose();
       cubes.dispose();
@@ -985,7 +1045,47 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
     },
     /** debug counters (live particles), for perf checks from the console */
     get debug() {
-      return { sprites: sprites.live, spriteCap: sprites.cap, cubes: cubes.live, cubeCap: cubes.cap };
+      return {
+        sprites: sprites.live,
+        spriteCap: sprites.cap,
+        cubes: cubes.live,
+        cubeCap: cubes.cap,
+        auras: auras.count,
+        chains: chains.liveChains,
+        skins: () => skinStats(quality),
+        prebuildMs: () => prebuildSkins(quality),
+        /**
+         * Show every hook skin around (x, y, z): held hooks hanging as the hand holds them (back row
+         * team 0, middle row team 1) and the flying heads lying flat at flight scale (front row).
+         * lineup(null) clears it.
+         */
+        lineup: (x: number | null, y = 1.2, z = 0) => {
+          lineupGroup?.removeFromParent();
+          lineupGroup = null;
+          if (x === null) return 0;
+          const g = new THREE.Group();
+          g.name = 'fx-skin-lineup';
+          SKIN_RECIPES.forEach((r, i) => {
+            const px = (i - (SKIN_RECIPES.length - 1) / 2) * 1.05;
+            for (const team of [0, 1] as const) {
+              const held = createHeldHook(r.family, r.id, team, quality);
+              if (!held) continue;
+              held.rotation.set(Math.PI / 2, 0, 0);
+              held.position.set(px, 1.25, team === 0 ? -0.6 : 0.2);
+              g.add(held);
+            }
+            const sg = skinGeometry(r.family, r.id, quality);
+            const fly = new THREE.Mesh(sg.head, surfMaterial('base', (i % 2) as 0 | 1));
+            fly.scale.setScalar(FLY_SCALE);
+            fly.position.set(px * 1.25, 0.35, 1.9);
+            g.add(fly);
+          });
+          g.position.set(x, y, z);
+          root.add(g);
+          lineupGroup = g;
+          return SKIN_RECIPES.length;
+        },
+      };
     },
   };
   return fx;

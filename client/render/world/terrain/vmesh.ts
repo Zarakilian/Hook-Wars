@@ -1,6 +1,7 @@
 // Allocation-free greedy voxel mesher with baked AO, same output layout as voxel.ts meshVoxels
 // (position, normal, color, index) but several times faster, for the many backdrop models built at
-// match start.
+// match start. Voxel colours may carry a glow level in bits 24..27 (see GLOW): it is written to an
+// aEmit attribute (0 for plain voxels) that the flora materials turn into emission.
 import * as THREE from 'three';
 import type { VoxelGrid } from '../../voxel/voxel.ts';
 
@@ -19,9 +20,13 @@ function lin(c: number, k: number): number {
   return ((packed >> (k * 10)) & 1023) / 1023;
 }
 
+/** Glow level flag for voxel colours: colour | GLOW * level (level 1..15, 4 = full strength). */
+export const GLOW = 0x1000000;
+
 let pos = new Float32Array(1 << 15);
 let nrm = new Float32Array(1 << 15);
 let clr = new Float32Array(1 << 15);
+let emt = new Float32Array(1 << 14); // one per vertex: always >= pos.length / 3
 let idx = new Uint32Array(1 << 14);
 let mask = new Float64Array(64 * 64);
 
@@ -43,6 +48,9 @@ export function meshVoxelsFast(grid: VoxelGrid, size: number, aoStrength = 0.45)
       pos = g(pos);
       nrm = g(nrm);
       clr = g(clr);
+      const e = new Float32Array(emt.length * 2);
+      e.set(emt);
+      emt = e;
     }
     if (ni + 6 > idx.length) {
       const b = new Uint32Array(idx.length * 2);
@@ -126,9 +134,11 @@ export function meshVoxelsFast(grid: VoxelGrid, size: number, aoStrength = 0.45)
             const plane = sign > 0 ? slice + 1 : slice;
             ensure();
             const base = nv;
-            const r = lin(color, 0);
-            const g = lin(color, 1);
-            const bl = lin(color, 2);
+            const rgb = color & 0xffffff;
+            const glow = ((color >>> 24) & 15) / 4;
+            const r = lin(rgb, 0);
+            const g = lin(rgb, 1);
+            const bl = lin(rgb, 2);
             for (let k = 0; k < 4; k++) {
               const cu = k === 1 || k === 2 ? i + w : i;
               const cv = k >= 2 ? j + h : j;
@@ -158,9 +168,12 @@ export function meshVoxelsFast(grid: VoxelGrid, size: number, aoStrength = 0.45)
               const a = (aoKey >> (k * 2)) & 3;
               ao[k] = a;
               const lit = 1 - aoStrength * (1 - AO_CURVE[a]);
-              clr[o3] = r * lit;
-              clr[o3 + 1] = g * lit;
-              clr[o3 + 2] = bl * lit;
+              // glowing voxels skip the AO darkening: light comes out of them
+              const l2 = glow > 0 ? 1 : lit;
+              clr[o3] = r * l2;
+              clr[o3 + 1] = g * l2;
+              clr[o3 + 2] = bl * l2;
+              emt[nv] = glow;
               nv++;
             }
             const flip = ao[0] + ao[2] < ao[1] + ao[3];
@@ -190,6 +203,7 @@ export function meshVoxelsFast(grid: VoxelGrid, size: number, aoStrength = 0.45)
   geo.setAttribute('position', new THREE.BufferAttribute(pos.slice(0, nv * 3), 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm.slice(0, nv * 3), 3));
   geo.setAttribute('color', new THREE.BufferAttribute(clr.slice(0, nv * 3), 3));
+  geo.setAttribute('aEmit', new THREE.BufferAttribute(emt.slice(0, nv), 1));
   geo.setIndex(new THREE.BufferAttribute(nv > 65535 ? idx.slice(0, ni) : Uint16Array.from(idx.subarray(0, ni)), 1));
   geo.computeBoundingBox();
   geo.computeBoundingSphere();

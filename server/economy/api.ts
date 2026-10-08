@@ -16,6 +16,10 @@ export interface EconomyConn {
 }
 
 export interface MatchResult {
+  /**
+   * The LIVE connection id of the human driving the unit when the match ended (after a rejoin this
+   * is the new socket, not the unit id). The economy looks the account up by this id.
+   */
   connId: number;
   won: boolean;
   row: ScoreRow;

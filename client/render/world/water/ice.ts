@@ -4,7 +4,7 @@
 // that spreads from the banks while 'freezing', and a break-up when the thaw arrives.
 import * as THREE from 'three';
 import { FIELD_GLSL } from './field.ts';
-import { HASH_GLSL, ICE_MASK_GLSL } from './surface.ts';
+import { CAP_GLSL, HASH_GLSL, ICE_MASK_GLSL } from './surface.ts';
 
 const VORONOI_GLSL = /* glsl */ `
 // x = F1, y = distance to the nearest cell border, z = cell id hash
@@ -78,6 +78,9 @@ ${FIELD_GLSL}
 ${ICE_MASK_GLSL}
 ${HASH_GLSL}
 ${VORONOI_GLSL}
+${CAP_GLSL}
+uniform float uUnderGlow;
+uniform vec3 uGlowCol;
 uniform float uTime;
 uniform sampler2D uNoise;
 uniform vec3 uIceDeep;
@@ -128,7 +131,8 @@ c = mix(c, uIceDeep * 0.35, openC * 0.92);
 float drift = texture2D(uNoise, vec2(ip.x * 0.14, ip.y * 0.05) + uWind).r;
 float dust = smoothstep(0.58, 0.82, drift) * 0.6 + (1.0 - smoothstep(-0.6, 1.4, chanI)) * 0.85;
 dust += smoothstep(0.7, 0.95, texture2D(uNoise, ip * 0.5 + uWind * 2.5).g) * 0.25;
-dust = clamp(dust * (1.0 - openC), 0.0, 1.0);
+// glowing-ice maps keep more clear ice between the drifts
+dust = clamp(dust * (1.0 - openC) * (1.0 - 0.35 * uUnderGlow), 0.0, 1.0);
 c = mix(c, uSnowCol, dust);
 // slushy freezing front
 float frontRim = smoothstep(0.0, 0.5, cover) * (1.0 - smoothstep(0.55, 1.0, cover));
@@ -137,6 +141,9 @@ c = mix(c, uSnowCol, frontRim * 0.8);
 c *= 1.0 - 0.45 * brk;
 diffuseColor.rgb = c;
 diffuseColor.a *= clamp(cover * 1.15, 0.0, 1.0);
+// past the river ends the sheet fades into the terrain's frozen backdrop water (and the cap mesh's side
+// bands fade out over it beside the river)
+diffuseColor.a *= smoothstep(0.0, 1.0, capFade(ip.y)) * bandFade(chanI);
 float iceRough = mix(0.07, 0.8, max(dust, hair * 0.4));
 iceRough = mix(iceRough, 0.05, openC);`,
       )
@@ -173,6 +180,16 @@ iceRough = mix(iceRough, 0.05, openC);`,
   float pulse = 0.6 + 0.4 * sin(uTime * (6.0 + crack * 10.0));
   totalEmissiveRadiance += uCrackGlow * openC * crack * pulse * 0.6;
   totalEmissiveRadiance += uCrackGlow * max(rim, 0.0) * grown * crack * 0.12;
+  // under-ice glow: blue light welling up through the clear ice from below, mottled, brightest along
+  // the hairlines and plate seams, dimmed by snow dust; it pulses faster while the ice cracks
+  if (uUnderGlow > 0.0) {
+    float mott = texture2D(uNoise, ip * 0.07 + uWind * 0.3).a;
+    float well = smoothstep(0.25, 0.85, mott) * 0.8 + 0.2;
+    float glow = deep * well * (1.0 - dust * 0.85) * (1.0 - openC * 0.6);
+    glow += (hair * 0.35 + seam * 0.6) * deep * (1.0 - dust);
+    glow *= 0.85 + 0.15 * sin(uTime * (1.3 + crack * 6.0) + mott * 6.0);
+    totalEmissiveRadiance += uGlowCol * glow * uUnderGlow * 0.55 * (1.0 - brk * 0.7);
+  }
 }`,
       );
   };

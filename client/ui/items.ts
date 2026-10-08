@@ -90,7 +90,10 @@ export function itemCard(ctx: UiCtx, def: CosmeticDef, onClick: () => void, o: {
       status.replaceChildren();
       const price = st.price === undefined ? (st.owned ? null : def.usdc !== undefined ? { cur: 'usdc' as const, amount: def.usdc } : def.pearls !== undefined ? { cur: 'pearls' as const, amount: def.pearls } : null) : st.price;
       if (st.equipped) status.append(h('span', { class: 'ic-eq', text: 'Equipped' }));
-      else if (price) status.append(icon(price.cur === 'usdc' ? 'usdc' : 'pearl', 'ic-cur'), h('span', { class: 'ic-price', text: price.cur === 'usdc' ? price.amount.toFixed(2) : fmtPearls(price.amount) }), price.cur === 'usdc' ? h('span', { class: 'ic-cur-name', text: 'USDC' }) : null);
+      else if (price) {
+        status.append(icon(price.cur === 'usdc' ? 'usdc' : 'pearl', 'ic-cur'), h('span', { class: 'ic-price', text: price.cur === 'usdc' ? price.amount.toFixed(2) : fmtPearls(price.amount) }));
+        if (price.cur === 'usdc') status.append(h('span', { class: 'ic-cur-name', text: 'USDC' }));
+      }
       else if (st.owned) status.append(h('span', { class: 'ic-own', text: def.rarity === 'default' ? 'Starter' : 'Owned' }));
     },
   };

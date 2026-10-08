@@ -7,9 +7,10 @@
 //           legL, legR
 //           torso  twist and lean
 //             body mesh (belly jiggle)
+//             back -> back item mesh, backExtra (propeller, gear, bobbing jar)
 //             neck -> head mesh, jaw, eyes, hat -> hatExtra, drop
 //             shoulderL -> upper arm, elbowL -> forearm, handL
-//             shoulderR -> upper arm, elbowR -> forearm, handR (socket) -> held hook
+//             shoulderR -> upper arm, elbowR -> forearm, handR (socket) -> grip -> held hook
 import * as THREE from 'three';
 import type { Quality } from '../../contracts.ts';
 import { acquireGeo } from './cache.ts';
@@ -22,6 +23,8 @@ export interface RigNodes {
   hips: THREE.Group;
   torso: THREE.Group;
   body: THREE.Object3D;
+  back: THREE.Group;
+  backExtra: THREE.Object3D | null;
   neck: THREE.Group;
   jaw: THREE.Object3D | null;
   eyes: THREE.Object3D | null;
@@ -36,12 +39,15 @@ export interface RigNodes {
   shR: THREE.Group;
   elR: THREE.Group;
   handR: THREE.Object3D;
+  /** holds the held hook (fx skin or the built-in fallback), in world metres, business end +Z */
+  grip: THREE.Group;
+  /** the built-in fallback hook mesh (null when an fx skin is mounted instead) */
   hook: THREE.Mesh | null;
   meshes: THREE.Mesh[];
   /** cache keys this rig holds a reference to */
   keys: string[];
   /** bind positions (metres) for nodes the animator offsets */
-  base: { legLY: number; legRY: number; eyes: THREE.Vector3; drop: THREE.Vector3 };
+  base: { legLY: number; legRY: number; eyes: THREE.Vector3; drop: THREE.Vector3; backExtra: THREE.Vector3 };
 }
 
 /** Which parts cast shadows per quality tier. */
@@ -49,8 +55,8 @@ const SHADOW: Record<Quality, ReadonlySet<PartName>> = {
   low: new Set(),
   medium: new Set<PartName>(['body', 'head']),
   // legs and jaw sit under the belly / beard and their shadows merge with the body's
-  high: new Set<PartName>(['body', 'head', 'hat', 'upperL', 'lowerL', 'upperR', 'lowerR', 'hook']),
-  ultra: new Set<PartName>(['body', 'head', 'hat', 'hatExtra', 'upperL', 'lowerL', 'upperR', 'lowerR', 'legL', 'legR', 'hook', 'jaw']),
+  high: new Set<PartName>(['body', 'head', 'hat', 'upperL', 'lowerL', 'upperR', 'lowerR', 'hook', 'back']),
+  ultra: new Set<PartName>(['body', 'head', 'hat', 'hatExtra', 'upperL', 'lowerL', 'upperR', 'lowerR', 'legL', 'legR', 'hook', 'jaw', 'back', 'backExtra']),
 };
 
 function sub(a: V3, b: V3): THREE.Vector3 {
@@ -60,7 +66,11 @@ function mirror(a: V3): V3 {
   return [-a[0], a[1], a[2]];
 }
 
-export function buildRig(fb: FamilyBuild, material: THREE.Material, quality: Quality): RigNodes {
+/**
+ * heldHook: an fx hook skin (world metres, grip at the origin, business end +Z). When null the
+ * family's own fallback hook part (built in the same convention) is used.
+ */
+export function buildRig(fb: FamilyBuild, material: THREE.Material, quality: Quality, heldHook: THREE.Object3D | null): RigNodes {
   const sk = fb.sk;
   const meshes: THREE.Mesh[] = [];
   const keys: string[] = [];
@@ -101,6 +111,13 @@ export function buildRig(fb: FamilyBuild, material: THREE.Material, quality: Qua
   const torso = group('torso', hips, new THREE.Vector3());
   const bodyNode = group('body', torso, sub(sk.body, sk.hip));
   part('body', bodyNode);
+  const back = group('back', torso, sub(sk.back, sk.hip));
+  part('back', back);
+  let backExtra: THREE.Object3D | null = null;
+  if (fb.parts.backExtra) {
+    backExtra = group('backExtra', back, sub(sk.backExtra, sk.back));
+    part('backExtra', backExtra);
+  }
   const neck = group('neck', torso, sub(sk.neck, sk.hip));
   part('head', neck);
   let jaw: THREE.Object3D | null = null;
@@ -133,17 +150,36 @@ export function buildRig(fb: FamilyBuild, material: THREE.Material, quality: Qua
   const elR = group('elbowR', shR, sub(mirror(sk.elbow), mirror(sk.shoulder)));
   part('lowerR', elR);
   const handR = group('handR', elR, sub(mirror(sk.hand), mirror(sk.elbow)));
-  const hook = part('hook', handR);
+
+  // the held hook lives in world metres: undo the rig scale so fx skins and the fallback match
+  const inv = 1 / fb.scale;
+  const mp = fb.hookMount.pos;
+  const grip = group('grip', handR, new THREE.Vector3(mp[0] * inv, mp[1] * inv, mp[2] * inv));
+  grip.rotation.set(fb.hookMount.rot[0], fb.hookMount.rot[1], fb.hookMount.rot[2]);
+  grip.scale.setScalar(inv);
+  let hook: THREE.Mesh | null = null;
+  if (heldHook) {
+    heldHook.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) m.castShadow = shadow.has('hook');
+    });
+    grip.add(heldHook);
+  } else {
+    hook = part('hook', grip);
+    // fallback hooks are authored with the curve toward +Y; fx skins curve in their XZ plane
+    if (hook) hook.rotation.z = Math.PI / 2;
+  }
 
   rig.scale.setScalar(fb.scale);
   return {
-    rig, core, hips, torso, body: bodyNode, neck, jaw, eyes, hat, hatExtra, drop,
-    legL: legLNode, legR: legRNode, shL, elL, handL, shR, elR, handR, hook, meshes, keys,
+    rig, core, hips, torso, body: bodyNode, back, backExtra, neck, jaw, eyes, hat, hatExtra, drop,
+    legL: legLNode, legR: legRNode, shL, elL, handL, shR, elR, handR, grip, hook, meshes, keys,
     base: {
       legLY: legLNode.position.y,
       legRY: legRNode.position.y,
       eyes: eyes ? eyes.position.clone() : new THREE.Vector3(),
       drop: drop ? drop.position.clone() : new THREE.Vector3(),
+      backExtra: backExtra ? backExtra.position.clone() : new THREE.Vector3(),
     },
   };
 }

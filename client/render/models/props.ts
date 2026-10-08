@@ -12,8 +12,10 @@ import * as THREE from 'three';
 import type { Circle, Decor, MapDef, MoverDef, Obstacle, Platform } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { RuneType, Team } from '../../../shared/types.ts';
-import { groundY, platformDeckY, type AnimatedView, type HazardView, type HeightFn, type Quality } from '../contracts.ts';
+import { type AnimatedView, type HazardView, type HeightFn, type Quality } from '../contracts.ts';
+import { disposeBatchGroup } from './props/batch.ts';
 import { buildPropsImpl } from './props/buildProps.ts';
+import { buildPlatformsImpl } from './props/platforms.ts';
 import { moodOf, setPropsQuality, setPropTime } from './props/common.ts';
 import { buildDecorImpl } from './props/decor.ts';
 import { createFountainViewImpl } from './props/fountains.ts';
@@ -24,13 +26,11 @@ import { createMineViewImpl, createRuneViewImpl, RUNE_STYLE } from './props/rune
 export { RUNE_STYLE, setPropsQuality, setPropTime };
 
 /**
- * Optional teardown for groups from buildProps / buildDecor / createMoverView: frees the per-match
- * instance buffers only. Shared geometry, materials and textures stay cached for the next match.
+ * Teardown for groups from buildProps / buildDecor / buildPlatforms / createMoverView: frees the per-match
+ * instance and batch buffers and merged halo / mist geometry only. Shared geometry, materials and textures stay cached for the next match.
  */
 export function disposePropGroup(group: THREE.Object3D): void {
-  group.traverse((o) => {
-    if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
-  });
+  disposeBatchGroup(group);
 }
 
 /**
@@ -50,28 +50,17 @@ export function buildDecor(decor: Decor[], map: MapDef, height: HeightFn, waterY
   return buildDecorImpl(decor, map, height, waterY, quality);
 }
 
-/** Ice floe, barge, log or raft sized to r and len. Origin at the waterline, +Z along the capsule axis. */
 /**
- * Walkable decks over water (docks, stone bridges, piers, frozen floes): one group for the whole map.
- * Origin is world space; deck tops sit at platformDeckY(map, p). Called by the terrain module. (Stub until the props pass.)
+ * Walkable decks over water (docks, stone bridges, piers, frozen floes, raft decks): one group for the
+ * whole map. Origin is world space; every deck top sits exactly at platformDeckY(map, p) and covers the
+ * rectangle platformAt() tests (p.w by p.d, yaw p.rot). Piles, arches and ice bodies reach the river bed.
+ * Geometry is cached per map, so the group needs no disposal (disposePropGroup on it is harmless).
  */
 export function buildPlatforms(platforms: Platform[], map: MapDef, quality?: Quality): THREE.Group {
-  void map;
-  void quality;
-  const g = new THREE.Group();
-  g.name = 'platforms';
-  const mat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 0.9 });
-  for (const p of platforms) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, 0.3, p.d), mat);
-    m.position.set(p.x, platformDeckY(map, p) - 0.15, p.z);
-    m.rotation.y = -p.rot;
-    m.castShadow = true;
-    m.receiveShadow = true;
-    g.add(m);
-  }
-  return g;
+  return buildPlatformsImpl(platforms, map, quality);
 }
 
+/** Ice floe, barge, log or raft sized to r and len. Origin at the waterline, +Z along the capsule axis. */
 export function createMoverView(def: MoverDef, map: MapDef): THREE.Object3D {
   return createMoverViewImpl(def, moodOf(map.atmosphere));
 }

@@ -9,6 +9,10 @@ import type { Unit } from '../entities.ts';
 import { riverStateAt, tidalActive } from '../river.ts';
 import type { GameSim } from '../sim.ts';
 import { mapInfo, type MapInfo } from './mapinfo.ts';
+import { navStatic, type NavStatic } from './nav.ts';
+
+/** A* searches the whole match may run in one tick (the rest wait a tick or two). */
+export const NAV_SEARCHES_PER_TICK = 2;
 
 /** Ticks of position history kept per unit (about 1 s). */
 export const HIST = 32;
@@ -34,6 +38,8 @@ export interface Track {
   drownAt: number;
   /** Tick this unit last started a wind-up. */
   castAt: number;
+  /** Wind-up seen last tick (hooks and grapples wind up on the move, so this is not a unit state). */
+  castKind: string | null;
   tick: number;
 }
 
@@ -61,6 +67,13 @@ interface Claim {
 export class BotContext {
   readonly sim: GameSim;
   readonly info: MapInfo;
+  /** Navigation grid for this map (shared by every match on it). */
+  readonly nav: NavStatic;
+  /** A* searches left this tick (reset every tick: the cost stays flat however many bots re-plan). */
+  navBudget = NAV_SEARCHES_PER_TICK;
+  /** Cells inside active hazards (A* walks around them when it can), null when there are none. */
+  navAvoid: Uint8Array | null = null;
+  private avoidSig = -1;
   tick = -1;
   head = 0;
   readonly tracks = new Map<number, Track>();
@@ -86,6 +99,7 @@ export class BotContext {
   constructor(sim: GameSim) {
     this.sim = sim;
     this.info = mapInfo(sim.map);
+    this.nav = navStatic(sim.map);
   }
 
   update(): void {
@@ -93,6 +107,8 @@ export class BotContext {
     if (this.tick === sim.tick) return;
     const elapsed = this.tick < 0 ? 0 : (sim.tick - this.tick) * TICK_DT;
     this.tick = sim.tick;
+    this.navBudget = NAV_SEARCHES_PER_TICK;
+    if (this.tick % 15 === 0) this.updateAvoid();
     this.head = (this.head + 1) % HIST;
     const h = this.head;
     for (let t = 0; t < 2; t++) {
@@ -106,7 +122,7 @@ export class BotContext {
         tr = {
           x: new Float32Array(HIST), z: new Float32Array(HIST), vis: new Uint8Array(HIST), n: 0, lastState: u.state,
           hookReadyAt: 0, reach: HOOK_LEVELS.range[0], hookSpeed: HOOK_LEVELS.speed[0], hookR: HOOK_LEVELS.width[0], respawnAt: -99,
-          bashReadyAt: 0, grappleReadyAt: 0, drownAt: -99, castAt: -1, tick: 0,
+          bashReadyAt: 0, grappleReadyAt: 0, drownAt: -99, castAt: -1, castKind: null, tick: 0,
         };
         this.tracks.set(u.id, tr);
       }
@@ -120,12 +136,17 @@ export class BotContext {
         tr.bashReadyAt = Math.min(tr.bashReadyAt, sim.time + 1);
         tr.grappleReadyAt = Math.min(tr.grappleReadyAt, sim.time + 2);
       }
-      if (u.state !== tr.lastState) {
-        if (u.state === UnitState.Casting) {
+      if (u.castKind !== tr.castKind) {
+        // a wind-up started (public: the animation and the cast event)
+        if (u.castKind !== null) {
           tr.castAt = sim.tick;
           if (u.castKind === 'bash') tr.bashReadyAt = sim.time + BAL.bashCooldown;
           else if (u.castKind === 'grapple') tr.grappleReadyAt = sim.time + BAL.grappleCooldown;
-        } else if (u.state === UnitState.Grappling && tr.lastState === UnitState.Drowning) {
+        }
+        tr.castKind = u.castKind;
+      }
+      if (u.state !== tr.lastState) {
+        if (u.state === UnitState.Grappling && tr.lastState === UnitState.Drowning) {
           tr.grappleReadyAt = sim.time + BAL.grappleCooldown; // grapple out of the water has no wind-up
         } else if (u.state === UnitState.Drowning) tr.drownAt = sim.time;
       }
@@ -151,6 +172,38 @@ export class BotContext {
     this.forecast(elapsed);
   }
 
+  /** Rebuild the hazard cost grid when the set of active hazards changes (channel hazards follow the tide). */
+  private updateAvoid(): void {
+    const sim = this.sim;
+    let sig = 0;
+    for (let i = 0; i < sim.hazards.length; i++) if (sim.hazardActive(sim.hazards[i])) sig = (sig * 31 + i + 1) | 0;
+    if (sig === this.avoidSig) return;
+    this.avoidSig = sig;
+    if (sig === 0) {
+      this.navAvoid = null;
+      return;
+    }
+    const ns = this.nav;
+    const g = this.navAvoid ?? new Uint8Array(ns.nx * ns.nz);
+    g.fill(0);
+    for (const hz of sim.hazards) {
+      if (!sim.hazardActive(hz)) continue;
+      const R = hz.r + 0.6;
+      const ix0 = Math.max(0, Math.floor((hz.x - R - ns.ox) * ns.inv));
+      const ix1 = Math.min(ns.nx - 1, Math.floor((hz.x + R - ns.ox) * ns.inv));
+      const iz0 = Math.max(0, Math.floor((hz.z - R - ns.oz) * ns.inv));
+      const iz1 = Math.min(ns.nz - 1, Math.floor((hz.z + R - ns.oz) * ns.inv));
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const z = ns.oz + (iz + 0.5) / ns.inv;
+        for (let ix = ix0; ix <= ix1; ix++) {
+          const x = ns.ox + (ix + 0.5) / ns.inv;
+          if ((x - hz.x) * (x - hz.x) + (z - hz.z) * (z - hz.z) < R * R) g[ix + iz * ns.nx] = 1;
+        }
+      }
+    }
+    this.navAvoid = g;
+  }
+
   /** Watch hooks in flight: who threw, when, how far they reach. All of this is public. */
   private observeHooks(): void {
     const sim = this.sim;
@@ -171,7 +224,8 @@ export class BotContext {
         }
       }
       obs.tick = this.tick;
-      if (tr && hk.phase === HookPhase.Out) {
+      if (tr && hk.phase === HookPhase.Out && !hk.longshot) {
+        // (Long Line throws are public too, but they say nothing about the hook once it wears off)
         const d = dist(obs.lx, obs.lz, hk.x, hk.z) + 0.2;
         if (d > tr.reach) tr.reach = d;
       }
@@ -219,7 +273,9 @@ export class BotContext {
   reachOf(u: Unit): number {
     const tr = this.tracks.get(u.id);
     const guess = HOOK_LEVELS.range[Math.min(5, Math.floor(this.sim.matchTime / 75))];
-    return Math.max(tr ? tr.reach : HOOK_LEVELS.range[0], guess);
+    const r = Math.max(tr ? tr.reach : HOOK_LEVELS.range[0], guess);
+    // Long Line glows on its owner (a public flag): their next throw flies half as far again
+    return u.longshot > 0 ? r * BAL.longshotRangeMul : r;
   }
 
   /** Seconds until `u`'s hook is ready, as `viewer` would know it. Bots know their bot allies' cooldowns exactly. */

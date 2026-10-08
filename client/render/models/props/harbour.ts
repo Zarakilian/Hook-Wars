@@ -6,7 +6,7 @@ const woodMat = () => pmat({ rough: 0.82 });
 const ironMat = () => pmat({ metal: 0.7, rough: 0.42 });
 const brassMat = () => pmat({ metal: 0.9, rough: 0.28 });
 
-function plankWood(seed: number): (x: number, y: number, z: number) => number {
+export function plankWood(seed: number): (x: number, y: number, z: number) => number {
   const pal = [0x8e6236, 0x9c6e3e, 0xa87a48, 0xb68852, 0x8a5c32];
   return (x, y, z) => {
     const t = vn3(x * 0.15, y * 0.9, z * 0.15, seed) * 0.75 + h3(x, y, z, seed) * 0.25;
@@ -15,7 +15,7 @@ function plankWood(seed: number): (x: number, y: number, z: number) => number {
 }
 
 /** One crate box with planks, frame boards, iron corners and a stencil. */
-function crateBox(g: PGrid, x0: number, y0: number, z0: number, sx: number, sy: number, sz: number, seed: number, stencil: boolean): void {
+export function crateBox(g: PGrid, x0: number, y0: number, z0: number, sx: number, sy: number, sz: number, seed: number, stencil: boolean): void {
   const wood = plankWood(seed);
   const x1 = x0 + sx - 1;
   const y1 = y0 + sy - 1;

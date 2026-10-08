@@ -42,7 +42,7 @@ export function resOf(fine: boolean): number {
   return fine ? 2 : 1;
 }
 
-export function part(key: string, build: () => RGrid, joint: V3, res: number, ao = 0.52): PartDef {
+export function part(key: string, build: () => RGrid, joint: V3, res = 1, ao = 0.52): PartDef {
   return {
     key: `${key}@${res}`,
     build: () => atRes(res, () => meshPart(build(), joint, ao)),
@@ -50,7 +50,7 @@ export function part(key: string, build: () => RGrid, joint: V3, res: number, ao
   };
 }
 
-export function partMirrored(key: string, build: () => RGrid, joint: V3, res: number, ao = 0.52): PartDef {
+export function partMirrored(key: string, build: () => RGrid, joint: V3, res = 1, ao = 0.52): PartDef {
   return {
     key: `${key}@${res}R`,
     build: () => atRes(res, () => meshPart(mirrorGrid(build()), mirrorV(joint), ao)),
@@ -60,6 +60,31 @@ export function partMirrored(key: string, build: () => RGrid, joint: V3, res: nu
 
 export function partFn(key: string, fn: () => THREE.BufferGeometry): PartDef {
   return { key, build: fn };
+}
+
+export function wrap(i: number, n: number): number {
+  const k = Math.floor(i) % n;
+  return k < 0 ? k + n : k;
+}
+
+/** Bead eyes: black glossy 2x2 with a white glint, at x = +-ex. Paints into an existing grid. */
+export function beadEyes(g: RGrid, ex: number, y: number, z: number, which: 'both' | 'left' | 'right' = 'both', big = false): void {
+  const one = (side: number) => {
+    const x0 = side > 0 ? ex : -1 - ex - (big ? 2 : 1);
+    const w = big ? 3 : 2;
+    g.on(CH.wet, () => {
+      for (let i = 0; i < w; i++)
+        for (let j = 0; j < w; j++) {
+          g.set(x0 + i, y + j, z, 0x17141a);
+          g.set(x0 + i, y + j, z - 1, 0x17141a);
+        }
+      const gx = side > 0 ? x0 + w - 1 : x0;
+      g.set(gx, y + w - 1, z, 0xffffff);
+      if (big) g.set(side > 0 ? x0 : x0 + w - 1, y, z, 0x3a3440);
+    });
+  };
+  if (which !== 'right') one(1);
+  if (which !== 'left') one(-1);
 }
 
 export interface TeamCols {

@@ -11,9 +11,8 @@ import type { P2 } from './geom.ts';
 import { findPath, lineWalk, NAV_LAND, NAV_MAXWP, NAV_WADE, newNavPath, type NavVariant } from './nav.ts';
 import { Mode, type Brain } from './types.ts';
 
-/** A* searches the whole match may run in one tick (the rest wait a tick or two). */
-export const NAV_SEARCHES_PER_TICK = 2;
 const scratch = newNavPath();
+const keep = { x: 0, z: 0, r: 0 };
 
 /** Fresh per-brain path buffer. */
 export function newWaypoints(): Float32Array {
@@ -60,7 +59,21 @@ export function navTarget(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, gx: 
   const v = navVariant(sim, ctx, u, b);
   const mdx = gx - b.navGX;
   const mdz = gz - b.navGZ;
-  const moved = mdx * mdx + mdz * mdz > 2.25;
+  let moved = mdx * mdx + mdz * mdz > 2.25;
+  if (moved && !b.navDirect && b.navN > 0 && b.navDone && v === b.navVar) {
+    // a holder's goal shuffles along the bank every plan: if the new goal is a straight walk from
+    // the path's last waypoint, keep the path and just move its end (no new search)
+    const k = b.navN - 1;
+    const lx = k > 0 ? b.navWp[k * 2 - 2] : u.x;
+    const lz = k > 0 ? b.navWp[k * 2 - 1] : u.z;
+    if (b.navI <= k && lineWalk(ns, v, lx, lz, gx, gz)) {
+      b.navWp[k * 2] = gx;
+      b.navWp[k * 2 + 1] = gz;
+      b.navGX = gx;
+      b.navGZ = gz;
+      moved = false;
+    }
+  }
   if (v !== b.navVar || moved) b.navCheck = Math.min(b.navCheck, t);
   if (t >= b.navCheck) {
     b.navCheck = t + 0.3 + ((u.id * 7) % 5) * TICK_DT; // stagger the line tests between bots
@@ -81,7 +94,12 @@ export function navTarget(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, gx: 
           b.navGX = gx;
           b.navGZ = gz;
           b.navI = 0;
-          if (findPath(ns, v, u.x, u.z, gx, gz, waterCost(sim), ctx.navAvoid, scratch) && scratch.n > 0) {
+          b.stats.paths++;
+          const ef = sim.map.fountains[u.team === 0 ? 1 : 0];
+          keep.x = ef.x;
+          keep.z = ef.z;
+          keep.r = ef.r + 1.2;
+          if (findPath(ns, v, u.x, u.z, gx, gz, waterCost(sim), ctx.navAvoid, scratch, b.pushKill ? null : keep) && scratch.n > 0) {
             b.navWp.set(scratch.wp.subarray(0, scratch.n * 2));
             b.navN = scratch.n;
             b.navDone = scratch.complete;

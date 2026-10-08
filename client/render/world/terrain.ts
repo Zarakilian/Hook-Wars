@@ -12,10 +12,12 @@ import { bedY, platformDeckY, waterY, type AnimatedView, type Engine, type Quali
 import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
+import { buildCascades } from './terrain/cascades.ts';
 import { HeightField, newCell, type Biome } from './terrain/field.ts';
 import { buildFlora, type FloraView } from './terrain/flora.ts';
 import { terrainMaterial, terrainUniforms } from './terrain/material.ts';
 import { meshChunk } from './terrain/mesher.ts';
+import { buildMist } from './terrain/mist.ts';
 
 /** Fine field: 0.25 m columns. Covers the play area plus the borders the camera sees up close. */
 export const NEAR = { x0: -48, z0: -36, nx: 384, nz: 304, s: 0.25 } as const;
@@ -94,6 +96,23 @@ export function makeHeightFn(map: MapDef, config?: MatchConfig): (x: number, z: 
   return buildFields(map, config ?? { mapId: map.id, riverMode: 'deep', hazards: 'none', killsToWin: 30, timeLimitSec: 900, teamSize: 5, botFill: true, botDifficulty: 'normal' }).height;
 }
 
+/** Lights that throw a warm pool on the ground (baked into the terrain on the night maps). */
+function lampsFor(map: MapDef): { x: number; z: number; r: number; k: number }[] {
+  const out: { x: number; z: number; r: number; k: number }[] = [];
+  for (const o of map.obstacles) {
+    if (o.shape !== 'circle') continue;
+    if (o.kind === 'gaslamp' || o.kind === 'lamppost') out.push({ x: o.x, z: o.z, r: 5.4, k: 0.95 });
+    else if (o.kind === 'lanternpost') out.push({ x: o.x, z: o.z, r: 4.4, k: 0.85 });
+    else if (o.kind === 'stilthut' || o.kind === 'watchtower') out.push({ x: o.x, z: o.z, r: 4.2, k: 0.45 });
+    else if (o.kind === 'crane') out.push({ x: o.x, z: o.z, r: 3.6, k: 0.4 });
+  }
+  for (const d of map.decor) {
+    if (d.kind === 'lantern') out.push({ x: d.x, z: d.z, r: 3.8 * d.scale, k: 0.8 });
+    else if (d.kind === 'lanternstring') out.push({ x: d.x, z: d.z, r: 4.8, k: 0.6 });
+  }
+  return out;
+}
+
 function decorForMode(map: MapDef, config: MatchConfig, biome: MapBiome): Decor[] {
   const out: Decor[] = [];
   const dry = config.riverMode === 'dry';
@@ -118,6 +137,11 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   const u = terrainUniforms();
   u.uRain.value = map.atmosphere.weather === 'rain' ? 1 : 0;
   u.uSparkle.value = biome.sparkle;
+  if (biome.lampLight) {
+    near.bakeLamps(lampsFor(map).concat(biome.lamps ? biome.lamps() : []));
+    u.uLamp.value = biome.lampLight;
+    if (biome.lampColor !== undefined) u.uLampColor.value.setHex(biome.lampColor);
+  }
   const nt = near.textures();
   const ot = outer.textures();
   const nearMat = terrainMaterial(nt.color, nt.rough, u);
@@ -261,6 +285,15 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   }, map.id.length * 53 + 3);
   group.add(details.group);
 
+  // ---------------------------------------------------------------- mist banks and backdrop waterfalls
+  const mist = biome.mist && quality !== 'low' ? buildMist(biome.mist(), biome.mistColor ?? map.atmosphere.fogColor) : null;
+  if (mist) group.add(mist.mesh);
+  const cascades = biome.cascades && !dry ? buildCascades(biome.cascades(), map.atmosphere.waterShallow, map.atmosphere.waterFoam) : null;
+  if (cascades) {
+    cascades.update(0, backwaterLevel(config.riverMode === 'dry' ? 0 : 1));
+    group.add(cascades.mesh);
+  }
+
   // ---------------------------------------------------------------- props, decor, fountains
   // units stand on platform decks; so do props and decor placed on them
   const plats = map.platforms ?? [];
@@ -311,6 +344,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
         }
       }
       flora.update(time);
+      mist?.update(time);
+      cascades?.update(time, backwaterLevel(river.level));
       for (const fv of fountains) fv.update(dt, time);
     },
     dispose() {
@@ -324,6 +359,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
       for (const w of waters) w.dispose();
       flora.dispose();
       details.dispose();
+      mist?.dispose();
+      cascades?.dispose();
       for (const fv of fountains) fv.dispose();
       disposePropGroup(propsGroup);
       disposePropGroup(decorGroup);

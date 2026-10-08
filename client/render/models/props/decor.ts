@@ -10,12 +10,14 @@ import {
   toModel, trs, vn3, WATER_LEVEL, type PropModel,
 } from './common.ts';
 import { iceMat } from './rocks.ts';
+import { StaticBatch, tickMesh } from './batch.ts';
+import { banner, cargonet, cattail, chainhang, coralfan, flag, icicles, lanternString, mistMesh, ropeBridges, rowboat, towardWater, treasure } from './decor2.ts';
 
 const VARIANTS: Record<DecorKind, number> = {
   grass: 4, reeds: 3, lilypad: 3, mushroom: 3, flower: 4, fern: 3, snowtuft: 3, icicle: 3, shell: 3, starfish: 3, seaweed: 3,
   pebbles: 3, bones: 2, lantern: 1, rope: 2, gear: 2, sign: 2, firefly_swarm: 1, waterfall: 1, lockgate: 1,
-  // reference-map decor (modelled in the props pass; until then they draw nothing)
-  cattail: 0, mist: 0, lanternstring: 0, ropebridge: 0, banner: 0, icicles: 0, coralfan: 0, treasure: 0, chainhang: 0, cargonet: 0, rowboat: 0, flag: 0,
+  // reference-map decor (decor2.ts); mist, lanternstring, ropebridge and banner are built per placement
+  cattail: 3, mist: 1, lanternstring: 1, ropebridge: 1, banner: 3, icicles: 3, coralfan: 4, treasure: 2, chainhang: 2, cargonet: 2, rowboat: 2, flag: 3,
 };
 
 const sway = (amp: number, h: number) => pmat({ rough: 0.9, sway: amp, swayH: h });
@@ -807,16 +809,22 @@ function fireflies(list: Decor[], height: HeightFn, q: Quality, mapId: string): 
 
 // ---------------------------------------------------------------------------------------------
 
-const TICK_GEO = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0], 3));
-const TICK_MAT = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false });
-
 type DecorBuilder = (v: number, map: MapDef) => PropModel;
 const BUILDERS: Partial<Record<DecorKind, DecorBuilder>> = {
   grass, reeds, lilypad, mushroom, flower, fern, snowtuft, icicle, shell, starfish, seaweed, pebbles, bones, rope, gear, sign, lantern,
+  cattail, coralfan, treasure, chainhang, cargonet, rowboat, flag, icicles,
 };
 
 /** Kinds whose variant models depend on the map palette. */
-const MAP_TINTED = new Set<DecorKind>(['grass', 'reeds', 'pebbles', 'lantern']);
+const MAP_TINTED = new Set<DecorKind>(['grass', 'reeds', 'pebbles', 'lantern', 'rowboat']);
+/** Vertex-lifted kinds move far outside their static bounds: drawn as never-culled InstancedMesh. */
+const NO_CULL = new Set<DecorKind>(['lilypad', 'seaweed', 'rowboat']);
+/** Man-made kinds that get the night / dusk rim so they read in the dark. */
+const RIMMED = new Set<DecorKind>(['sign', 'gear', 'rope', 'bones', 'treasure', 'chainhang', 'cargonet', 'rowboat', 'flag', 'banner', 'lanternstring', 'ropebridge']);
+/** Larger kinds that cast shadows from 'high' up (ropebridge from 'medium'). */
+const SHADOWED = new Set<DecorKind>(['sign', 'lantern', 'treasure', 'chainhang', 'cargonet', 'rowboat', 'flag', 'banner', 'lanternstring']);
+/** Kinds that turn their +z toward the nearest water. */
+const FACE_WATER = new Set<DecorKind>(['icicles', 'chainhang']);
 
 export function buildDecorImpl(decor: Decor[], map: MapDef, height: HeightFn, waterYFn: (x: number, z: number) => number, quality?: Quality): THREE.Group {
   const t0 = performance.now();
@@ -825,6 +833,8 @@ export function buildDecorImpl(decor: Decor[], map: MapDef, height: HeightFn, wa
   const group = new THREE.Group();
   group.name = 'decor';
   WATER_LEVEL.value = waterYFn(0, 0);
+  const mood = moodOf(map.atmosphere);
+  const batch = new StaticBatch(mood, false);
   const byKind = new Map<DecorKind, Decor[]>();
   for (const d of decor) {
     let l = byKind.get(d.kind);
@@ -832,8 +842,9 @@ export function buildDecorImpl(decor: Decor[], map: MapDef, height: HeightFn, wa
     l.push(d);
   }
   const gates: LockGateView[] = [];
-  let driver: THREE.Object3D | null = null;
   for (const [kind, list] of byKind) {
+    const shadows = SHADOWED.has(kind) && lvl >= 2;
+    const rim = RIMMED.has(kind);
     if (kind === 'firefly_swarm') {
       const p = fireflies(list, height, q, map.id);
       if (p) group.add(p);
@@ -851,68 +862,86 @@ export function buildDecorImpl(decor: Decor[], map: MapDef, height: HeightFn, wa
       }
       continue;
     }
+    if (kind === 'mist') {
+      const m = mistMesh(list, map, q);
+      if (m) group.add(m);
+      continue;
+    }
+    if (kind === 'lanternstring') {
+      for (const d of list) {
+        const p = lanternString(d, map, height);
+        batch.add(p.model, p.m, shadows, rim);
+      }
+      continue;
+    }
+    if (kind === 'ropebridge') {
+      for (const d of list) for (const p of ropeBridges(d, map, height)) batch.add(p.model, p.m, lvl >= 1, rim);
+      continue;
+    }
+    if (kind === 'banner') {
+      for (const d of list) {
+        const p = banner(d, map, height);
+        batch.add(p.model, p.m, shadows, rim);
+      }
+      continue;
+    }
     const b = BUILDERS[kind];
-    if (!b) continue;
-    // thin out the densest kinds on low quality
-    const thin = lvl === 0 && (kind === 'grass' || kind === 'snowtuft' || kind === 'pebbles') ? 2 : 1;
     const nv = VARIANTS[kind];
+    if (!b || !nv) continue;
+    // thin out the densest ground cover: half on low, three quarters on medium (Intel UHD budget)
+    const dense = kind === 'grass' || kind === 'snowtuft' || kind === 'pebbles' || kind === 'cattail' || kind === 'reeds' || kind === 'fern';
+    const skip = (i: number) => dense && ((lvl === 0 && i % 2 === 1) || (lvl === 1 && i % 4 === 3));
     const buckets: THREE.Matrix4[][] = [];
     for (let i = 0; i < nv; i++) buckets.push([]);
     list.forEach((d, i) => {
-      if (i % thin) return;
+      if (skip(i)) return;
       const v = Math.abs(d.seed | 0) % nv;
       const y = height(d.x, d.z);
-      buckets[v].push(trs(d.x, y - 0.02, d.z, d.rot, d.scale));
+      let yaw = d.rot;
+      if (FACE_WATER.has(kind)) {
+        const w = towardWater(map, d.x, d.z);
+        if (w) yaw = Math.atan2(w[0], w[1]);
+      }
+      buckets[v].push(trs(d.x, y - 0.02, d.z, yaw, d.scale));
     });
     for (let v = 0; v < nv; v++) {
       if (!buckets[v].length) continue;
       const key = `d|${kind}|${v}|${MAP_TINTED.has(kind) ? map.id : ''}`;
       const model = cachedModel(key, () => b(v, map));
-      const shadows = (kind === 'sign' || kind === 'lantern') && lvl >= 2;
-      const ims = instanceModel(model, buckets[v], shadows, undefined, kind === 'sign' || kind === 'gear' || kind === 'rope' || kind === 'bones' ? moodOf(map.atmosphere) : null);
-      for (const im of ims) {
+      if (NO_CULL.has(kind)) {
         // vertex-animated sets move outside their static bounds
-        if (kind === 'lilypad' || kind === 'seaweed') im.frustumCulled = false;
-        group.add(im);
-        if (!driver) driver = im;
+        for (const im of instanceModel(model, buckets[v], shadows, undefined, rim ? mood : null)) {
+          im.frustumCulled = false;
+          group.add(im);
+        }
+        continue;
       }
-      if (model.halos)
-        for (const m of buckets[v])
-          for (const hl of model.halos) {
-            const s = halo(hl.color, hl.size, hl.opacity);
-            s.position.set(hl.pos[0], hl.pos[1], hl.pos[2]).applyMatrix4(m);
-            group.add(s);
-          }
+      for (const m of buckets[v]) batch.add(model, m, shadows, rim);
     }
   }
+  batch.build(group, 'decor-batch');
   // per-frame hook: free-running clock, live water level, lock gates follow the water
-  const tick = new THREE.Object3D();
-  // a degenerate triangle that is always "drawn" (writes nothing) so onBeforeRender fires every frame
-  const tickMesh = new THREE.Mesh(TICK_GEO, TICK_MAT);
-  tickMesh.frustumCulled = false;
-  tickMesh.renderOrder = -10;
   let lastTick = performance.now();
-  tickMesh.onBeforeRender = () => {
-    autoClock();
-    const now = performance.now();
-    const dt = Math.min(0.1, (now - lastTick) / 1000);
-    lastTick = now;
-    WATER_LEVEL.value = waterYFn(0, 0);
-    if (gates.length) {
-      const by = bedY(map);
-      const gy = groundY(map);
-      const lvlW = Math.max(0, Math.min(1, (WATER_LEVEL.value - by - 0.3) / (gy - by - 0.6)));
-      for (const gv of gates) {
-        const target = lvlW > 0.6 ? 1 : 0;
-        gv.open += (target - gv.open) * Math.min(1, dt * 1.2);
-        for (const leaf of gv.leaves) leaf.rotation.y = -leaf.userData.side * gv.open * 1.2;
+  group.add(
+    tickMesh(() => {
+      autoClock();
+      const now = performance.now();
+      const dt = Math.min(0.1, (now - lastTick) / 1000);
+      lastTick = now;
+      WATER_LEVEL.value = waterYFn(0, 0);
+      if (gates.length) {
+        const by = bedY(map);
+        const gy = groundY(map);
+        const lvlW = Math.max(0, Math.min(1, (WATER_LEVEL.value - by - 0.3) / (gy - by - 0.6)));
+        for (const gv of gates) {
+          const target = lvlW > 0.6 ? 1 : 0;
+          gv.open += (target - gv.open) * Math.min(1, dt * 1.2);
+          for (const leaf of gv.leaves) leaf.rotation.y = -leaf.userData.side * gv.open * 1.2;
+        }
       }
-    }
-  };
-  tick.add(tickMesh);
-  group.add(tick);
+    }),
+  );
   const ms = performance.now() - t0;
-  if (ms > 50) console.info(`[props] buildDecor ${decor.length} items in ${ms.toFixed(0)} ms`);
+  if (ms > 50) console.info(`[props] buildDecor ${decor.length} items in ${ms.toFixed(0)} ms (${batch.instances} batched)`);
   return group;
 }
-

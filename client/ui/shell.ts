@@ -178,7 +178,7 @@ export function openWallet(ctx: UiCtx): void {
       icon('wallet', 'wl-ico'),
       h('span', { class: 'wl-st-texts' },
         h('span', { class: 'wl-st-text', text: linked ? 'Wallet linked' : 'No wallet linked' }),
-        h('span', { class: 'wl-st-sub', text: e.mode === 'local' ? 'Offline locker: wallets link to an online account.' : e.walletAvailable ? 'A Solana wallet was found in this browser.' : 'No Solana wallet extension found in this browser.' })),
+        h('span', { class: 'wl-st-sub', text: e.mode === 'local' ? 'Offline locker: wallets link to an online account.' : net === 'off' ? 'This server has its Solana link switched off.' : e.walletAvailable ? `${e.walletName ?? 'A Solana wallet'} was found in this browser.` : 'No Solana wallet extension found in this browser.' })),
       h('span', { class: `net-badge ${net}`, text: networkLabel(net) }));
     addr.classList.toggle('hidden', !linked);
     if (linked && acc?.wallet) {
@@ -193,7 +193,7 @@ export function openWallet(ctx: UiCtx): void {
     const canLink = e.mode === 'server' && net !== 'off';
     connect.classList.toggle('hidden', linked || !canLink);
     connect.disabled = e.busy || !e.walletAvailable;
-    setButtonLabel(connect, e.busy ? 'Waiting for the wallet...' : e.walletAvailable ? 'Connect Wallet' : 'No wallet found');
+    setButtonLabel(connect, e.busy ? 'Waiting for the wallet...' : e.walletAvailable ? (e.walletName ? `Connect ${e.walletName}` : 'Connect Wallet') : 'No wallet found');
     goOnline.classList.toggle('hidden', e.mode !== 'local');
     note.classList.toggle('hidden', net === 'off' && e.mode === 'local');
   };

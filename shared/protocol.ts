@@ -12,6 +12,12 @@ import { cleanLoadout, cosmeticById, DEFAULT_LOADOUT, type Loadout } from './cos
 import { ECONOMY_MSG_TYPES, parseEconomyClientMsg, type EconomyClientMsg, type EconomyServerMsg } from './economy.ts';
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
+/** Rejoin tokens: 24 random bytes, base64url (32 characters). Unguessable and single use. */
+const REJOIN_RE = /^[A-Za-z0-9_-]{32}$/;
+/** How long a dropped player's unit waits (driven by a bot) for its owner to come back. */
+export const REJOIN_GRACE_MS = 90_000;
+/** Spectators watch this many ticks behind live (3 s), so a second tab cannot be used to ghost. */
+export const SPECTATOR_DELAY_TICKS = 90;
 // ---------------------------------------------------------------------------------------------
 // Client -> server
 // ---------------------------------------------------------------------------------------------
@@ -27,7 +33,7 @@ export type ClientMsg =
   | EconomyClientMsg
   | { t: 'listRooms' }
   | { t: 'createRoom'; name: string; isPrivate: boolean; config: MatchConfig }
-  | { t: 'joinRoom'; code: string }
+  | { t: 'joinRoom'; code: string; rejoin?: string } // rejoin = token from MatchStart.rejoin: reclaim your unit
   | { t: 'quickPlay' }
   | { t: 'leaveRoom' }
   | { t: 'setProfile'; profile: Profile }
@@ -35,7 +41,8 @@ export type ClientMsg =
   | { t: 'setConfig'; config: MatchConfig }
   | { t: 'ready'; ready: boolean }
   | { t: 'start' }
-  | { t: 'input'; i: PlayerInput }
+  | { t: 'input'; i: PlayerInput; a?: number } // a = newest snapshot tick received (flow control ack)
+  | { t: 'ack'; a: number } // spectators send no inputs, so they ack snapshots with this
   | { t: 'buy'; item: ItemId }
   | { t: 'sell'; slot: number }
   | { t: 'upgrade'; stat: UpgradeStat }
@@ -84,7 +91,13 @@ export interface MatchStart {
   players: PlayerInfo[];
   hazards: HazardInst[];
   you: number; // your unit id, -1 if spectating
-  tick: number; // server tick at start (for mid-match joins)
+  tick: number; // server tick at start (for mid-match joins); spectators: the delayed tick they start at
+  /** single-use token to reclaim this unit from a new connection within REJOIN_GRACE_MS (players only) */
+  rejoin?: string;
+  /** spectators only: how many ticks behind live the feed runs */
+  delay?: number;
+  /** room code (a mid-match join can get 'start' before its first room message) */
+  room?: string;
 }
 
 export interface MatchEnd {
@@ -237,7 +250,9 @@ export function parseClientMessage(raw: string): ClientMsg | null {
     }
     case 'joinRoom': {
       const code = typeof m.code === 'string' ? m.code.trim().toUpperCase() : '';
-      return ROOM_CODE_RE.test(code) ? { t: 'joinRoom', code } : null;
+      if (!ROOM_CODE_RE.test(code)) return null;
+      if (m.rejoin === undefined) return { t: 'joinRoom', code };
+      return typeof m.rejoin === 'string' && REJOIN_RE.test(m.rejoin) ? { t: 'joinRoom', code, rejoin: m.rejoin } : null;
     }
     case 'setProfile': {
       const profile = parseProfile(m.profile);
@@ -255,7 +270,14 @@ export function parseClientMessage(raw: string): ClientMsg | null {
       return typeof m.ready === 'boolean' ? { t: 'ready', ready: m.ready } : null;
     case 'input': {
       const i = parseInput(m.i);
-      return i ? { t: 'input', i } : null;
+      if (!i) return null;
+      if (m.a === undefined) return { t: 'input', i };
+      const a = int(m.a, 0, 2 ** 31);
+      return a !== null ? { t: 'input', i, a } : null;
+    }
+    case 'ack': {
+      const a = int(m.a, 0, 2 ** 31);
+      return a !== null ? { t: 'ack', a } : null;
     }
     case 'buy': {
       const item = oneOf(m.item, ITEM_IDS);

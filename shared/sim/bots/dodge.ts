@@ -72,15 +72,25 @@ export function checkDodge(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): vo
     return;
   }
   if (!tune.predodge) return;
-  // Read wind-ups: an enemy winding up a hook while facing us is about to throw at us.
+  // Read wind-ups: an enemy winding up a hook at us is about to throw at us. Hooks wind up on the
+  // move, so read where they aimed (the cast is public: wind-up animation and cast event), not the
+  // way they are walking.
   for (const e of ctx.foes[u.team]) {
-    if (e.state !== UnitState.Casting || e.castKind !== 'hook') continue;
+    if (e.castKind !== 'hook' || (e.state !== UnitState.Alive && e.state !== UnitState.Casting)) continue;
     const tr = ctx.tracks.get(e.id);
     if (!tr) continue;
     const key = -(e.id * 100000 + (tr.castAt % 100000)) - 1;
     if (judged(b, key)) continue;
-    const fx = Math.sin(e.face);
-    const fz = Math.cos(e.face);
+    let fx = e.castAx - e.x;
+    let fz = e.castAz - e.z;
+    const fl = Math.sqrt(fx * fx + fz * fz);
+    if (fl < 0.3) {
+      fx = Math.sin(e.face);
+      fz = Math.cos(e.face);
+    } else {
+      fx /= fl;
+      fz /= fl;
+    }
     const rx = u.x - e.x;
     const rz = u.z - e.z;
     const along = rx * fx + rz * fz;

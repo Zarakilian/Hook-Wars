@@ -698,40 +698,68 @@ export const SFX: Record<SfxId, SfxDef> = {
       else if (fam === 'ogre') noiseHit(s, { ft: 'bandpass', f: 520, q: 2, a: 0.004, d: 0.06, v: 0.18 });
     },
   },
-  // store and power-up cues (first pass; the fx-audio pass refines these)
+  // ---- store, locker, marketplace and wallet cues (menus), and the hook power-up surge
   purchase: {
-    v: 1.6, prio: 2, cap: 1, rev: 0.12, vary: 0.02, gap: 0.1,
+    // Pearls spent: a little chest lid thunk, a cascade of pearls clicking into a tray, a shimmer
+    v: 1.9, prio: 2, cap: 1, rev: 0.14, vary: 0.02, gap: 0.1,
     fn: (s) => {
-      bell(s, { f: 1320, d: 0.35, v: 0.12, partials: STEEL });
-      bell(s, { t: s.t + 0.09, f: 1760, d: 0.45, v: 0.1, partials: STEEL });
-      noiseHit(s, { ft: 'highpass', f: 5200, a: 0.001, d: 0.12, v: 0.08 });
+      thump(s, s.t, 140, 0.32, 0.12);
+      noiseHit(s, { ft: 'bandpass', f: 1100, q: 1.5, a: 0.001, d: 0.04, v: 0.25 });
+      // pearls: bright, glassy, slightly random clicks rolling down in pitch
+      for (let i = 0; i < 7; i++) {
+        const t = s.t + 0.05 + i * s.r(0.028, 0.05);
+        const f = midiHz(100 - i * 0.7 + s.r(-1, 1));
+        bell(s, { t, f, d: 0.09, v: 0.07 * (1 - i * 0.08), partials: [[1, 1, 1], [2.71, 0.5, 0.6], [5.1, 0.25, 0.4]] });
+      }
+      // the shop chime: a bright major sixth, then a soft sparkle
+      bell(s, { t: s.t + 0.06, f: midiHz(84), d: 0.55, v: 0.15, partials: BELL });
+      bell(s, { t: s.t + 0.16, f: midiHz(93), d: 0.75, v: 0.13, partials: BELL });
+      sparkle(s, s.t + 0.28, 0.04, 96, 4, 0.05);
     },
   },
   equip: {
-    v: 2.0, prio: 2, cap: 2, rev: 0.03, vary: 0.04, gap: 0.05,
+    // put on a cosmetic: a cloth and leather rustle, a buckle click, a tiny rising pluck
+    v: 1.9, prio: 2, cap: 2, rev: 0.04, vary: 0.05, gap: 0.05,
     fn: (s) => {
-      noiseHit(s, { ft: 'bandpass', f: 620, q: 3, a: 0.001, d: 0.05, v: 0.3 });
-      tone(s, { type: 'triangle', f: 330, f1: 520, sw: 0.06, a: 0.001, d: 0.08, v: 0.12 });
+      whoosh(s, { d: 0.14, f0: 700, fp: 2400, f1: 1400, q: 0.9, v: 0.18, peakAt: 0.5 });
+      noiseHit(s, { ft: 'bandpass', f: 520, q: 2.5, a: 0.002, d: 0.06, v: 0.22 });
+      clicks(s, { t: s.t + 0.09, n: 2, i0: 0.03, i1: 0.03, f: 3400, q: 4, cd: 0.006, v: 0.4 });
+      tone(s, { t: s.t + 0.1, type: 'triangle', f: midiHz(76), a: 0.002, d: 0.09, v: 0.1 });
+      tone(s, { t: s.t + 0.15, type: 'triangle', f: midiHz(83), a: 0.002, d: 0.14, v: 0.09 });
     },
   },
   listingSold: {
-    v: 1.5, prio: 2, cap: 1, rev: 0.1, vary: 0.02, gap: 0.2,
+    // a marketplace sale: a ship's-bell style "ding ding", coins sliding, a cheerful rising arpeggio
+    v: 1.15, prio: 2, cap: 1, rev: 0.16, vary: 0.02, gap: 0.2,
     fn: (s) => {
-      for (let i = 0; i < 3; i++) bell(s, { t: s.t + i * 0.07, f: 1100 + i * 330, d: 0.3, v: 0.09, partials: STEEL });
+      bell(s, { f: midiHz(88), d: 0.9, v: 0.16, partials: BELL });
+      bell(s, { t: s.t + 0.16, f: midiHz(88), d: 1.1, v: 0.13, partials: BELL });
+      jangle(s, s.t + 0.05, 0.18, 1.5, 0.45);
+      [72, 76, 79, 84].forEach((m, i) => tone(s, { t: s.t + 0.3 + i * 0.07, type: 'triangle', f: midiHz(m), a: 0.003, d: 0.18, v: 0.08 }));
+      sparkle(s, s.t + 0.58, 0.035, 96, 3, 0.05);
     },
   },
   walletLinked: {
-    v: 1.6, prio: 2, cap: 1, rev: 0.08, vary: 0.0, gap: 0.3,
+    // a wallet connects: a heavy lock bolt sliding home, a click, then a calm three-note chime
+    v: 1.8, prio: 2, cap: 1, rev: 0.12, vary: 0.0, gap: 0.3,
     fn: (s) => {
-      tone(s, { f: 520, f1: 780, sw: 0.08, a: 0.002, d: 0.12, v: 0.12 });
-      tone(s, { t: s.t + 0.11, f: 780, f1: 1040, sw: 0.08, a: 0.002, d: 0.16, v: 0.1 });
+      noiseHit(s, { ft: 'bandpass', f: 900, f1: 1500, q: 1.6, a: 0.01, d: 0.09, v: 0.25 });
+      clicks(s, { t: s.t + 0.09, n: 1, i0: 0.02, i1: 0.02, f: 2600, q: 3, cd: 0.01, v: 0.5 });
+      thump(s, s.t + 0.09, 160, 0.22, 0.08);
+      [79, 83, 86].forEach((m, i) => bell(s, { t: s.t + 0.2 + i * 0.11, f: midiHz(m), d: 0.7 - i * 0.1, v: 0.12, partials: BELL }));
+      tone(s, { t: s.t + 0.42, f: midiHz(91), a: 0.05, d: 0.6, v: 0.04, vib: [5, 0.004] });
     },
   },
   powerHook: {
-    v: 1.8, prio: 3, cap: 1, rev: 0.1, vary: 0.03, gap: 0.15,
+    // a hook power-up is armed or thrown: a watery bloop, a rising charged sweep, a bright ping
+    v: 1.7, prio: 3, cap: 1, rev: 0.16, vary: 0.04, gap: 0.15,
     fn: (s) => {
-      tone(s, { type: 'sawtooth', f: 180, f1: 720, sw: 0.25, a: 0.004, d: 0.3, v: 0.08 });
-      bell(s, { t: s.t + 0.18, f: 1480, d: 0.3, v: 0.08, partials: STEEL });
+      tone(s, { f: 180, f1: 720, sw: 0.14, a: 0.004, d: 0.16, v: 0.22 });
+      fm(s, { t: s.t + 0.02, f: 220, ratio: 2.01, index: 3, index1: 0.4, a: 0.01, d: 0.36, v: 0.07, f1: 880 });
+      whoosh(s, { t: s.t + 0.02, d: 0.34, f0: 600, fp: 4200, f1: 2400, q: 1.6, v: 0.16, peakAt: 0.7 });
+      bubbleBuf(s, s.t, 0.12, 1.4, 0.35);
+      bell(s, { t: s.t + 0.3, f: midiHz(93), d: 0.45, v: 0.1, partials: BELL });
+      sparkle(s, s.t + 0.34, 0.04, 98, 3, 0.04);
     },
   },
 };

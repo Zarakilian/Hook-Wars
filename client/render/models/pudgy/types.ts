@@ -58,6 +58,8 @@ export interface RestPose {
   jawRest: number;
   /** extra elbow bend on the hook arm while the hook is held (hand raised, ready) */
   holdElbow: number;
+  /** extra forward swing of the hook arm's shoulder while the hook is held (keeps long hooks off the ground) */
+  holdShoulder?: number;
 }
 
 /** Family flavour in motion. */
@@ -137,6 +139,9 @@ export interface FamilyBuild {
   /** the held hook hangs (rope, crane cable) and dangles straight down with a pendulum swing */
   hookDangles: boolean;
   hookMount: HookMount;
+  /** mounts to switch to when an fx skin turns out to hang on a tether (hang) or be gripped (grip) */
+  hangMount?: HookMount;
+  gripMount?: HookMount;
   puffs: PuffEmitter[];
   /** lying on its back, how high the belly centre sits (m, before scale) */
   corpseLift: number;

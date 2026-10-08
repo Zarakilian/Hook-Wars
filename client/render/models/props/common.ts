@@ -83,6 +83,13 @@ export interface MatOpts {
   kelp?: boolean;
   /** moored boat: rests on the ground, floats and rocks once the water rises above its keel */
   boat?: boolean;
+  /** cloth wave amplitude in metres (flags along +x from the pole, banners hanging down from clothTop) */
+  cloth?: number;
+  /** metres of cloth over which the wave builds up */
+  clothLen?: number;
+  /** 'x': a flag flying along +x; 'down': a banner hanging below clothTop (model y, metres) */
+  clothAxis?: 'x' | 'down';
+  clothTop?: number;
   transparent?: boolean;
   opacity?: number;
   doubleSide?: boolean;
@@ -103,6 +110,10 @@ export interface PropUniforms {
   uSway: { value: number };
   uSwayH: { value: number };
   uWobble: { value: number };
+  uCloth: { value: number };
+  uClothLen: { value: number };
+  uClothTop: { value: number };
+  uClothAxis: { value: number };
 }
 
 const matCache = new Map<string, THREE.MeshStandardMaterial>();
@@ -161,6 +172,7 @@ function makeMat(o: MatOpts): THREE.MeshStandardMaterial {
   if (o.float) flags.push('FLOAT');
   if (o.kelp) flags.push('KELP');
   if (o.boat) flags.push('BOAT');
+  if (o.cloth) flags.push('CLOTH');
   const pu: PropUniforms = {
     uGlow: { value: o.glow ?? 0 },
     uFlicker: { value: o.flicker ?? 0 },
@@ -170,6 +182,10 @@ function makeMat(o: MatOpts): THREE.MeshStandardMaterial {
     uSway: { value: o.sway ?? 0 },
     uSwayH: { value: o.swayH ?? 1 },
     uWobble: { value: o.wobble ?? 0 },
+    uCloth: { value: o.cloth ?? 0 },
+    uClothLen: { value: o.clothLen ?? 1 },
+    uClothTop: { value: o.clothTop ?? 0 },
+    uClothAxis: { value: o.clothAxis === 'down' ? 1 : 0 },
   };
   m.userData.pu = pu;
   m.userData.opts = o;
@@ -199,10 +215,14 @@ uniform float uWaterY;
 uniform float uSway;
 uniform float uSwayH;
 uniform float uWobble;
+uniform float uCloth;
+uniform float uClothLen;
+uniform float uClothTop;
+uniform float uClothAxis;
 `;
 
 const VERT_MAIN = /* glsl */ `
-#if defined(P_SWAY) || defined(P_WOBBLE) || defined(P_FLOAT) || defined(P_KELP) || defined(P_BOAT)
+#if defined(P_SWAY) || defined(P_WOBBLE) || defined(P_FLOAT) || defined(P_KELP) || defined(P_BOAT) || defined(P_CLOTH)
 {
   vec3 pIp = vec3(0.0);
   float pSy = 1.0;
@@ -248,6 +268,14 @@ const VERT_MAIN = /* glsl */ `
   float bLift = max(0.0, uWaterY - 0.1 - pWp.y);
   float bPh = uTime * 1.15 + pWp.x * 0.7 + pWp.z * 0.4;
   transformed.y += bLift / pSy + (transformed.x * sin(bPh) * 0.05 + transformed.z * sin(bPh * 0.7 + 1.3) * 0.02 + sin(bPh * 1.3) * 0.02) * bWet;
+  #endif
+  #ifdef P_CLOTH
+  float cAlong = uClothAxis > 0.5 ? max(0.0, uClothTop - transformed.y) : max(0.0, transformed.x);
+  float cK = clamp(cAlong / uClothLen, 0.0, 1.0);
+  float cPh = uTime * 3.4 + pWp.x * 0.7 + pWp.z * 0.5 - cAlong * 4.5;
+  float cGust = 0.7 + 0.3 * sin(uTime * 0.53 + pWp.x * 0.1);
+  transformed.z += (sin(cPh) * 0.8 + sin(cPh * 2.3 + 1.0) * 0.2) * uCloth * cK * cGust;
+  transformed.x += uClothAxis > 0.5 ? sin(cPh * 0.7 + 0.5) * uCloth * 0.35 * cK * cGust : 0.0;
   #endif
 }
 #endif

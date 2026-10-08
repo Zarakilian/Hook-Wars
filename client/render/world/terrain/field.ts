@@ -60,7 +60,7 @@ export class HeightField {
   readonly iz0: number;
   /** RGBA, width nx + 1 (last texel column is white, used by side faces) */
   readonly colorData: Uint8Array;
-  /** RGBA: G = roughness, B = sparkle; last column G = 255 */
+  /** RGBA: R = baked lamp light (bakeLamps), G = roughness, B = sparkle; last column G = 255 */
   readonly roughData: Uint8Array;
   colorTex: THREE.DataTexture | null = null;
   roughTex: THREE.DataTexture | null = null;
@@ -116,7 +116,7 @@ export class HeightField {
         this.colorData[t + 1] = (cell.top >> 8) & 255;
         this.colorData[t + 2] = cell.top & 255;
         this.colorData[t + 3] = 255;
-        this.roughData[t] = 255;
+        this.roughData[t] = 0;
         this.roughData[t + 1] = Math.max(0, Math.min(255, Math.round(cell.rough * 255)));
         this.roughData[t + 2] = Math.max(0, Math.min(255, Math.round(cell.sparkle * 255)));
         this.roughData[t + 3] = 255;
@@ -124,8 +124,32 @@ export class HeightField {
       // white texel column for side faces
       const t = (this.nx + j * tw) * 4;
       this.colorData[t] = this.colorData[t + 1] = this.colorData[t + 2] = this.colorData[t + 3] = 255;
-      this.roughData[t] = this.roughData[t + 1] = this.roughData[t + 3] = 255;
-      this.roughData[t + 2] = 0;
+      this.roughData[t + 1] = this.roughData[t + 3] = 255;
+      this.roughData[t] = this.roughData[t + 2] = 0;
+    }
+  }
+
+  /**
+   * Bake warm pools of lamp light into the R channel (column tops only): each lamp is (x, z, radius,
+   * strength 0..1), smooth quadratic falloff, summed and clamped. Call before textures().
+   */
+  bakeLamps(lamps: readonly { x: number; z: number; r: number; k: number }[]): void {
+    const tw = this.nx + 1;
+    for (const l of lamps) {
+      const i0 = Math.max(0, Math.floor((l.x - l.r - this.x0) / this.s));
+      const i1 = Math.min(this.nx - 1, Math.ceil((l.x + l.r - this.x0) / this.s));
+      const j0 = Math.max(0, Math.floor((l.z - l.r - this.z0) / this.s));
+      const j1 = Math.min(this.nz - 1, Math.ceil((l.z + l.r - this.z0) / this.s));
+      for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) {
+          const dx = this.x0 + (i + 0.5) * this.s - l.x;
+          const dz = this.z0 + (j + 0.5) * this.s - l.z;
+          const d = Math.sqrt(dx * dx + dz * dz) / l.r;
+          if (d >= 1) continue;
+          const f = (1 - d) * (1 - d) * l.k;
+          const t = (i + j * tw) * 4;
+          this.roughData[t] = Math.min(255, this.roughData[t] + Math.round(f * 255));
+        }
     }
   }
 

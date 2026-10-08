@@ -1,18 +1,21 @@
 // River water: the showpiece. Gerstner waves, scrolled detail normals, depth absorption, refraction,
 // Fresnel sky and planar reflection, sun glints, every kind of foam, ripples from splashes, caustics,
-// the Coral Cove whirlpool and waterfall, Cogwater lock floods, Frostfang ice, and Dry Bed puddles.
+// whirlpools (Coral Cove, the great Maelstrom one), waterfalls (river ends and cliff falls), lock floods
+// (Cogwater, Lantern Wharf), freezing maps' ice, and Dry Bed puddles. One sheet covers the main river,
+// braided side channels and pools, and runs on under docks, bridges and floes (waterDepthAt).
+// Past the river ends a cap feathers the sheet into the terrain's backdrop water (no seam at z = +-28).
 // Files: water/field (baked channel data), water/surface (main shader), water/ice, water/caustics,
 // water/falls, water/reflection, water/ripples, water/waves, water/textures, water/style.
 import * as THREE from 'three';
-import { channelDepthAt, riverAt } from '../../../shared/maps/helpers.ts';
-import type { MapDef } from '../../../shared/maps/types.ts';
+import { platformAt, riverAt, waterDepthAt } from '../../../shared/maps/helpers.ts';
+import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt, tidalActive } from '../../../shared/sim/river.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { World } from '../../../shared/world.ts';
-import { WATER_LAYER, bedY, groundY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
+import { WATER_LAYER, bedY, groundY, platformDeckY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
 import { createCausticsMaterial } from './water/caustics.ts';
 import { FallSheet } from './water/falls.ts';
-import { bakeField, buildRiverGrid, fieldUniforms, sampleField, type GridSpan } from './water/field.ts';
+import { bakeField, buildWaterGrid, fieldUniforms, sampleField, waterBox, waterExt, type GridSpan } from './water/field.ts';
 import { createIceMaterial } from './water/ice.ts';
 import { PlanarReflection } from './water/reflection.ts';
 import { Ripples } from './water/ripples.ts';
@@ -25,10 +28,38 @@ import { advanceWaves, makeWaves, waveHeight } from './water/waves.ts';
 const ICE_LIFT = 0.03;
 /** Seconds the ice takes to break up and sink when the thaw begins. */
 const BREAK_SEC = 1.7;
+/** Metres the surface runs on past an open river end, fading into the terrain's backdrop water. */
+const CAP_LEN = 7;
+/**
+ * Past the play area the terrain's backdrop water runs beside the river, with a hole left for the river
+ * sheet (its 1 m quads whose centres lie within the sheet margin). There the main sheet reaches END_PAD
+ * metres further so it always covers that stepped hole, and the cap mesh adds side bands END_BAND wide
+ * that fade out over the backdrop. END_RAMP: metres over which the river takes on the backdrop's look.
+ */
+const END_PAD = 0.6;
+const END_BAND = 1.8;
+const END_RAMP = 4;
+
+/**
+ * A light the water reflects: world position of the flame, colour, strength and pool radius.
+ * The water derives these from the map data (lamp posts, lanterns, lantern strings, watchtowers);
+ * setWaterLights() replaces them with exact positions if the props module ever publishes its own.
+ */
+export interface WaterLight {
+  x: number;
+  y: number;
+  z: number;
+  color: number;
+  /** brightness multiplier, about 0.5..1.5 */
+  k: number;
+  /** pool radius on the water, metres */
+  r: number;
+}
 
 interface Extras {
   syncedClock: number;
   syncedAt: number;
+  setLights?: (lights: WaterLight[]) => void;
 }
 const extras = new WeakMap<WaterView, Extras>();
 
@@ -42,6 +73,23 @@ export function syncWaterMovers(view: WaterView, moverClock: number): void {
   if (!e) return;
   e.syncedClock = moverClock;
   e.syncedAt = performance.now();
+}
+
+/** Optional: replace the lights the water reflects (positions in world metres). */
+export function setWaterLights(view: WaterView, lights: WaterLight[]): void {
+  extras.get(view)?.setLights?.(lights);
+}
+
+/** A waterfall at a river end pours down the river (Coral Cove, Maelstrom north); others pour off a cliff. */
+export function isRiverEndFall(map: MapDef, d: Decor): boolean {
+  const r = riverAt(map.river.points, d.z);
+  return d.kind === 'waterfall' && Math.abs(d.z) >= map.d / 2 - 2.5 && Math.abs(d.x - r.x) < r.hw + 3;
+}
+
+/** The rendered terrain under docks and bridges (the river bed), for terrain views that expose it. */
+function bedHeightOf(world: WorldView): (x: number, z: number) => number {
+  const t = (world as WorldView & { terrainHeight?: (x: number, z: number) => number }).terrainHeight;
+  return t ? (x, z) => t.call(world, x, z) : (x, z) => world.groundHeight(x, z);
 }
 
 function lin(hex: number): THREE.Color {
@@ -73,9 +121,21 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   const group = new THREE.Group();
   group.name = 'water';
 
+  // ---- decor the water owns: waterfalls and lock gates
+  const waterfalls = map.decor.filter((d) => d.kind === 'waterfall');
+  const endFalls = waterfalls.filter((d) => isRiverEndFall(map, d));
+  const cliffFalls = waterfalls.filter((d) => !isRiverEndFall(map, d));
+  const gates = map.decor.filter((d) => d.kind === 'lockgate').sort((a, b) => a.z - b.z);
+  const pts = map.river.points;
+  const ext = waterExt(map);
+  // open river ends get a cap that fades into the backdrop water; ends under a waterfall stop at the plunge
+  const capN = dry || endFalls.some((d) => d.z < 0) ? 0 : CAP_LEN;
+  const capS = dry || endFalls.some((d) => d.z > 0) ? 0 : CAP_LEN;
+  const waterfallMap = endFalls.length > 0;
+  const terrainH = bedHeightOf(world);
+
   // ---- baked data and textures
-  const waterfallMap = map.decor.some((d) => d.kind === 'waterfall');
-  const field = bakeField(map, (x, z) => world.groundHeight(x, z), tier >= 2 ? 0.2 : 0.25, waterfallMap && tidal);
+  const field = bakeField(map, terrainH, tier >= 2 ? 0.2 : 0.25, waterfallMap && tidal, capN, capS);
   const fu = fieldUniforms(field);
   const aniso = Math.min(8, engine.renderer.capabilities.getMaxAnisotropy());
   const tex = createWaterTextures(tier >= 2, tier === 0 ? 1 : aniso);
@@ -84,15 +144,10 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   ripples.limit = [10, 18, 24, 24][tier];
   ripples.maxAmbient = [3, 6, 8, 8][tier];
 
-  // ---- decor the water owns: waterfall and lock gates
-  const waterfalls = map.decor.filter((d) => d.kind === 'waterfall');
-  const gates = map.decor.filter((d) => d.kind === 'lockgate').sort((a, b) => a.z - b.z);
-
   // ---- surface mesh spans (lock reservoirs are separate patches held at full level)
-  const pts = map.river.points;
   let z0 = pts[0].z;
   let z1 = pts[pts.length - 1].z;
-  for (const wf of waterfalls) {
+  for (const wf of endFalls) {
     // the pool ends just behind the plunge line, tucked under the cliff
     if (wf.z < 0) z0 = Math.max(z0, wf.z - 0.9);
     else z1 = Math.min(z1, wf.z + 0.9);
@@ -106,7 +161,23 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     spans.push({ z0, z1, fixed: 0 });
   }
   const step = [0.5, 0.36, 0.28, 0.22][tier];
-  const surfGeo = buildRiverGrid(map, step, field.ext, spans);
+  const box = waterBox(map, ext, 0, 0);
+  // the end zone: from just inside the play area's end (where the backdrop water begins) to the river end
+  const zoneZ = map.d / 2 - 1;
+  const inEndZone = (z: number): boolean => (capN > 0 && z < -zoneZ) || (capS > 0 && z > zoneZ);
+  const surfGeo = buildWaterGrid(map, box, step, ext, spans, (z) => (inEndZone(z) ? ext + END_PAD : ext));
+  const capFixed = lockMap && gates.length >= 2 ? 1 : 0;
+  const capSpans: GridSpan[] = [];
+  const bandReach = ext + END_PAD + END_BAND;
+  if (capN > 0) capSpans.push({ z0: z0 - capN, z1: z0, fixed: capFixed, reach: bandReach });
+  if (capS > 0) capSpans.push({ z0: z1, z1: z1 + capS, fixed: capFixed, reach: bandReach });
+  // side bands along the end zone, beside the main sheet (which keeps the middle)
+  // (only where the ground lies below the full water line: the backdrop water is never on dry quays)
+  const band = { fixed: capFixed, reach: bandReach, hollow: ext + END_PAD, dryAbove: fullY + 0.05 };
+  if (capN > 0 && z0 < -zoneZ) capSpans.push({ z0, z1: -zoneZ, ...band });
+  if (capS > 0 && z1 > zoneZ) capSpans.push({ z0: zoneZ, z1, ...band });
+  // same columns as the main grid, so the shared row at the river end is watertight under the waves
+  const capGeo = capSpans.length ? buildWaterGrid(map, box, step, ext, capSpans, undefined, terrainH) : null;
 
   // ---- shared uniform values
   const sunDir = new THREE.Vector3(atm.sunDir[0], atm.sunDir[1], atm.sunDir[2]).normalize();
@@ -128,37 +199,108 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     movB.push(new THREE.Vector4());
   }
   const pours: THREE.Vector4[] = [];
-  for (let i = 0; i < MAX_POURS; i++) pours.push(new THREE.Vector4(0, 0, 1, 0));
+  const pourD: THREE.Vector2[] = [];
+  for (let i = 0; i < MAX_POURS; i++) {
+    pours.push(new THREE.Vector4(0, 0, 1, 0));
+    pourD.push(new THREE.Vector2(0, 1));
+  }
   // lamp and lantern glints (dusk / night maps): positions come straight from the map data, so this
-  // works however the props module lights its lamps. Lamp heights match the props models.
-  const lamps: { x: number; y: number; z: number; col: THREE.Color; k: number; ph: number; r: number }[] = [];
-  if (night && tier >= 1) {
-    const gY = groundY(map);
-    const dock = map.id === 'cogwater' || map.id === 'frostfang';
+  // works however the props module lights its lamps. Heights follow the props models (flame height
+  // above the ground the prop stands on). Each light also gets an anchor: the nearest open water in
+  // front of it, where its reflection streak starts (lamps stand back from the edge).
+  type Lamp = { x: number; y: number; z: number; ax: number; az: number; col: THREE.Color; k: number; ph: number; r: number };
+  const lamps: Lamp[] = [];
+  const gY = groundY(map);
+  const anchorOf = (x: number, z: number): [number, number] => {
+    let ax = x;
+    let az = z;
+    for (let i = 0; i < 24; i++) {
+      const c = waterDepthAt(map, ax, az);
+      if (c > 0.5) break;
+      const e = 0.2;
+      let gx = waterDepthAt(map, ax + e, az) - waterDepthAt(map, ax - e, az);
+      let gz = waterDepthAt(map, ax, az + e) - waterDepthAt(map, ax, az - e);
+      const gl = Math.hypot(gx, gz);
+      if (gl < 1e-5) break;
+      gx /= gl;
+      gz /= gl;
+      ax += gx * 0.25;
+      az += gz * 0.25;
+    }
+    return waterDepthAt(map, ax, az) > 0.3 ? [ax, az] : [x, z];
+  };
+  const addLamp = (x: number, y: number, z: number, col: THREE.Color, k: number, ph: number, r: number): void => {
+    if (waterDepthAt(map, x, z) < -7) return;
+    const [ax, az] = anchorOf(x, z);
+    lamps.push({ x, y, z, ax, az, col, k, ph, r });
+  };
+  const buildLamps = (): void => {
+    lamps.length = 0;
+    if (!(night && tier >= 1)) return;
     const warm = new THREE.Color(0xffb468);
+    const amber = new THREE.Color(0xffa048);
     const swamp = new THREE.Color(0xc8ec6a);
+    const dock = map.id !== 'muckmire';
     for (const o of map.obstacles) {
-      if (o.shape !== 'circle' || o.kind !== 'lamppost') continue;
-      if (channelDepthAt(map, o.x, o.z) < -7) continue;
-      lamps.push({ x: o.x, y: gY + 3.2 * (o.scale ?? 1), z: o.z, col: warm, k: 1.25, ph: (o.seed ?? 0) * 1.7, r: 2.8 });
+      if (o.shape !== 'circle') continue;
+      const sc = o.scale ?? 1;
+      const ph = (o.seed ?? 0) * 1.7;
+      if (o.kind === 'lamppost') addLamp(o.x, gY + 3.2 * sc, o.z, warm, 1.25, ph, 2.8);
+      else if (o.kind === 'gaslamp') addLamp(o.x, gY + 3.0 * sc, o.z, warm, 1.3, ph, 2.8);
+      else if (o.kind === 'lanternpost') addLamp(o.x, gY + 2.5 * sc, o.z, amber, 1.15, ph, 2.5);
+      else if (o.kind === 'watchtower') addLamp(o.x, gY + 5.6 * sc, o.z, amber, 1.0, ph, 2.6);
     }
     for (const d of map.decor) {
-      if (d.kind !== 'lantern') continue;
-      const off = 0.35 * d.scale;
-      const x = d.x + Math.cos(d.rot) * off;
-      const z = d.z - Math.sin(d.rot) * off;
-      if (channelDepthAt(map, x, z) < -7) continue;
-      lamps.push({ x, y: gY + 1.48 * d.scale, z, col: dock ? warm : swamp, k: dock ? 0.8 : 0.65, ph: d.seed * 2.3, r: 1.9 * d.scale });
+      if (d.kind === 'lantern') {
+        const off = 0.35 * d.scale;
+        const x = d.x + Math.cos(d.rot) * off;
+        const z = d.z - Math.sin(d.rot) * off;
+        addLamp(x, gY + 1.48 * d.scale, z, dock ? warm : swamp, dock ? 0.8 : 0.65, d.seed * 2.3, 1.9 * d.scale);
+      } else if (d.kind === 'lanternstring') {
+        // little lanterns strung along a deck's two rails when the string stands on a platform
+        // (bridges, docks), else along the string's own local x axis
+        const pl = platformAt(map, d.x, d.z);
+        if (pl) {
+          const along = pl.w >= pl.d ? 'x' : 'z';
+          const len = along === 'x' ? pl.w : pl.d;
+          const off = (along === 'x' ? pl.d : pl.w) / 2 - 0.15;
+          const cs = Math.cos(pl.rot);
+          const sn = Math.sin(pl.rot);
+          const n = Math.max(2, Math.min(4, Math.round(len / 3.4)));
+          for (const side of [-1, 1]) {
+            for (let i = 0; i < n; i++) {
+              const t = ((i + 0.5) / n - 0.5) * (len - 0.6);
+              const lx = along === 'x' ? t : side * off;
+              const lz = along === 'x' ? side * off : t;
+              // platform local -> world (the inverse of platformAt's rotation)
+              const wx = pl.x + lx * cs + lz * sn;
+              const wz = pl.z - lx * sn + lz * cs;
+              addLamp(wx, platformDeckY(map, pl) + 1.6 * d.scale, wz, amber, 0.4, d.seed * 2.3 + i * 1.9 + side, 1.2);
+            }
+          }
+        } else {
+          const len = 5 * d.scale;
+          const cx = Math.cos(d.rot);
+          const sz = -Math.sin(d.rot);
+          for (let i = 0; i < 4; i++) {
+            const t = (i + 0.5) / 4 - 0.5;
+            addLamp(d.x + cx * len * t, gY + 2.2 * d.scale, d.z + sz * len * t, amber, 0.55, d.seed * 2.3 + i * 1.9, 1.3);
+          }
+        }
+      }
     }
-  }
+  };
+  buildLamps();
   const lampP: THREE.Vector4[] = [];
   const lampC: THREE.Vector3[] = [];
+  const lampQ: THREE.Vector4[] = [];
   for (let i = 0; i < MAX_LAMPS; i++) {
     lampP.push(new THREE.Vector4(0, -100, 0, 0));
     lampC.push(new THREE.Vector3());
+    lampQ.push(new THREE.Vector4());
   }
-  const lampOrder: number[] = lamps.map((_, i) => i);
-  const lampDist = new Float32Array(lamps.length);
+  let lampOrder: number[] = lamps.map((_, i) => i);
+  let lampDist = new Float32Array(lamps.length);
   const camFwd = new THREE.Vector3(0, -1, 0);
   const camNF = new THREE.Vector2(0.5, 400);
   const surgeDir = new THREE.Vector2(0, -1);
@@ -176,7 +318,13 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uFullY: { value: fullY },
     uWaveDamp: { value: 1 },
     uWhirl: { value: whirlU },
-    uWhirlDepth: { value: 0.42 },
+    uWhirlDepth: { value: style.whirlDepth },
+    uWhirlStyle: { value: new THREE.Vector4(style.whirlArms, style.whirlFoam, style.whirlReach, style.whirlEye) },
+    uCap: { value: new THREE.Vector4(z0, z1, capN, capS) },
+    uCapExt: { value: ext },
+    uEnd: { value: new THREE.Vector4(-zoneZ, zoneZ, END_RAMP, style.endGain) },
+    uBand: { value: new THREE.Vector2(ext + END_PAD, END_BAND) },
+    uCapMesh: { value: 0 },
     uWhirlSpin: { value: whirlSpin },
     uWhirlSign: { value: 1 },
     uRip: { value: ripples.uA },
@@ -195,9 +343,11 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uMovN: { value: 0 },
     uPour: { value: pours },
     uPourN: { value: 0 },
+    uPourD: { value: pourD },
     uLampP: { value: lampP },
     uLampC: { value: lampC },
     uLampN: { value: 0 },
+    uLampQ: { value: lampQ },
     uSlope: { value: tex.slope },
     uNoise: { value: tex.noise },
     uShallow: { value: lin(atm.waterShallow) },
@@ -215,6 +365,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uStyleC: { value: new THREE.Vector4(style.glitter, style.sss, night ? style.nightLift : style.nightLift * 0.3, style.refract) },
     uStyleD: { value: new THREE.Vector4(tier >= 1 ? style.speck : 0, style.plips, tier >= 1 ? 1 : 0, waterfallMap && tidal ? 1 : 0) },
     uStyleE: { value: new THREE.Vector4(style.hueDepth, style.scumGain, 1, 0) },
+    uStyleF: { value: new THREE.Vector4(style.sunsetGlow, atm.aurora ? style.auroraRefl : 0, style.lampStreak, 0) },
     uSpeckCol: { value: lin(style.speckColor || 0x888888) },
     uMurk: { value: style.murk },
     uHasCapture: { value: 0 },
@@ -234,6 +385,21 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   // first among transparents when the engine renders in one pass (low tier): FX draw over the water
   surface.renderOrder = -2;
   group.add(surface);
+  // the end caps share the uniforms and the program but draw after the terrain's backdrop water
+  // (renderOrder 1) and never write depth, so their fading alpha reveals the backdrop underneath
+  let capMat: THREE.ShaderMaterial | null = null;
+  let caps: THREE.Mesh | null = null;
+  if (capGeo) {
+    capMat = createSurfaceMaterial(su, waves.n, Math.min(2, tier));
+    capMat.uniforms.uCapMesh = { value: 1 };
+    capMat.depthWrite = false;
+    caps = new THREE.Mesh(capGeo, capMat);
+    caps.name = 'water-caps';
+    caps.layers.set(WATER_LAYER);
+    caps.frustumCulled = false;
+    caps.renderOrder = 1.5;
+    group.add(caps);
+  }
 
   // ---- caustics on the bed
   let caustics: THREE.Mesh | null = null;
@@ -255,7 +421,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uIce: su.uIce,
   };
   if (!dry && tier >= 1 && style.caustics > 0) {
-    causticGeo = buildRiverGrid(map, Math.max(0.3, step), 0.4, [{ z0, z1, fixed: 0 }]);
+    causticGeo = buildWaterGrid(map, box, Math.max(0.3, step), 0.4, [{ z0, z1, fixed: 0 }]);
     const cm = createCausticsMaterial(causticU);
     caustics = new THREE.Mesh(causticGeo, cm);
     caustics.name = 'water-caustics';
@@ -266,6 +432,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
 
   // ---- ice sheet (Frostfang tidal: freeze / crack / thaw)
   let ice: THREE.Mesh | null = null;
+  let iceCap: THREE.Mesh | null = null;
   const windU = new THREE.Vector2();
   const iceMatU: Record<string, THREE.IUniform> = {
     uField: { value: field.texture },
@@ -283,6 +450,13 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     uSpecDir: { value: specDir },
     uSunCol: { value: sunCol },
     uWind: { value: windU },
+    uCap: su.uCap,
+    uCapExt: su.uCapExt,
+    uEnd: su.uEnd,
+    uBand: su.uBand,
+    uCapMesh: { value: 0 },
+    uUnderGlow: { value: style.underGlow },
+    uGlowCol: { value: lin(0x3aa8ff) },
   };
   if (freezeMap) {
     const im = createIceMaterial(iceMatU, tier);
@@ -296,14 +470,28 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     ice.renderOrder = -1;
     ice.visible = false;
     group.add(ice);
+    if (capGeo) {
+      // the ice runs on into the caps too, fading out over the (frozen) backdrop water
+      const icm = createIceMaterial({ ...iceMatU, uCapMesh: { value: 1 } }, tier);
+      icm.depthWrite = false;
+      iceCap = new THREE.Mesh(capGeo, icm);
+      iceCap.name = 'water-ice-caps';
+      iceCap.frustumCulled = false;
+      iceCap.layers.set(WATER_LAYER);
+      iceCap.renderOrder = 1.6;
+      iceCap.visible = false;
+      group.add(iceCap);
+    }
   }
 
-  // ---- waterfall and lock sluices
+  // ---- waterfalls and lock sluices
   const puff = createPuffTexture();
-  const falls: { sheet: FallSheet; kind: 'waterfall' | 'lock' }[] = [];
+  // landY: lowest height the sheet lands at (the ground under a cliff fall that misses the water)
+  const falls: { sheet: FallSheet; kind: 'waterfall' | 'lock'; landY: number; wet: boolean }[] = [];
   const foamC = lin(atm.waterFoam);
   const waterC = lin(atm.waterShallow).lerp(lin(atm.waterFoam), 0.35);
-  for (const wf of waterfalls) {
+  const mistK = style.mist;
+  for (const wf of endFalls) {
     if (dry) break;
     const inward = wf.z < 0 ? 1 : -1;
     const r = riverAt(pts, wf.z);
@@ -316,9 +504,9 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         vel: 1.5,
         approach: 0.12,
         jets: 0,
-        mistCount: [6, 14, 22, 30][tier],
-        mistRise: 2.4,
-        mistOpacity: 0.32,
+        mistCount: Math.round([6, 14, 22, 30][tier] * mistK),
+        mistRise: 2.4 * Math.sqrt(mistK),
+        mistOpacity: 0.32 * Math.min(1.3, mistK),
         noise: tex.noise,
         puff,
         foam: foamC,
@@ -326,7 +514,47 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
       },
       irr,
     );
-    falls.push({ sheet, kind: 'waterfall' });
+    falls.push({ sheet, kind: 'waterfall', landY: -Infinity, wet: true });
+    group.add(sheet.group);
+  }
+  // cliff falls (decor 'waterfall' away from the river ends): they pour along the decor's facing
+  // (sin rot, cos rot), turned toward the water if it points away, from the cliff top found just behind
+  for (const wf of cliffFalls) {
+    if (dry) break;
+    let dx = Math.sin(wf.rot);
+    let dz = Math.cos(wf.rot);
+    if (waterDepthAt(map, wf.x + dx * 2.5, wf.z + dz * 2.5) < waterDepthAt(map, wf.x - dx * 2.5, wf.z - dz * 2.5)) {
+      dx = -dx;
+      dz = -dz;
+    }
+    let top = -Infinity;
+    for (const k of [0.3, 0.7, 1.1, 1.6, 2.2, 3.0]) top = Math.max(top, terrainH(wf.x - dx * k, wf.z - dz * k));
+    const lipY = Math.max(top + 0.04, groundY(map) + 1.0);
+    const lip = new THREE.Vector3(wf.x - dx * 0.3, lipY, wf.z - dz * 0.3);
+    const H = Math.max(0.3, lipY - fullY);
+    const along = 1.5 * Math.sqrt((2 * H) / 9.81);
+    const lx = lip.x + dx * along;
+    const lz = lip.z + dz * along;
+    const sheet = new FallSheet(
+      {
+        lip,
+        dir: new THREE.Vector2(dx, dz),
+        width: 3.2 * wf.scale,
+        vel: 1.5,
+        approach: 0.1,
+        jets: 0,
+        mistCount: Math.round([5, 10, 16, 22][tier] * mistK),
+        mistRise: 2.0 * Math.sqrt(mistK),
+        mistOpacity: 0.3 * Math.min(1.3, mistK),
+        noise: tex.noise,
+        puff,
+        foam: foamC,
+        water: waterC,
+      },
+      irr,
+    );
+    const wet = waterDepthAt(map, lx, lz) > -0.2;
+    falls.push({ sheet, kind: 'waterfall', landY: wet ? -Infinity : terrainH(lx, lz), wet });
     group.add(sheet.group);
   }
   if (lockMap) {
@@ -351,7 +579,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         },
         irr,
       );
-      falls.push({ sheet, kind: 'lock' });
+      falls.push({ sheet, kind: 'lock', landY: -Infinity, wet: true });
       group.add(sheet.group);
     }
   }
@@ -423,7 +651,9 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
       if (!(c > -field.ext)) return -Infinity;
       if (frozenNow) return c > -0.4 ? iceY : -Infinity;
       let base = levelY;
-      if (lockMap && gates.length >= 2 && (z < gates[0].z || z > gates[gates.length - 1].z)) base = fullY;
+      // lock reservoirs stay at full level, and never turn into low-tide puddles
+      const reservoir = lockMap && gates.length >= 2 && (z < gates[0].z || z > gates[gates.length - 1].z);
+      if (reservoir) base = fullY;
       const bed = sampleField(field, field.bed, x, z);
       const damp = waveDamp * smooth(-0.8, 1.4, c) * smooth(0.02, 0.7, base - bed);
       if (puddleMode > 0) base = Math.max(base, base + (bed + 0.035 - base) * puddleMode);
@@ -432,10 +662,12 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
       if (wp && whirlStrength > 0) {
         const d = Math.hypot(x - wp.x, z - wp.z) / wp.r;
         const fun = Math.exp(-d * d * 5) * 0.75 + (1 - smooth(0, 1, d)) * 0.25;
-        y -= 0.42 * whirlStrength * fun;
+        y -= style.whirlDepth * whirlStrength * Math.min(1.6, wp.strength / 2.4) * fun;
       }
+      // the shader keeps the surface off the bed the same way
+      y = Math.max(y, Math.min(base, bed + 0.12));
       if (y <= bed + 0.01) return -Infinity;
-      if (puddleMode > 0.5 && !(Math.max(sampleField(field, field.puddle, x, z), sampleField(field, field.stream, x, z)) > 0.3)) return -Infinity;
+      if (puddleMode > 0.5 && !reservoir && !(Math.max(sampleField(field, field.puddle, x, z), sampleField(field, field.stream, x, z)) > 0.3)) return -Infinity;
       return y;
     },
 
@@ -495,6 +727,8 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
       }
       const fullyFrozen = phase === 'frozen' || phase === 'cracking';
       surface.visible = !(freezeMap && fullyFrozen);
+      if (caps) caps.visible = surface.visible;
+      if (iceCap) iceCap.visible = iceVisible;
       waveDamp = (1 - freezeProg * 0.88) * (1 - puddleMode * 0.92) * (1 + surge * 0.45);
       // while the plates break up the water stays calm and a touch low so it never pokes through them
       let breakDip = 0;
@@ -582,17 +816,20 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         else if (phase === 'rising') s = Math.min(1, (tide!.risingSec - river.phaseLeft) / 0.6) * Math.min(1, river.phaseLeft / 0.9);
         else if (phase === 'high') s = Math.max(0, 1 - (tide!.highSec - river.phaseLeft) / 1.2) * 0.4;
         s = Math.max(0, Math.min(1, s));
-        f.sheet.update(time, levelY, s, lift);
-        if (s > 0.01 && nPour < MAX_POURS) {
+        f.sheet.update(time, Math.max(levelY, f.landY), s, lift);
+        if (s > 0.01 && f.wet && nPour < MAX_POURS) {
           const w = f.sheet.opts.width;
-          const dz = f.sheet.opts.dir.y;
-          pours[nPour].set(f.sheet.land.x, f.sheet.land.y + dz * 0.35, w * 0.5 * (dz < 0 ? -1 : 1), s * (f.kind === 'lock' ? 1 : 0.95));
+          const ddx = f.sheet.opts.dir.x;
+          const ddz = f.sheet.opts.dir.y;
+          pours[nPour].set(f.sheet.land.x + ddx * 0.35, f.sheet.land.y + ddz * 0.35, w * 0.5, s * (f.kind === 'lock' ? 1 : 0.95));
+          pourD[nPour].set(ddx, ddz);
           nPour++;
           // churn: a steady patter of ripples along the landing line
-          const rate = (f.kind === 'lock' ? 5 : 3) * s * rdt;
+          const rate = (f.kind === 'lock' ? 5 : 3 * Math.min(1.5, mistK)) * s * rdt;
           if (Math.random() < rate) {
             const side = (Math.random() - 0.5) * w * 0.9;
-            ripples.add(f.sheet.land.x + side, f.sheet.land.y + dz * Math.random() * 0.6, 0.28 + Math.random() * 0.2, 0.5 + Math.random() * 0.4, true);
+            const fwd = Math.random() * 0.6;
+            ripples.add(f.sheet.land.x + ddz * side + ddx * fwd, f.sheet.land.y - ddx * side + ddz * fwd, 0.28 + Math.random() * 0.2, 0.5 + Math.random() * 0.4, true);
           }
         }
       }
@@ -656,7 +893,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
         const lz = focus.z + camFwd.z * along;
         for (let i = 0; i < lamps.length; i++) {
           const l = lamps[i];
-          lampDist[i] = (l.x - lx) * (l.x - lx) + (l.z - lz) * (l.z - lz);
+          lampDist[i] = (l.ax - lx) * (l.ax - lx) + (l.az - lz) * (l.az - lz);
         }
         for (let i = 1; i < lampOrder.length; i++) {
           const v = lampOrder[i];
@@ -673,6 +910,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
           const flick = 0.9 + 0.1 * Math.sin(time * 9.1 + l.ph) * Math.sin(time * 5.3 + l.ph * 2.1);
           lampP[nLamp].set(l.x, l.y, l.z, l.r);
           lampC[nLamp].set(l.col.r, l.col.g, l.col.b).multiplyScalar(l.k * flick);
+          lampQ[nLamp].set(l.ax, l.az, 0, 0);
           nLamp++;
         }
       }
@@ -730,6 +968,9 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
       disposed = true;
       surfGeo.dispose();
       surfMat.dispose();
+      capGeo?.dispose();
+      capMat?.dispose();
+      if (iceCap) (iceCap.material as THREE.Material).dispose();
       causticGeo?.dispose();
       if (caustics) (caustics.material as THREE.Material).dispose();
       if (ice) (ice.material as THREE.Material).dispose();
@@ -742,6 +983,15 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     },
   };
 
-  extras.set(view, { syncedClock: 0, syncedAt: -1e9 });
+  extras.set(view, {
+    syncedClock: 0,
+    syncedAt: -1e9,
+    setLights(list: WaterLight[]) {
+      lamps.length = 0;
+      if (tier >= 1) for (const l of list) addLamp(l.x, l.y, l.z, new THREE.Color(l.color), l.k, (l.x * 1.7 + l.z * 0.9) % 6.28, l.r);
+      lampOrder = lamps.map((_, i) => i);
+      lampDist = new Float32Array(lamps.length);
+    },
+  });
   return view;
 }
