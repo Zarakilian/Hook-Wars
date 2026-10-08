@@ -67,10 +67,10 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
         button('How to Play', () => ctx.openHowTo(), { icon: 'book' }),
         leaveBtn)));
 
-  /** Resume goes through the game's own Escape handling so the app un-pauses solo matches. */
+  /** Resume closes the menu through the app, which also un-pauses solo matches. */
   function resume(): void {
     if (shopVisible) api.toggleShop(false);
-    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+    actions.resume();
     // if nothing listened (no match running), at least hide the menu
     if (menuVisible) window.setTimeout(() => menuVisible && setMenu(false), 0);
   }
@@ -230,7 +230,7 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
             actions.startSolo(s.soloConfig, s.soloTeam);
           }
         : null;
-      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch));
+      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch, local ? null : () => actions.backToLobby()));
     },
     toggleMenu(open?: boolean) {
       setMenu(open ?? !menuVisible);

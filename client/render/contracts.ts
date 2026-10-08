@@ -199,7 +199,8 @@ export type DamageKind = 'hook' | 'melee' | 'bash' | 'drown' | 'mine' | 'burn' |
 
 export interface FxSystem {
   update(dt: number, time: number, camera: THREE.Camera): void;
-  createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number): ChainView;
+  /** radius = hook head radius (HookSnap.r), scales the head with the Width upgrade */
+  createChain(kind: 0 | 1, family: FamilyId, team: Team, fxBits: number, radius?: number): ChainView;
   hookHit(p: THREE.Vector3, bullseye: boolean, ally: boolean): void;
   hookClash(p: THREE.Vector3): void;
   hookWall(p: THREE.Vector3): void;

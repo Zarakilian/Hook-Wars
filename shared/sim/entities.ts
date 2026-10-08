@@ -93,6 +93,7 @@ export interface Unit {
   ack: number;
   moveMul: number; // last computed movement multiplier, sent to the owner for prediction
 
+  healAcc: number; // visible healing (pie, fountain) waiting to be shown as a number
   hazardT: number; // seconds standing in quicksand
   bristleCd: number;
   inHazard: boolean;

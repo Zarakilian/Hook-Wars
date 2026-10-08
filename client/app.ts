@@ -245,8 +245,7 @@ export class App {
         const prev = app.state.settings;
         if (s.quality !== prev.quality) app.engine.setQuality(app.resolveQuality(s.quality));
         app.audio.setVolumes(s.master, s.sfx, s.music);
-        app.game?.setControls(s.controls);
-        app.game?.setShake(s.shake);
+        app.game?.setSettings(s);
         app.set({ settings: s });
       },
       startSolo(config: MatchConfig, team: Team) {
@@ -341,6 +340,15 @@ export class App {
           if (room && room.phase === 'match') app.conn?.send({ t: 'leaveRoom' });
           app.set({ screen: room && room.phase === 'lobby' ? 'lobby' : 'online', match: null });
         }
+      },
+      resume() {
+        if (app.game) app.toggleMenu(false);
+      },
+      backToLobby() {
+        if (!app.game || app.session?.local) return;
+        app.endGame();
+        app.menuOpen = false;
+        app.set({ screen: app.state.room ? 'lobby' : 'online', match: null });
       },
       uiSound(kind: 'click' | 'hover' | 'open') {
         app.audio.unlock();

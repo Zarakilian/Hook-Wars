@@ -94,7 +94,7 @@ export class GameSim {
       stats: { k: 0, d: 0, a: 0, hh: 0, ht: 0, bs: 0, dr: 0, sv: 0, dmg: 0, g: 0 },
       streak: 0, multi: 0, lastKillT: -99,
       input: { seq: 0, mx: 0, mz: 0, ax: sp.x + (p.team === 0 ? 5 : -5), az: sp.z, b: 0 }, queue: [], ack: 0, moveMul: 1,
-      hazardT: 0, bristleCd: 0, inHazard: false, surface: 'ground',
+      healAcc: 0, hazardT: 0, bristleCd: 0, inHazard: false, surface: 'ground',
       brain: null,
     };
     this.units.push(u);
@@ -236,6 +236,7 @@ export class GameSim {
 
     this.separateUnits();
     for (const u of this.units) this.postMove(u, dt);
+    if (this.tick % 15 === 0) this.flushHeals();
 
     if (this.phase === 'playing') {
       updateHazards(this, dt);
@@ -389,7 +390,7 @@ export class GameSim {
     }
     if (u.pieT > 0) {
       u.pieT -= dt;
-      this.heal(u, (BAL.pieHeal / BAL.pieTime) * dt);
+      this.heal(u, (BAL.pieHeal / BAL.pieTime) * dt, true);
     }
     const regen = FAMILY_DEFS[u.family].regenOutOfCombat;
     if (this.time - u.lastDamageT > 4 && u.hp < u.maxHp) this.heal(u, regen * dt);
@@ -559,7 +560,7 @@ export class GameSim {
     for (let t = 0; t < 2; t++) {
       const f = this.map.fountains[t];
       if (dist2(u.x, u.z, f.x, f.z) > f.r * f.r) continue;
-      if (t === u.team) this.heal(u, BAL.fountainHeal * u.maxHp * dt);
+      if (t === u.team) this.heal(u, BAL.fountainHeal * u.maxHp * dt, true);
       else if (this.phase === 'playing') this.damage(u, BAL.fountainBurn * u.maxHp * dt, -1, 'fountain');
     }
   }
@@ -1181,9 +1182,19 @@ export class GameSim {
     return amt;
   }
 
-  heal(u: Unit, amt: number): void {
+  /** visible: pie and fountain healing is shown as rising numbers (batched every half second) */
+  heal(u: Unit, amt: number, visible = false): void {
     if (u.state === UnitState.Dead || u.hp >= u.maxHp) return;
+    const before = u.hp;
     u.hp = Math.min(u.maxHp, u.hp + amt);
+    if (visible) u.healAcc += u.hp - before;
+  }
+
+  private flushHeals(): void {
+    for (const u of this.units) {
+      if (u.healAcc >= 5) this.emit({ e: 'heal', tg: u.id, amt: Math.round(u.healAcc) });
+      u.healAcc = 0;
+    }
   }
 
   private creditKiller(v: Unit, src: number): Unit | null {

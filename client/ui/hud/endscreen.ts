@@ -35,7 +35,7 @@ function confetti(): HTMLElement {
   return wrap;
 }
 
-export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null): HTMLElement {
+export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null, onLobby: (() => void) | null = null): HTMLElement {
   const you = e.players.find((p) => p.id === youId);
   const myTeam = you?.team;
   const won = myTeam !== undefined && e.winner === myTeam;
@@ -78,6 +78,7 @@ export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: ()
 
   const buttons = h('div', { class: 'end-buttons' });
   if (onRematch) buttons.append(button('Rematch', onRematch, { cls: 'big', icon: 'refresh' }));
+  if (onLobby) buttons.append(button('Back to lobby', onLobby, { cls: 'primary big', icon: 'anchor' }));
   buttons.append(button(local ? 'Back to setup' : 'Leave room', onLeave, { cls: local ? 'primary big' : 'big', icon: 'left' }));
   const note = local ? null : h('div', { class: 'end-note' }, icon('clock'), h('span', { text: 'Returning to the lobby automatically...' }));
 

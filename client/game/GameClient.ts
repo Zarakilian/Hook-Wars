@@ -51,6 +51,7 @@ interface UnitView {
   speed: number;
   lastSeen: number;
   visible: boolean;
+  stepT: number;
 }
 
 const HOOK_Y = 0.95;
@@ -284,7 +285,7 @@ export class GameClient {
     this.updateRunes(f, vdt);
     this.updateMines(snap);
     this.updateMovers(snap, renderTick);
-    this.updateHazards(snap, renderTick);
+    this.updateHazards(snap, renderTick, vdt);
     this.updateHelpers();
 
     // camera follows the (predicted) local unit, or the action when spectating
@@ -318,6 +319,8 @@ export class GameClient {
     this.water.update(vdt, this.time, river, this.engine.camera);
     this.fx.update(vdt, this.time, this.engine.camera);
     this.deps.audio.setListener(fx, fz);
+    this.deps.audio.setAmbience(this.map, river);
+    this.updateMusicMood(snap);
     this.deps.audio.update(dt);
     this.deps.hud.frame(hudFrame);
     this.engine.update(dt, this.time, fx, fz);
@@ -350,7 +353,7 @@ export class GameClient {
       if (!v) {
         const pudgy = createPudgy({ family: info.family, cosmetics: info.cosmetics, team: info.team, name: info.name, isLocal: id === this.youId, quality: this.engine.quality });
         this.root.add(pudgy.root);
-        v = { pudgy, state: u.st, stateSince: this.time, x: u.x, z: u.z, y: 0, face: u.f, speed: 0, lastSeen: this.time, visible: true };
+        v = { pudgy, state: u.st, stateSince: this.time, x: u.x, z: u.z, y: 0, face: u.f, speed: 0, lastSeen: this.time, visible: true, stepT: (id % 7) * 0.05 };
         this.views.set(id, v);
       }
       v.lastSeen = this.time;
@@ -400,6 +403,7 @@ export class GameClient {
         stateTime: this.time - v.stateSince,
         time: this.time,
       });
+      this.footsteps(v, u, info.family, dt);
     }
     // hide units we can no longer see; drop long-gone ones
     for (const [id, v] of this.views) {
@@ -414,6 +418,30 @@ export class GameClient {
     }
   }
 
+  /** Dust, splash or snow puffs plus footstep sounds for units walking near the camera. */
+  private footsteps(v: UnitView, u: UnitSnap, family: PlayerInfo['family'], dt: number): void {
+    if (!v.visible || v.speed < 1.2 || (u.st !== UnitState.Alive && u.st !== UnitState.Drowning)) return;
+    v.stepT -= dt * (v.speed / 6);
+    if (v.stepT > 0) return;
+    v.stepT = 0.32;
+    const f = this.cam.focusPoint;
+    if (Math.abs(v.x - f.x) > 26 || Math.abs(v.z - f.z) > 18) return;
+    const inChannel = channelDepthAt(this.map, v.x, v.z) > 0;
+    const surface: 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud' =
+      u.fl & UFlag.OnIce ? 'ice'
+        : u.fl & (UFlag.Shallow | UFlag.Swimming) ? 'shallow'
+          : inChannel ? 'mud'
+            : this.map.id === 'frostfang' ? 'snow'
+              : this.map.id === 'coralcove' ? 'sand'
+                : 'ground';
+    this.tmpV.set(v.x, v.y, v.z);
+    this.fx.footstep(this.tmpV, surface);
+    this.deps.audio.play('footstep', { x: v.x, z: v.z, family, volume: 0.45 });
+  }
+
+  /** Reused point arrays per hook, so chains do not allocate every frame. */
+  private readonly chainPts = new Map<number, THREE.Vector3[]>();
+
   private updateHooks(f: Frame, vdt: number): void {
     const seen = new Set<number>();
     const y = groundY(this.map) + HOOK_Y;
@@ -422,25 +450,30 @@ export class GameClient {
       let c = this.chains.get(h.i);
       const owner = this.players.get(h.o);
       if (!c) {
-        c = this.fx.createChain(h.k, owner?.family ?? 'brawler', owner?.team ?? 0, h.fx);
+        c = this.fx.createChain(h.k, owner?.family ?? 'brawler', owner?.team ?? 0, h.fx, h.r);
         this.chains.set(h.i, c);
       }
-      const pts: THREE.Vector3[] = [];
-      const ov = this.views.get(h.o);
-      if (ov && ov.visible) pts.push(ov.pudgy.getHandWorld(new THREE.Vector3()));
-      for (let i = 0; i + 1 < h.pts.length; i += 2) pts.push(new THREE.Vector3(h.pts[i], y, h.pts[i + 1]));
-      let hx = h.x;
-      let hz = h.z;
-      if (h.p === 2) {
-        // grapple anchor sticks to what it hit
-        hx = h.x;
-        hz = h.z;
+      let pool = this.chainPts.get(h.i);
+      if (!pool) {
+        pool = [];
+        this.chainPts.set(h.i, pool);
       }
-      pts.push(new THREE.Vector3(hx, y, hz));
-      if (pts.length < 2) pts.unshift(pts[0].clone());
+      let n = 0;
+      const next = (): THREE.Vector3 => {
+        if (n >= pool!.length) pool!.push(new THREE.Vector3());
+        return pool![n++];
+      };
+      const ov = this.views.get(h.o);
+      if (ov && ov.visible) ov.pudgy.getHandWorld(next());
+      for (let i = 0; i + 1 < h.pts.length; i += 2) next().set(h.pts[i], y, h.pts[i + 1]);
+      // the head; a latched grapple (phase 2) sits on whatever it hit
+      next().set(h.x, y, h.z);
+      if (n < 2) next().copy(pool[0]);
+      pool.length = n;
       c.setVisible(true);
-      c.update(pts, vdt, { retracting: h.p === 1, carrying: h.tg >= 0 || h.ru >= 0, time: this.time });
+      c.update(pool, vdt, { retracting: h.p === 1, carrying: h.tg >= 0 || h.ru >= 0, time: this.time });
     }
+    for (const id of this.chainPts.keys()) if (!seen.has(id)) this.chainPts.delete(id);
     for (const [id, c] of this.chains) {
       if (seen.has(id)) continue;
       c.dispose();
@@ -512,13 +545,13 @@ export class GameClient {
     }
   }
 
-  private updateHazards(snap: Snapshot, renderTick: number): void {
+  private updateHazards(snap: Snapshot, renderTick: number, vdt: number): void {
     const mt = Math.max(0, snap.mt - (snap.t - renderTick) * TICK_DT);
     const hz = this.session.start.hazards;
     for (let i = 0; i < hz.length; i++) {
       const h = hz[i];
       const active = !h.channel || !snap.w.deep;
-      this.hazards[i].update(1 / 60, this.time, hazardCycle(h, mt), active);
+      this.hazards[i].update(vdt, this.time, hazardCycle(h, mt), active);
       this.hazards[i].root.position.y = this.world.groundHeight(h.x, h.z);
     }
   }
@@ -612,7 +645,7 @@ export class GameClient {
         this.cam.shake(0.25 * this.nearMe(ev.x, ev.z, 25));
         break;
       case 'hookDone':
-        if (ev.tg >= 0) a.play('hookReturn', { x: ev.x, z: ev.z });
+        if (ev.tg >= 0) a.play('hookReturn', { x: ev.x, z: ev.z, family: this.players.get(ev.u)?.family });
         break;
       case 'hookBreak':
         a.play('hookBreak', { x: ev.x, z: ev.z });
@@ -626,7 +659,7 @@ export class GameClient {
         break;
       case 'bash': {
         this.fx.bash(this.p3(ev.x, ev.z, 0.6), ev.dx, ev.dz);
-        a.play('bash', { x: ev.x, z: ev.z });
+        a.play('bash', { x: ev.x, z: ev.z, family: this.players.get(ev.u)?.family });
         if (ev.u === me && ev.hits.length) this.hitstop = 0.05;
         if (ev.hits.includes(me)) this.cam.shake(0.45);
         break;
@@ -643,11 +676,11 @@ export class GameClient {
         const mine = ev.tg === me || ev.src === me;
         const crit = ev.kind === 'hook' && (this.lastBull.get(ev.tg) ?? -10) > this.time - 0.3;
         this.fx.damageNumber(p, ev.amt, ev.kind as DamageKind, mine, crit);
-        if (ev.tg === me && ev.kind !== 'burn' && ev.kind !== 'fountain' && ev.kind !== 'hazard') a.play('hurt');
+        if (ev.tg === me && ev.kind !== 'burn' && ev.kind !== 'fountain' && ev.kind !== 'hazard') a.play('hurt', { family: this.players.get(me)?.family });
         break;
       }
       case 'kill':
-        a.play('death', { x: ev.x, z: ev.z });
+        a.play('death', { x: ev.x, z: ev.z, family: this.players.get(ev.v)?.family });
         if (ev.k === me) {
           this.cam.shake(0.2);
           this.views.get(me)?.pudgy.play('celebrate');
@@ -655,7 +688,11 @@ export class GameClient {
         break;
       case 'corpse': {
         const info = this.players.get(ev.v);
-        if (info) this.fx.corpseBurst(this.p3(ev.x, ev.z, 0.8), pudgyPalette(info.family, info.cosmetics, info.team));
+        const p = this.p3(ev.x, ev.z, 0.8);
+        // over open water the debris should splash on the surface, not sink into the bed
+        const wy = this.water.surfaceHeight(ev.x, ev.z);
+        if (Number.isFinite(wy) && wy + 0.8 > p.y) p.y = wy + 0.8;
+        if (info) this.fx.corpseBurst(p, pudgyPalette(info.family, info.cosmetics, info.team));
         a.play('corpse', { x: ev.x, z: ev.z });
         this.cam.shake(0.3 * this.nearMe(ev.x, ev.z, 14));
         break;
@@ -674,6 +711,11 @@ export class GameClient {
       case 'drownSave':
         a.play('drownSave');
         break;
+      case 'heal': {
+        const p = this.unitPos(ev.tg, 2.2);
+        if (p) this.fx.damageNumber(p, ev.amt, 'heal', ev.tg === me, false);
+        break;
+      }
       case 'splash': {
         const p = this.p3(ev.x, ev.z, 0);
         const wy = this.water.surfaceHeight(ev.x, ev.z);
@@ -738,6 +780,20 @@ export class GameClient {
     this.deps.hud.event(ev, hf);
   }
 
+  private musicMood: 'match' | 'tense' = 'match';
+
+  /** Tense music in overtime or a close finish; the audio module also reacts to the overtime callout. */
+  private updateMusicMood(snap: Snapshot): void {
+    if (snap.ph !== 'playing' || this.ended) return;
+    const close = Math.abs(snap.s[0] - snap.s[1]) <= 1;
+    const nearWin = Math.max(snap.s[0], snap.s[1]) >= this.config.killsToWin - 2;
+    const want = snap.ot === 1 || (close && (snap.tl < 60 || nearWin)) ? 'tense' : 'match';
+    if (want !== this.musicMood) {
+      this.musicMood = want;
+      this.deps.audio.setMusic(want);
+    }
+  }
+
   private countdownBeeps(snap: Snapshot): void {
     if (snap.ph !== 'countdown') return;
     const c = Math.ceil(snap.cd);
@@ -780,6 +836,8 @@ export class GameClient {
     return {
       screen: proj.screen,
       view: proj.view,
+      hooks: f.hooks,
+      runes: f.runes,
       map: this.map,
       config: this.config,
       hazards: this.session.start.hazards,
@@ -802,13 +860,14 @@ export class GameClient {
     };
   }
 
-  setControls(scheme: 'modern' | 'classic'): void {
-    this.input.scheme = scheme;
-    this.input.clearDestination();
-  }
-
-  setShake(s: number): void {
-    this.cam.shakeScale = s;
+  /** Apply changed settings mid-match: controls, shake and the range ring take effect at once. */
+  setSettings(s: Settings): void {
+    if (s.controls !== this.input.scheme) {
+      this.input.scheme = s.controls;
+      this.input.clearDestination();
+    }
+    this.cam.shakeScale = s.shake;
+    this.deps.settings = s;
   }
 
   get hudState(): HudFrame | null {

@@ -66,6 +66,10 @@ export interface AppActions {
   sell(slot: number): void;
   upgrade(stat: UpgradeStat): void;
   leaveMatch(): void;
+  /** Close the in-match Esc menu (un-pauses a solo match). */
+  resume(): void;
+  /** Online, after a match ends: close the end screen and wait in the room's lobby (stays in the room). */
+  backToLobby(): void;
   /** UI sound hooks */
   uiSound(kind: 'click' | 'hover' | 'open'): void;
 }
