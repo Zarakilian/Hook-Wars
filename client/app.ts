@@ -22,6 +22,7 @@ export class App {
   private game: GameClient | null = null;
   private toastId = 0;
   private menuOpen = false;
+  private readonly act: AppActions;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.canvas = canvas;
@@ -39,7 +40,8 @@ export class App {
     this.engine = createEngine(canvas, this.resolveQuality(settings.quality));
     this.audio = createAudio();
     this.audio.setVolumes(settings.master, settings.sfx, settings.music);
-    this.ui = createUI(uiRoot, this.actions());
+    this.act = this.actions();
+    this.ui = createUI(uiRoot, this.act);
     const unlock = () => this.audio.unlock();
     window.addEventListener('pointerdown', unlock, { once: false });
     window.addEventListener('keydown', unlock, { once: false });
@@ -65,6 +67,24 @@ export class App {
       },
       state: () => this.state,
       game: () => this.game,
+      actions: this.act,
+      /** start a solo match with config overrides, e.g. solo({ mapId: 'coralcove', riverMode: 'tidal' }) */
+      solo: (patch: Partial<MatchConfig> = {}, team: Team = 0) => {
+        this.act.startSolo({ ...this.state.settings.soloConfig, ...patch }, team);
+        return this.game !== null;
+      },
+      /** solo only: move your own unit, e.g. to inspect a spot */
+      teleport: (x: number, z: number) => {
+        const s = this.session;
+        if (s instanceof LocalSession) {
+          const u = s.sim.unitById.get(s.start.you);
+          if (u) {
+            u.x = x;
+            u.z = z;
+          }
+        }
+      },
+      menu: () => this.act.leaveMatch(),
     };
   }
 

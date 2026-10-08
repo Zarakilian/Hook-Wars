@@ -92,6 +92,10 @@ export interface HudFrame {
   local: boolean;
   /** world position of the local unit and the camera focus, for the minimap */
   focus: { x: number; z: number };
+  /** screen-space anchor above each visible unit's head (CSS pixels), for health bars and names */
+  screen: Map<number, { x: number; y: number; onScreen: boolean }>;
+  /** world-space camera view rectangle corners on the ground (x,z pairs), for the minimap frustum */
+  view: [number, number][];
 }
 
 export interface Hud {

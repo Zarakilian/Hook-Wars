@@ -287,13 +287,6 @@ export class GameClient {
     this.updateHazards(snap, renderTick);
     this.updateHelpers();
 
-    const hudFrame = this.buildHudFrame(snap);
-    this.hudFrame = hudFrame;
-    const evs: { tick: number; ev: GameEvent }[] = [];
-    this.buffer.takeEvents(renderTick, evs);
-    for (const { ev } of evs) this.handleEvent(ev, hudFrame);
-    this.countdownBeeps(snap);
-
     // camera follows the (predicted) local unit, or the action when spectating
     const meView = this.views.get(this.youId);
     let fx = this.cam.focusPoint.x;
@@ -312,6 +305,14 @@ export class GameClient {
       fz = sz / f.units.size;
     }
     this.cam.update(dt, fx, groundY(this.map), fz, this.input.aim.x, this.input.aim.z);
+
+    // HUD data is built after the camera moves so overhead bars track exactly
+    const hudFrame = this.buildHudFrame(snap);
+    this.hudFrame = hudFrame;
+    const evs: { tick: number; ev: GameEvent }[] = [];
+    this.buffer.takeEvents(renderTick, evs);
+    for (const { ev } of evs) this.handleEvent(ev, hudFrame);
+    this.countdownBeeps(snap);
 
     this.world.update(vdt, this.time, river);
     this.water.update(vdt, this.time, river, this.engine.camera);
@@ -747,9 +748,38 @@ export class GameClient {
     this.lastCountdown = c;
   }
 
+  private readonly ndc = new THREE.Vector3();
+  private readonly viewRay = new THREE.Raycaster();
+  private readonly viewPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+  /** Screen anchors above heads and the camera's ground footprint, for HUD overlays. */
+  private projectForHud(): { screen: HudFrame['screen']; view: [number, number][] } {
+    const cam = this.engine.camera;
+    const w = this.deps.canvas.clientWidth || window.innerWidth;
+    const hgt = this.deps.canvas.clientHeight || window.innerHeight;
+    const screen: HudFrame['screen'] = new Map();
+    for (const [id, v] of this.views) {
+      if (!v.visible) continue;
+      this.ndc.set(v.x, v.y + 2.75, v.z).project(cam);
+      const on = this.ndc.z < 1 && Math.abs(this.ndc.x) < 1.1 && Math.abs(this.ndc.y) < 1.1;
+      screen.set(id, { x: ((this.ndc.x + 1) / 2) * w, y: ((1 - this.ndc.y) / 2) * hgt, onScreen: on });
+    }
+    const view: [number, number][] = [];
+    this.viewPlane.constant = -groundY(this.map);
+    for (const [nx, ny] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+      this.viewRay.setFromCamera(new THREE.Vector2(nx, ny), cam);
+      const hit = this.viewRay.ray.intersectPlane(this.viewPlane, this.tmpV);
+      if (hit) view.push([hit.x, hit.z]);
+    }
+    return { screen, view };
+  }
+
   private buildHudFrame(snap: Snapshot): HudFrame {
     const f = this.frameRef!;
+    const proj = this.projectForHud();
     return {
+      screen: proj.screen,
+      view: proj.view,
       map: this.map,
       config: this.config,
       hazards: this.session.start.hazards,

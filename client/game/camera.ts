@@ -65,6 +65,7 @@ export class CameraRig {
     cam.position.y += sy;
     cam.position.z += this.kick.z;
     cam.lookAt(this.focus.x + this.kick.x * 0.5, this.focus.y, this.focus.z + this.kick.z * 0.5);
+    cam.updateMatrixWorld();
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
     this.kick.multiplyScalar(Math.exp(-dt * 12));
   }

@@ -17,6 +17,28 @@ export const TEAM_COLORS: Record<Team, { main: number; dark: number; light: numb
   1: { main: 0x3d8be0, dark: 0x1e4f8f, light: 0x8fc4ff, name: 'Blue Gill' },
 };
 
+/**
+ * Cosmetic option names per family. Cosmetics indices are taken modulo these lengths.
+ * client/render/models/pudgy.ts must build a distinct look for every entry; the UI shows these names.
+ */
+export const COSMETIC_NAMES: Record<FamilyId, { hats: readonly string[]; accents: readonly string[]; faces: readonly string[] }> = {
+  brawler: {
+    hats: ['Bare Head', 'Captain Cap', 'Sou\'wester', 'Bobble Beanie', 'Bucket Hat', 'Bandana', 'Pirate Tricorn', 'Lighthouse Helm'],
+    accents: ['Plain Apron', 'Striped Shirt', 'Anchor Tattoo', 'Fish Belt', 'Rope Braces', 'Oilskin Coat', 'Gold Earring', 'Net Cape'],
+    faces: ['Bushy Beard', 'Mutton Chops', 'Clean Grin', 'Eyepatch', 'Walrus Tache', 'Gap Tooth'],
+  },
+  ogre: {
+    hats: ['Bare Head', 'Mushroom Cap', 'Lily Crown', 'Skull Helm', 'Antler Rack', 'Moss Wig', 'Turtle Shell', 'Firefly Halo'],
+    accents: ['Leaf Sash', 'Bone Necklace', 'Mud Paint', 'Reed Skirt', 'Frog Pouch', 'Vine Wraps', 'Shell Belt', 'Glow Spots'],
+    faces: ['Big Tusks', 'Snaggle Fang', 'Warty Nose', 'One Eye', 'Toothy Grin', 'Whisker Moss'],
+  },
+  bot: {
+    hats: ['Bare Dome', 'Smokestack', 'Radar Dish', 'Lamp Head', 'Gear Crown', 'Propeller', 'Welding Mask', 'Kettle Lid'],
+    accents: ['Clean Plates', 'Rust Patches', 'Hazard Stripes', 'Brass Trim', 'Rivet Rows', 'Pipe Bundle', 'Gauge Panel', 'Copper Coils'],
+    faces: ['Visor Eye', 'Twin Lenses', 'Grille Mouth', 'Cyclops Lamp', 'Monocle Sensor', 'Screen Smile'],
+  },
+};
+
 // ---------------------------------------------------------------------------------------------
 // Vertical layout. All modules place things with these, so units, water and terrain line up.
 // ---------------------------------------------------------------------------------------------
