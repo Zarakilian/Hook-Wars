@@ -48,9 +48,14 @@ export class World {
     this.updateMovers(0, true);
   }
 
-  /** Signed metres inside the river channel (> 0 = in channel), islands count as ground. */
+  /** Signed metres inside the river channel (> 0 = in channel), islands and platform decks count as ground. */
   channel(x: number, z: number): number {
     return channelDepthAt(this.map, x, z);
+  }
+
+  /** channel() for a body that may be under a deck: under = the water or bed below the deck, decks ignored. */
+  channelFor(x: number, z: number, under: boolean | undefined): number {
+    return under ? channelDepthAt(this.map, x, z, true) : channelDepthAt(this.map, x, z);
   }
 
   /** Outward gradient of the channel field (points from water toward land). */
@@ -180,11 +185,29 @@ export class World {
   }
 }
 
+/** Mover velocity along z at a mover clock (a ranged mover reverses at the ends of its range). */
+export function moverVz(m: MoverDef, clock: number): number {
+  if (!m.range) return m.speed;
+  const len = Math.max(1e-3, m.range[1] - m.range[0]);
+  const t = m.offset - m.range[0] + m.speed * clock;
+  const ph = ((t % (2 * len)) + 2 * len) % (2 * len);
+  return ph <= len ? m.speed : -m.speed;
+}
+
 function poseMover(world: World, m: MoverDef, clock: number, span: number, p: MoverPose): void {
-  // travel along z, wrapping over the full map depth plus margin
-  const start = -world.halfD - 8;
-  let z = m.offset + m.speed * clock - start;
-  z = ((z % span) + span) % span + start;
+  let z: number;
+  if (m.range) {
+    // shuttle inside [zMin, zMax]: a triangle wave, continuous at the turns
+    const len = Math.max(1e-3, m.range[1] - m.range[0]);
+    const t = m.offset - m.range[0] + m.speed * clock;
+    const ph = ((t % (2 * len)) + 2 * len) % (2 * len);
+    z = m.range[0] + (ph <= len ? ph : 2 * len - ph);
+  } else {
+    // travel along z, wrapping over the full map depth plus margin
+    const start = -world.halfD - 8;
+    z = m.offset + m.speed * clock - start;
+    z = ((z % span) + span) % span + start;
+  }
   const c = world.riverCenter(z);
   const x = c.x + m.lane * c.hw;
   p.x = x;
@@ -270,8 +293,8 @@ function sweepCapsule(
 /** Ground surface under a point for a given river state. */
 export type Surface = 'ground' | 'channelDry' | 'shallow' | 'ice' | 'deep';
 
-export function surfaceAt(world: World, river: RiverState, x: number, z: number): Surface {
-  if (world.channel(x, z) <= 0) return 'ground';
+export function surfaceAt(world: World, river: RiverState, x: number, z: number, under?: boolean): Surface {
+  if (world.channelFor(x, z, under) <= 0) return 'ground';
   if (river.frozen) return 'ice';
   if (river.deep) return 'deep';
   if (river.shallow) return 'shallow';

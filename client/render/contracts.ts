@@ -205,6 +205,8 @@ export interface ChainView {
   /** points: world positions from the hand (first) to the hook head (last). */
   update(points: THREE.Vector3[], dt: number, state: { retracting: boolean; carrying: boolean; time: number }): void;
   setVisible(v: boolean): void;
+  /** Change the fx bits (and head radius) of a live chain: the predicted online hook hands over to the real one. */
+  setFx?(fxBits: number, radius?: number): void;
   dispose(): void;
 }
 
@@ -238,6 +240,8 @@ export interface FxSystem {
    * for a few frames fades its aura out. Must cost nothing for units with no buff bits.
    */
   aura(id: number, p: THREE.Vector3, flags: number, team: Team): void;
+  /** Build every hook skin these players wear now, so no throw builds geometry mid-match. */
+  prepareSkins?(players: readonly { family: FamilyId; loadout?: { hands?: string } }[]): void;
   dispose(): void;
 }
 

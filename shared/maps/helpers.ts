@@ -191,7 +191,7 @@ export function waterDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<Pi
   return channelDepthAt(map, x, z, true);
 }
 
-/** If (x,z) is on a platform deck, that platform (decks sit at groundY(map), the bank top). */
+/** If (x,z) is on a platform deck, that platform (deck tops sit at platformDeckY in client/render/contracts.ts). */
 export function platformAt(map: Partial<Pick<MapDef, 'platforms'>>, x: number, z: number): import('./types.ts').Platform | null {
   if (!map.platforms) return null;
   for (const p of map.platforms) {

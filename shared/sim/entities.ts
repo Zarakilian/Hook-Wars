@@ -62,6 +62,11 @@ export interface Unit {
   activeGrapple: number; // own grapple id or -1
 
   drownT: number;
+  /** under a deck (dock, bridge, pier) on the bed below it, see deckLayer() in sim/movement.ts */
+  under: boolean;
+  /** position at the start of the tick, for the deck layer */
+  tickX: number;
+  tickZ: number;
   respawnT: number;
   spawnProt: number;
 

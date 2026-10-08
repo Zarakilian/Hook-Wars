@@ -15,7 +15,7 @@ import {
 import { World } from '../world.ts';
 import type { HazardInst, Hook, Mine, Rune, Unit } from './entities.ts';
 import { buildHazards, updateHazards } from './hazards.ts';
-import { blockWater, stepMove } from './movement.ts';
+import { blockWater, deckLayer, stepMove } from './movement.ts';
 import { moversFloat, moversPresent, riverStateAt } from './river.ts';
 import { updateRunes } from './runes.ts';
 import { updateBots } from './bots.ts';
@@ -131,7 +131,7 @@ export class GameSim {
       stats: { k: 0, d: 0, a: 0, hh: 0, ht: 0, bs: 0, dr: 0, sv: 0, dmg: 0, g: 0 },
       streak: 0, multi: 0, lastKillT: -99,
       input: { seq: 0, mx: 0, mz: 0, ax: sp.x + (p.team === 0 ? 5 : -5), az: sp.z, b: 0 }, queue: [], ack: 0, idleTicks: 0, moveMul: 1,
-      healAcc: 0, hazardT: 0, bristleCd: 0, inHazard: false, surface: 'ground',
+      healAcc: 0, hazardT: 0, bristleCd: 0, inHazard: false, surface: 'ground', under: false, tickX: sp.x, tickZ: sp.z,
       brain: null,
     };
     this.units.push(u);
@@ -266,6 +266,10 @@ export class GameSim {
 
     if (this.phase !== 'ended') updateBots(this);
 
+    for (const u of this.units) {
+      u.tickX = u.x;
+      u.tickZ = u.z;
+    }
     for (const u of this.units) this.consumeInput(u);
     for (const u of this.units) this.updateTimers(u, dt);
     if (this.phase === 'playing') for (const u of this.units) this.handleActions(u, dt);
@@ -459,7 +463,7 @@ export class GameSim {
     if (!def.consumable || slot.charges <= 0) return;
     if (u.state === UnitState.Dead || u.state === UnitState.Hooked) return;
     if (slot.id === 'mine') {
-      if (this.world.channel(u.x, u.z) > 0 && this.river.deep) return;
+      if (this.world.channelFor(u.x, u.z, u.under) > 0 && this.river.deep) return;
       const own = this.mines.filter((m) => m.owner === u.id && !m.dead);
       if (own.length >= BAL.maxMines) own[0].dead = true;
       const back = u.face + Math.PI;
@@ -663,7 +667,8 @@ export class GameSim {
 
   private postMove(u: Unit, dt: number): void {
     if (u.state === UnitState.Dead) return;
-    const inWaterZone = this.world.channel(u.x, u.z) > 0;
+    deckLayer(this.world, this.river, u, u.tickX, u.tickZ, u.state === UnitState.Hooked || u.state === UnitState.Grappling);
+    const inWaterZone = this.world.channelFor(u.x, u.z, u.under) > 0;
     const free = u.state === UnitState.Alive || u.state === UnitState.Casting || u.state === UnitState.Drowning;
     if (free) {
       if (inWaterZone && this.river.deep) {
@@ -726,7 +731,7 @@ export class GameSim {
   private nudge(u: Unit, dx: number, dz: number): void {
     let nx = u.x + dx;
     let nz = u.z + dz;
-    if (this.river.deep && this.world.channel(u.x, u.z) <= 0 && this.world.channel(nx, nz) > 0) {
+    if (this.river.deep && this.world.channelFor(u.x, u.z, u.under) <= 0 && this.world.channel(nx, nz) > 0) {
       const r = blockWater(this.world, nx, nz);
       nx = r.x;
       nz = r.z;
@@ -1129,7 +1134,7 @@ export class GameSim {
       l = 1;
     }
     const base = Math.atan2(ax / l, az / l);
-    const ownerDry = this.world.channel(owner.x, owner.z) <= 0;
+    const ownerDry = this.world.channelFor(owner.x, owner.z, owner.under) <= 0;
     for (let i = 0; i < 12; i++) {
       const sign = i % 2 === 0 ? 1 : -1;
       const a = base + sign * Math.ceil(i / 2) * (Math.PI / 6);
@@ -1484,6 +1489,9 @@ export class GameSim {
     u.z = sp.z + this.rng.range(-0.4, 0.4);
     u.vx = u.vz = 0;
     u.y = 0;
+    u.under = false;
+    u.tickX = u.x;
+    u.tickZ = u.z;
     u.hp = u.maxHp;
     u.state = UnitState.Alive;
     u.stateT = 0;
@@ -1711,6 +1719,7 @@ export class GameSim {
     if (u.bendy > 0) fl |= UFlag.Bendy;
     if (u.bouncy > 0) fl |= UFlag.Bouncy;
     if (u.longshot > 0) fl |= UFlag.Longshot;
+    if (u.under) fl |= UFlag.UnderDeck;
     const s: UnitSnap = { i: u.id, x: q2(u.x), z: q2(u.z), y: q2(u.y), f: q2(u.face), hp: Math.ceil(u.hp), mhp: u.maxHp, st: u.state, fl };
     if (u.castKind) s.ck = u.castKind;
     else if (u.meleeT > 0) s.ck = 'melee';

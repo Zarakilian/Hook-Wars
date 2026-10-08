@@ -5,7 +5,10 @@ import { GameSim } from '../shared/sim/sim.ts';
 import { riverStateAt } from '../shared/sim/river.ts';
 import { BAL, DEFAULT_CONFIG, HOOK_LEVELS, TICK_RATE } from '../shared/constants.ts';
 import { getMap } from '../shared/maps/index.ts';
-import { Btn, UnitState, type MatchConfig, type PlayerInfo, type Team } from '../shared/types.ts';
+import { Btn, UFlag, UnitState, type MatchConfig, type PlayerInfo, type Team } from '../shared/types.ts';
+import { channelDepthAt, platformAt } from '../shared/maps/helpers.ts';
+import { stepMove, type MoveBody } from '../shared/sim/movement.ts';
+import { World } from '../shared/world.ts';
 
 function players(teams: Team[]): PlayerInfo[] {
   return teams.map((team, i) => ({ id: i + 1, name: `P${i + 1}`, team, family: 'brawler', loadout: {}, isBot: false }));
@@ -239,4 +242,113 @@ test('a stealthed unit that gets hooked is revealed to everyone', () => {
   assert.equal(ghost.puff, 0, 'hooked unit kept its stealth');
   const snap = sim.snapshotFor(1);
   assert.ok(snap.u.some((u) => u.i === 3));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Deck layering (2026-10-09): docks and bridges are land from the bank, a roof from the bed
+// ---------------------------------------------------------------------------------------------
+
+/** A Mirelight deck over a channel, a point in the open channel next to it and a point on the bank next to it. */
+function deckApproach(mapId: 'mirelight' | 'lanternwharf') {
+  const map = getMap(mapId);
+  for (const p of map.platforms ?? []) {
+    if (channelDepthAt(map, p.x, p.z, true) <= 0) continue;
+    let fromChannel: { x: number; z: number } | null = null;
+    let fromBank: { x: number; z: number } | null = null;
+    for (let a = 0; a < Math.PI * 2 && (!fromChannel || !fromBank); a += Math.PI / 24) {
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      let d = 0;
+      while (d < 20 && platformAt(map, p.x + dx * d, p.z + dz * d) === p) d += 0.1;
+      const x = p.x + dx * (d + 0.9);
+      const z = p.z + dz * (d + 0.9);
+      if (platformAt(map, x, z) || Math.abs(x) > 34 || Math.abs(z) > 22) continue;
+      const inner = channelDepthAt(map, p.x + dx * (d - 0.3), p.z + dz * (d - 0.3), true);
+      if (!fromChannel && channelDepthAt(map, x, z) > 0.6 && inner > 0) fromChannel = { x, z };
+      if (!fromBank && channelDepthAt(map, x, z) < -0.6 && inner < 0) fromBank = { x, z };
+    }
+    if (fromChannel && fromBank) return { map, p, fromChannel, fromBank };
+  }
+  throw new Error(`${mapId}: no deck with both a channel and a bank approach`);
+}
+
+function walkTo(sim: GameSim, id: number, x: number, z: number, ticks: number, each?: () => void) {
+  const u = sim.unitById.get(id)!;
+  for (let i = 0; i < ticks; i++) {
+    const dx = x - u.x;
+    const dz = z - u.z;
+    const l = Math.hypot(dx, dz) || 1;
+    input(sim, id, dx / l, dz / l, x, z);
+    sim.step();
+    each?.();
+    if (l < 0.3) break;
+  }
+}
+
+test('dry bed: walking into a dock from the bed goes UNDER it, from the bank goes ON it', () => {
+  const { p, fromChannel, fromBank } = deckApproach('mirelight');
+  const sim = setup([0, 1], { mapId: 'mirelight', riverMode: 'dry' });
+  const a = sim.unitById.get(1)!;
+  a.x = fromChannel.x;
+  a.z = fromChannel.z;
+  let sawUnder = false;
+  walkTo(sim, 1, p.x, p.z, TICK_RATE * 6, () => {
+    if (a.under) sawUnder = true;
+  });
+  assert.ok(sawUnder && a.under, 'a unit walking in from the bed must stay under the deck');
+  assert.ok(sim.world.channelFor(a.x, a.z, a.under) > 0, 'under the deck the unit is in the channel');
+  const me = sim.snapshotFor(1).u.find((u) => u.i === 1)!;
+  assert.ok(me.fl & UFlag.UnderDeck, 'the snapshot carries UnderDeck');
+  // back out into the open channel: the layer clears
+  walkTo(sim, 1, fromChannel.x, fromChannel.z, TICK_RATE * 6);
+  assert.equal(a.under, false);
+
+  // from the bank: on top the whole way
+  a.x = fromBank.x;
+  a.z = fromBank.z;
+  for (let i = 0; i < 2; i++) sim.step();
+  let everUnder = false;
+  let onDeck = false;
+  walkTo(sim, 1, p.x, p.z, TICK_RATE * 6, () => {
+    if (a.under) everUnder = true;
+    if (platformAt(sim.map, a.x, a.z) && channelDepthAt(sim.map, a.x, a.z, true) > 0) onDeck = true;
+  });
+  assert.ok(onDeck, 'the unit never walked out over the channel on the deck');
+  assert.equal(everUnder, false, 'a unit walking on from the bank must stay on top of the deck');
+  assert.ok(sim.world.channelFor(a.x, a.z, a.under) <= 0, 'on the deck the unit is on land');
+});
+
+test('deep water: a swimmer climbs onto a dock like onto the bank', () => {
+  const { p, fromChannel } = deckApproach('mirelight');
+  const sim = setup([0, 1], { mapId: 'mirelight', riverMode: 'deep' });
+  const a = sim.unitById.get(1)!;
+  // start right at the deck edge, in the water
+  const dx = p.x - fromChannel.x;
+  const dz = p.z - fromChannel.z;
+  const l = Math.hypot(dx, dz);
+  a.x = fromChannel.x + (dx / l) * 0.7;
+  a.z = fromChannel.z + (dz / l) * 0.7;
+  walkTo(sim, 1, p.x, p.z, TICK_RATE * 3);
+  assert.equal(a.under, false, 'deep water never puts a unit under a deck');
+  assert.ok(platformAt(sim.map, a.x, a.z), 'the swimmer should end on the deck');
+  assert.equal(a.state, UnitState.Alive, 'on the deck the swimmer is out of the water');
+  assert.notEqual(a.state, UnitState.Dead, 'the swimmer should reach the deck before drowning');
+});
+
+test('prediction and the server agree on the deck layer (same stepMove)', () => {
+  const { map, p, fromChannel } = deckApproach('mirelight');
+  const world = new World(map);
+  const river = { level: 0, deep: false, shallow: false, frozen: false, phase: 'none' as const, phaseLeft: 0, cycle: false };
+  const body: MoveBody = { x: fromChannel.x, z: fromChannel.z, vx: 0, vz: 0, under: false };
+  let entered = false;
+  for (let i = 0; i < TICK_RATE * 6; i++) {
+    const dx = p.x - body.x;
+    const dz = p.z - body.z;
+    const l = Math.hypot(dx, dz);
+    if (l < 0.3) break;
+    stepMove(world, river, body, dx / l, dz / l, 1, 1 / TICK_RATE);
+    if (platformAt(map, body.x, body.z)) entered = true;
+  }
+  assert.ok(entered, 'the body never reached the deck');
+  assert.equal(body.under, true, 'stepMove alone must apply the deck layer, so the predictor matches the sim');
 });

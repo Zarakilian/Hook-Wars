@@ -2,7 +2,7 @@
 import type { FamilyId, ItemId, MatchConfig, RuneType, UpgradeStat } from './types.ts';
 
 export const GAME_VERSION = '0.1.0';
-export const PROTOCOL_VERSION = 2; // 2: slot loadouts, accounts and the economy messages
+export const PROTOCOL_VERSION = 3; // 2: slot loadouts, accounts, economy messages. 3: snapshot acks, rejoin tokens, spectator delay
 
 export const TICK_RATE = 30;
 export const TICK_DT = 1 / TICK_RATE;

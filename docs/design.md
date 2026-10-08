@@ -68,7 +68,9 @@ Cosmetic option names live in `client/render/contracts.ts` as `COSMETIC_NAMES`: 
 | Items | 1 to 4 | 1 to 4 | Use consumables |
 | Shop, scoreboard, chat, menu | B, Tab, Enter, Esc | same | |
 
-Hook upgrades: Damage, Range, Speed and Width, 5 levels each. Items: Ricochet Spring, Ember Barb, Lucky Sinker, Iron Gut, Swift Wellies, Bramble Mine, Healing Pie, Puffball. Runes spawn on river spots every 40 s, and you hook them to claim them: Haste, Double Damage, Iron Skin, Ghost, Bounty. All numbers are in `shared/constants.ts`.
+Hook upgrades: Damage, Range, Speed and Width, 5 levels each. Items: Ricochet Spring, Ember Barb, Lucky Sinker, Iron Gut, Swift Wellies, Bramble Mine, Healing Pie, Puffball. Runes spawn on river spots every 40 s, and you hook them to claim them: Tailwind (speed), Kraken Ink (double damage), Barnacle Hide (shield), Sea Fog (stealth), Sunken Loot (gold), plus three hook power-ups for 15 s: Bendy Eel (the flying hook curves toward your cursor), Boing Barb (the hook ricochets) and Long Line (50% more range, 15% faster). Names, colours and blurbs live in `RUNE_NAMES`, `RUNE_COLORS` and `RUNE_BLURBS`. All numbers are in `shared/constants.ts`.
+
+You keep walking while your hook or grapple winds up and flies, at 85% speed. Only Belly Bash plants your feet.
 
 ## Maps
 
@@ -78,8 +80,14 @@ Hook upgrades: Damage, Range, Speed and Width, 5 levels each. Items: Ricochet Sp
 | Frostfang Fjord | night glacier, aurora, snow | Ice Spikes | ice floes | freeze and thaw |
 | Coral Cove | sunny turquoise lagoon, waterfall, whirlpool that bends hooks, bouncy reef posts | Jellyfish | raft | tide |
 | Cogwater Canal | rainy night harbour, brick and brass | Steam Vents | barges | lock gates |
+| Mirelight Marsh | sunset bayou, braided side channels crossed by docks, stilt huts, mist | Quicksand | a log and a raft | tide |
+| Aurora Harbour | frozen fjord harbour under the aurora, glowing ice floes, watchtower | Ice Spikes | floes | freeze and thaw |
+| Maelstrom Lagoon | tropical lagoon with a great whirlpool, sea stacks, waterfalls, shipwreck | Jellyfish | rafts | tide |
+| Lanternwharf | rainy night canal, warehouses, stone arched bridges, cranes | Steam Vents | barges between the bridges | lock gates |
 
-Map data lives in `shared/maps/*.ts` (format: `shared/maps/types.ts`). One map definition drives collision, river, spawns and the visuals. The layout is 72 m by 48 m, with the river along Z through x = 0.
+Map data lives in `shared/maps/*.ts` (format: `shared/maps/types.ts`). One map definition drives collision, river, spawns and the visuals. The layout is 72 m by 48 m, with the main river along Z through x = 0. Maps may add side channels (`channels`), pools (`pools`) and walkable decks (`platforms`: docks, bridges, piers, floes). A mover with a `range` shuttles inside it instead of drifting the whole river.
+
+**Decks.** The sim is flat, so a deck is land for anyone who walks onto it from the bank, or climbs on from deep water or ice. Anyone who walks in from a dry bed or a low tide stays under it, on the bed, until they leave its footprint (`deckLayer` in `shared/sim/movement.ts`, snapshot flag `UFlag.UnderDeck`). Deck tops are at `platformDeckY(map, p)`.
 
 ## Architecture
 
@@ -107,15 +115,16 @@ Every render, audio and UI module implements an interface in `client/render/cont
 | Engine (renderer, sky, lights, post, weather) | `client/render/engine.ts` (+ `engine/`) | `Engine`, `SceneCapture`, `WATER_LAYER` |
 | Water | `client/render/world/water.ts` (+ `water/`) | `WaterView`, `waterY()` |
 | Terrain and map art | `client/render/world/terrain.ts` (+ `terrain/`), `shared/maps/*.ts` | `WorldView`, `groundY()`, `bedY()` |
-| Characters | `client/render/models/pudgy.ts` (+ `pudgy/`) | `PudgyView`, `PudgyPalette`, `COSMETIC_NAMES` |
+| Characters (bare bases plus slot cosmetics) | `client/render/models/pudgy.ts` (+ `pudgy/`) | `PudgyView`, `PudgyPalette`, the catalog in `shared/cosmetics.ts` |
 | Props, decor, movers, hazards, runes, mines, fountains | `client/render/models/props.ts` (+ `props/`) | `HazardView`, `AnimatedView` and the `build*`/`create*` functions |
-| Effects and hook chains | `client/render/fx/fx.ts` (+ `fx/`) | `FxSystem`, `ChainView` |
+| Effects, hook chains and hook skins | `client/render/fx/fx.ts` (+ `fx/`, skins in `fx/hookSkins.ts`) | `FxSystem`, `ChainView`, `createHeldHook` |
 | Audio | `client/audio/**` | `AudioSystem`, `SfxId` |
 | UI and HUD | `client/ui/**` | `UI`, `Hud`, `HudFrame`, `AppActions` |
-| Bots | `shared/sim/bots.ts` (+ `bots/`) | `updateBots(sim)` |
+| Bots | `shared/sim/bots.ts` (+ `bots/`: `nav.ts` runtime nav grid, A*, bank model and hold spots; `navigate.ts` path following and the per-tick search budget) | `updateBots(sim)`, `warmBots(map)` |
+| Economy (accounts, store, market, wallet link, devnet chain) | `server/economy/**`, `client/economy/**`, `shared/economy.ts` | `ServerEconomy`, `EconomyClient` (see `docs/economy.md`) |
 | Glue | `client/game/*`, `client/app.ts`, `client/net/*` | owns the contracts |
 
-Vertical layout every module uses: the bank top is at `groundY(map)` (about 1.2 m), the river bed at `bedY(map)`, and the water surface at `waterY(map, level)`. Models face +Z at `rotation.y = 0`. The sim's facing angle `f` means direction `(sin f, cos f)`.
+Vertical layout every module uses: the bank top is at `groundY(map)` (about 1.2 m), the river bed at `bedY(map)`, the water surface at `waterY(map, level)` and deck tops at `platformDeckY(map, p)`. Models face +Z at `rotation.y = 0`. The sim's facing angle `f` means direction `(sin f, cos f)`.
 
 ## Rules for all code
 

@@ -19,6 +19,7 @@ import {
   type LobbySlot, type MatchEnd, type MatchStart, type Profile, type RoomState, type RoomSummary, type ServerMsg,
 } from '../shared/protocol.ts';
 import { GameSim } from '../shared/sim/sim.ts';
+import { warmBots } from '../shared/sim/bots.ts';
 import { randomBotLoadout } from '../shared/cosmetics.ts';
 import type { MatchResult } from './economy/api.ts';
 import {
@@ -488,6 +489,7 @@ export class Room {
     }
     const seed = randomInt(1, 2 ** 31 - 1);
     this.sim = new GameSim(this.config, this.players, seed);
+    warmBots(this.sim.map);
     this.phase = 'match';
     this.ended = false;
     this.endTimer = 0;

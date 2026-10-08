@@ -435,8 +435,9 @@ export class GameServer {
       default:
         if (ECONOMY_MSGS.has(msg.t)) {
           try {
+            const before = c.profile;
             this.economy.route(c, msg as EconomyClientMsg);
-            if (msg.t === 'equip') room?.setProfile(c.id, c.profile);
+            if (c.profile !== before) room?.setProfile(c.id, c.profile);
           } catch (err) {
             console.error('[economy] route', err);
             c.send({ t: 'econError', code: 'internal', message: 'Something went wrong. Please try again.' });

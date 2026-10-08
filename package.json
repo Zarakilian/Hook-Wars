@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "start": "node server/index.ts",
+    "start": "node --env-file-if-exists=.env server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\"",
     "check": "npm run typecheck && npm test && npm run build"

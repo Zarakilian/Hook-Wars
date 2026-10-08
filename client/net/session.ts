@@ -2,6 +2,7 @@
 import { BOT_NAMES, TICK_DT } from '../../shared/constants.ts';
 import type { MatchEnd, MatchStart, Profile } from '../../shared/protocol.ts';
 import { GameSim } from '../../shared/sim/sim.ts';
+import { warmBots } from '../../shared/sim/bots.ts';
 import { randomBotLoadout } from '../../shared/cosmetics.ts';
 
 /** tiny seeded RNG for bot outfits */
@@ -84,6 +85,7 @@ export class LocalSession implements MatchSession {
     }
     const seed = (Math.random() * 2 ** 31) | 0;
     this.sim = new GameSim(config, players, seed);
+    warmBots(this.sim.map);
     this.sim.inputSlack = 0; // solo: never keep a standing input backlog
     this.start = { config, seed, players, hazards: this.sim.hazards, you: this.you, tick: 0 };
   }

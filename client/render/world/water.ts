@@ -11,7 +11,7 @@ import { platformAt, riverAt, waterDepthAt } from '../../../shared/maps/helpers.
 import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt, tidalActive } from '../../../shared/sim/river.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
-import { World } from '../../../shared/world.ts';
+import { moverVz, World } from '../../../shared/world.ts';
 import { WATER_LAYER, bedY, groundY, platformDeckY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
 import { createCausticsMaterial } from './water/caustics.ts';
 import { FallSheet } from './water/falls.ts';
@@ -800,7 +800,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
             const pz = moverWorld.moverPoses[i];
             const m = map.movers[i];
             movA[nMov].set(pz.ax, pz.az, pz.bx, pz.bz);
-            movB[nMov].set(m.r, m.speed - map.river.flow * 0.6, 1, 0);
+            movB[nMov].set(m.r, moverVz(m, moverClock) - map.river.flow * 0.6, 1, 0);
             nMov++;
           }
         }

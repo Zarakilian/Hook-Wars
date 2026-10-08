@@ -5,7 +5,7 @@
 // never shows the wrong thing. Work is time-sliced (one item per frame) and only runs while a
 // screen holds the renderer.
 import * as THREE from 'three';
-import { cosmeticById, DEFAULT_LOADOUT, type CosmeticSlot, type Loadout } from '../../shared/cosmetics.ts';
+import { cosmeticById, DEFAULT_LOADOUT, itemsFor, type CosmeticDef, type CosmeticSlot, type Loadout } from '../../shared/cosmetics.ts';
 import { UnitState, type FamilyId } from '../../shared/types.ts';
 import type { PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
@@ -28,7 +28,9 @@ export class ItemThumbs {
   private readonly cache = new Map<string, string | null>();
   private readonly waiting = new Map<string, Cb[]>();
   private readonly order: string[] = [];
-  private readonly baseSig = new Map<FamilyId, string>();
+  private readonly baseSig = new Map<string, string>();
+  /** one bare view per family kept alive while thumbnailing, so the shared base parts stay cached */
+  private readonly keep = new Map<FamilyId, PudgyView>();
   /** signature of the family's default item in each slot, keyed `${family}.${slot}` */
   private readonly defaultSig = new Map<string, string>();
   private renderer: THREE.WebGLRenderer | null = null;
@@ -134,11 +136,14 @@ export class ItemThumbs {
    * on every screen change gets WebGL blocked for the page. */
   private disposeGl(): void {
     if (this.holders > 0) return;
+    for (const v of this.keep.values()) v.dispose();
+    this.keep.clear();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
 
   private build(family: FamilyId, loadout: Loadout): PudgyView {
+    if (!this.keep.has(family)) this.keep.set(family, createPudgy({ family, loadout: {}, team: 0, name: 'keep', isLocal: false, quality: 'high', detail: 'showcase' }));
     const v = createPudgy({ family, loadout, team: 0, name: 'thumb', isLocal: false, quality: 'high', detail: 'showcase' });
     v.update(1 / 60, { state: UnitState.Alive, speed: 0, hpFrac: 1, flags: 0, hookOut: false, stateTime: 0.5, time: 0.5 });
     v.root.updateMatrixWorld(true);
@@ -176,12 +181,23 @@ export class ItemThumbs {
 
   private readonly baseKeys = new Map<string, Set<string>>();
 
-  /** Box around the meshes that differ from the bare base in the same pose, or null if none do. */
-  private itemBox(family: FamilyId, yaw: number, root: THREE.Object3D): THREE.Box3 | null {
-    const ck = `${family}|${yaw.toFixed(3)}`;
+  /**
+   * What an item is compared against. Usually the bare base. The hands slot is never bare (an empty slot
+   * still shows the family's default hook, so held and flying hooks match), so a hook is compared
+   * against the same family wearing a different hook.
+   */
+  private baseLoadout(def: CosmeticDef): Loadout {
+    if (def.slot !== 'hands') return {};
+    const other = itemsFor(def.family, 'hands').find((c) => c.id !== def.id);
+    return other ? { hands: other.id } : {};
+  }
+
+  /** Box around the meshes that differ from the base in the same pose, or null if none do. */
+  private itemBox(family: FamilyId, yaw: number, root: THREE.Object3D, baseLo: Loadout = {}): THREE.Box3 | null {
+    const ck = `${family}|${yaw.toFixed(3)}|${baseLo.hands ?? ''}`;
     let base = this.baseKeys.get(ck);
     if (!base) {
-      const b = this.build(family, {});
+      const b = this.build(family, baseLo);
       b.root.rotation.y = yaw;
       b.root.updateMatrixWorld(true);
       base = new Set(this.meshKeys(b.root).keys());
@@ -208,13 +224,15 @@ export class ItemThumbs {
     if (!def || !this.ensureGl() || !this.renderer || !this.scene || !this.camera) return null;
     let view: PudgyView | null = null;
     try {
-      // the bare base of this family, once, to detect items the model does not draw yet
-      let base = this.baseSig.get(def.family);
+      // the base of this family (bare, or another hook for hands), once, to detect items the model does not draw yet
+      const baseLo = this.baseLoadout(def);
+      const bk = `${def.family}|${baseLo.hands ?? ''}`;
+      let base = this.baseSig.get(bk);
       if (base === undefined) {
-        const b = this.build(def.family, {});
+        const b = this.build(def.family, baseLo);
         base = this.signature(b.root);
         b.dispose();
-        this.baseSig.set(def.family, base);
+        this.baseSig.set(bk, base);
       }
       view = this.build(def.family, { [def.slot]: id });
       const sig = this.signature(view.root);
@@ -237,7 +255,7 @@ export class ItemThumbs {
       view.root.updateMatrixWorld(true);
       const cam = this.camera;
       // frame on the item itself: the meshes this view has that the bare base (same pose) does not
-      const itemBox = this.itemBox(def.family, f.yaw, view.root);
+      const itemBox = this.itemBox(def.family, f.yaw, view.root, baseLo);
       let centre: THREE.Vector3;
       let region: number;
       if (itemBox) {

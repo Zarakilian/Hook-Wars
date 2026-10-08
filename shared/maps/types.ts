@@ -161,6 +161,11 @@ export interface MoverDef {
   lane: number; // -1..1 fraction of the half width from the centreline
   speed: number; // m/s along z (sign = direction)
   offset: number; // starting z
+  /**
+   * Optional [zMin, zMax] for the mover's centre: it shuttles back and forth inside it instead of
+   * drifting along the whole river and wrapping (Lanternwharf barges stay between its two bridges).
+   */
+  range?: readonly [number, number];
   seed?: number;
 }
 

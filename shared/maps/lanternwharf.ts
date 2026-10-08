@@ -106,8 +106,9 @@ export const lanternwharf: MapDef = {
   fountains,
   obstacles,
   movers: [
-    { kind: 'barge', r: 1.1, len: 4.6, lane: -0.42, speed: 1.2, offset: -4, seed: 1 },
-    { kind: 'barge', r: 1.1, len: 4.6, lane: 0.42, speed: -1.2, offset: 4, seed: 2 },
+    // they shuttle between the two bridges: a bridge deck sits only 0.32 m above full water
+    { kind: 'barge', r: 1.1, len: 4.6, lane: -0.42, speed: 1.2, offset: -4, range: [-4.6, 4.6], seed: 1 },
+    { kind: 'barge', r: 1.1, len: 4.6, lane: 0.42, speed: -1.2, offset: 4, range: [-4.6, 4.6], seed: 2 },
   ],
   runeSpots: withMirroredPoints([{ x: 0, z: 0 }, { x: 0, z: -17 }]),
   hazardSlots,

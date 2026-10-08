@@ -23,7 +23,7 @@ import {
 import { createFx } from '../render/fx/fx.ts';
 import { createHazardView, createMineView, createMoverView, createRuneView } from '../render/models/props.ts';
 import { createPudgy, pudgyPalette, type PudgyViewEx } from '../render/models/pudgy.ts';
-import { buildWorld } from '../render/world/terrain.ts';
+import { buildWorld, terrainHeightOf } from '../render/world/terrain.ts';
 import { createWater, syncWaterMovers } from '../render/world/water.ts';
 import type { Settings } from '../settings.ts';
 import type { Hud, HudFrame } from '../ui/types.ts';
@@ -68,6 +68,8 @@ export class GameClient {
   private readonly players = new Map<number, PlayerInfo>();
   private readonly youId: number;
   private readonly world: WorldView;
+  /** terrain height ignoring platform decks (the bed under a dock) */
+  private readonly bedHeight: (x: number, z: number) => number;
   private readonly water: WaterView;
   private readonly fx: FxSystem;
   private readonly buffer: SnapshotBuffer;
@@ -125,10 +127,12 @@ export class GameClient {
 
     this.engine.setAtmosphere(this.map, this.config);
     this.world = buildWorld(this.map, this.config, session.start.hazards, this.engine);
+    this.bedHeight = terrainHeightOf(this.world);
     this.root.add(this.world.group);
     this.water = createWater(this.map, this.config, this.engine, this.world);
     this.root.add(this.water.group);
     this.fx = createFx(this.engine, this.engine.quality);
+    this.fx.prepareSkins?.(session.start.players);
     this.engine.scene.add(this.root);
 
     for (const m of this.map.movers) {
@@ -178,6 +182,7 @@ export class GameClient {
     session.onSnapshot = (s) => this.onSnapshot(s);
     session.onPlayers = (list) => {
       for (const p of list) this.players.set(p.id, p);
+      this.fx.prepareSkins?.(list);
     };
     session.onEnd = (e) => {
       this.ended = e;
@@ -203,7 +208,7 @@ export class GameClient {
       const me = s.u.find((u) => u.i === s.you!.id);
       if (me) {
         this.me = me;
-        this.predictor.reconcile(me, s.you, s.w, s.mc, moversPresent(s.w, this.config));
+        this.predictor.reconcile(me, s.you, s.w, s.mc, moversPresent(s.w, this.config), s.t);
       }
     }
   }
@@ -245,7 +250,12 @@ export class GameClient {
   private startGhost(you: YouSnap): void {
     const aim = this.input.peekPressAim() ?? this.input.aim;
     const items = you.items;
-    const fx = (items.some((s) => s && s.id === 'ember') ? 1 : 0) | (items.some((s) => s && s.id === 'ricochet') ? 2 : 0);
+    const has = (t: string) => you.buffs.some((b) => b.t === t);
+    const fx =
+      (items.some((s) => s && s.id === 'ember') ? 1 : 0) |
+      (items.some((s) => s && s.id === 'ricochet') || has('bouncy') ? 2 : 0) |
+      (has('bendy') ? 4 : 0) |
+      (has('longshot') ? 8 : 0);
     this.ghost?.chain?.dispose();
     const start = this.time + BAL.hookWindup;
     this.ghost = {
@@ -288,7 +298,8 @@ export class GameClient {
     if (this.last >= 0 && now < this.last) return; // ignore out-of-order frame times
     this.clockNow = now;
     if (this.last < 0) this.last = now;
-    const dtMs = clamp(now - this.last, 0, 100);
+    const rawMs = now - this.last;
+    const dtMs = clamp(rawMs, 0, 100);
     this.last = now;
     const dt = dtMs / 1000;
     this.time += dt;
@@ -299,13 +310,14 @@ export class GameClient {
       this.input.takePressed(); // solo pause: drop presses and send nothing while the sim is frozen
       this.input.takePressAim();
     } else {
-      this.tickAcc += dt;
-      while (this.tickAcc >= TICK_DT && n < 5) {
+      // inputs use the raw elapsed time (up to 0.5 s), rendering keeps the 100 ms clamp
+      this.tickAcc += clamp(rawMs, 0, 500) / 1000;
+      while (this.tickAcc >= TICK_DT && n < 15) {
         this.tickAcc -= TICK_DT;
         this.localTick();
         n++;
       }
-      if (n === 5) this.tickAcc = 0;
+      if (n === 15) this.tickAcc = 0;
     }
     // solo: step the sim after this frame's input was queued, so nothing waits a tick
     this.session.pump(now);
@@ -376,11 +388,12 @@ export class GameClient {
     this.engine.render();
   }
 
-  private baseY(x: number, z: number): number {
+  /** Height a unit stands at. under = on the bed below a dock or bridge (UFlag.UnderDeck). */
+  private baseY(x: number, z: number, under = false): number {
     const snap = this.frameRef?.newer;
-    const gh = this.world.groundHeight(x, z);
+    const gh = under ? this.bedHeight(x, z) : this.world.groundHeight(x, z);
     if (!snap) return gh;
-    if (channelDepthAt(this.map, x, z) > 0) {
+    if (channelDepthAt(this.map, x, z, under) > 0) {
       if (snap.w.frozen) return waterY(this.map, 1) + 0.04;
       if (snap.w.deep) return Math.max(gh, this.water.surfaceHeight(x, z) - 0.25);
     }
@@ -439,7 +452,8 @@ export class GameClient {
       v.face = lerpAngle(v.face, face, 1 - Math.exp(-dt * 18));
       v.x = x;
       v.z = z;
-      v.y = this.baseY(x, z) + u.y;
+      const under = id === this.youId && this.predictor.active ? !!this.predictor.body.under : (u.fl & UFlag.UnderDeck) !== 0;
+      v.y = this.baseY(x, z, under) + u.y;
       v.pudgy.root.position.set(x, v.y, z);
       v.pudgy.root.rotation.y = v.face;
       const showDead = u.st === UnitState.Dead && !hooked.has(id);
@@ -478,7 +492,7 @@ export class GameClient {
     if (!v.visible) return;
     const f = this.cam.focusPoint;
     if (Math.abs(v.x - f.x) > 26 || Math.abs(v.z - f.z) > 18) return;
-    const inChannel = channelDepthAt(this.map, v.x, v.z) > 0;
+    const inChannel = channelDepthAt(this.map, v.x, v.z, (v.fl & UFlag.UnderDeck) !== 0) > 0;
     const surface: 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud' =
       v.fl & UFlag.OnIce ? 'ice'
         : v.fl & (UFlag.Shallow | UFlag.Swimming) ? 'shallow'
@@ -530,6 +544,7 @@ export class GameClient {
         }
         this.chains.get(own.i)?.dispose();
         this.chains.set(own.i, g.chain); // hand the same chain over: no flicker
+        g.chain.setFx?.(own.fx, own.r);
       }
       this.ghost = null;
       return;
@@ -908,6 +923,7 @@ export class GameClient {
         const p = this.unitPos(ev.u, 1.2);
         if (p) this.fx.runePickup(p, ev.t);
         a.play('rune', { x: p?.x, z: p?.z });
+        if (ev.u === this.youId && (ev.t === 'bendy' || ev.t === 'bouncy' || ev.t === 'longshot')) a.play('powerHook');
         break;
       }
       case 'mineArm':

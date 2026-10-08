@@ -4,7 +4,7 @@ import { TICK_DT } from '../../shared/constants.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
 import { stepMove, type MoveBody } from '../../shared/sim/movement.ts';
 import { STALE_INPUT_TICKS } from '../../shared/sim/sim.ts';
-import { UnitState, type PlayerInput, type RiverState, type UnitSnap, type YouSnap } from '../../shared/types.ts';
+import { UFlag, UnitState, type PlayerInput, type RiverState, type UnitSnap, type YouSnap } from '../../shared/types.ts';
 import { World } from '../../shared/world.ts';
 
 interface Pending {
@@ -15,7 +15,7 @@ interface Pending {
 export class Predictor {
   readonly world: World;
   river: RiverState = { level: 1, deep: true, shallow: false, frozen: false, phase: 'none', phaseLeft: 0, cycle: false };
-  readonly body: MoveBody = { x: 0, z: 0, vx: 0, vz: 0 };
+  readonly body: MoveBody = { x: 0, z: 0, vx: 0, vz: 0, under: false };
   readonly prev = { x: 0, z: 0 };
   /** smoothed render offset after corrections */
   readonly err = { x: 0, z: 0 };
@@ -99,6 +99,7 @@ export class Predictor {
     this.body.z = me.z;
     this.body.vx = you.vx;
     this.body.vz = you.vz;
+    this.body.under = (me.fl & UFlag.UnderDeck) !== 0;
     if (!controllable) {
       this.active = false;
       this.slowTicks = 0;

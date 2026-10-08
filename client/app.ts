@@ -4,8 +4,7 @@ import type { ItemId, MatchConfig, Team, UpgradeStat } from '../shared/types.ts'
 import { createAudio } from './audio/audio.ts';
 import { createEconomy } from './economy/index.ts';
 import type { EconomyClient } from './economy/types.ts';
-import { matchPearls } from '../shared/cosmetics.ts';
-import { SOLO_PEARL_RATE } from '../shared/economy.ts';
+import { soloPearls } from './ui/hud/endscreen.ts';
 import { GameClient } from './game/GameClient.ts';
 import { Connection, defaultServerUrl, normaliseServerUrl } from './net/connection.ts';
 import { LocalSession, OnlineSession, type MatchSession } from './net/session.ts';
@@ -22,6 +21,8 @@ export class App {
   private readonly audio: AudioSystem;
   private readonly canvas: HTMLCanvasElement;
   private conn: Connection | null = null;
+  private rejoinTimer = 0;
+  private rejoinTries = 0;
   private session: MatchSession | null = null;
   private game: GameClient | null = null;
   private toastId = 0;
@@ -128,6 +129,15 @@ export class App {
     this.ui.render(this.state);
   }
 
+  private scheduleRejoin(url: string): void {
+    window.clearTimeout(this.rejoinTimer);
+    const delay = [500, 1500, 3000, 5000][Math.min(this.rejoinTries++, 3)];
+    this.toast('Connection lost. Rejoining your match...');
+    this.rejoinTimer = window.setTimeout(() => {
+      if (!this.conn) this.act.connect(url);
+    }, delay);
+  }
+
   private toast(text: string, kind: 'info' | 'error' = 'info'): void {
     this.set({ toast: { text, kind, id: ++this.toastId } });
   }
@@ -155,9 +165,9 @@ export class App {
       onEnd: (e) => {
         if (session.local) {
           // solo: Pearls go to the offline locker at a reduced rate (online, the server pays out)
-          const me = e.players.find((p) => p.id === session.start.you);
-          const row = e.rows.find((r) => r.i === session.start.you);
-          if (me && row) this.economy.grantLocal(Math.round(matchPearls(e.winner === me.team, row.k, row.hh, row.sv) * SOLO_PEARL_RATE), 'solo match');
+          // one rule for the payout and for the end screen's figure
+          const pearls = soloPearls(e, session.start.you);
+          if (pearls > 0) this.economy.grantLocal(pearls, 'solo match');
         }
         this.set({ match: { local: session.local, ended: e } });
         const g = this.game;
@@ -219,6 +229,7 @@ export class App {
         this.conn?.send({ t: 'listRooms' });
         break;
       case 'start':
+        this.rejoinTries = 0;
         if (this.conn) this.beginMatch(new OnlineSession(this.conn, m.m));
         break;
       case 'players':
@@ -303,11 +314,14 @@ export class App {
             if (inMatch) app.endGame();
             app.conn = null;
             app.set({ online: { ...app.state.online, status: 'error', error: reason }, room: null, screen: inMatch || app.state.screen === 'lobby' ? 'online' : app.state.screen, match: inMatch ? null : app.state.match });
+            // rejoinable() is null after a deliberate leave or once the 90 s grace window has passed
+            if (conn.rejoinable()) app.scheduleRejoin(url);
           }
         };
         app.set({ settings: s, online: { ...app.state.online, status: 'connecting', url: full, error: undefined } });
       },
       disconnect() {
+        window.clearTimeout(app.rejoinTimer);
         app.economy.detachServer();
         app.conn?.close();
         app.conn = null;

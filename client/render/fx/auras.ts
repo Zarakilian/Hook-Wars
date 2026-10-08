@@ -1,7 +1,7 @@
 // Buff auras drawn under and around units from their UFlag bits:
 //   Haste (Tailwind)        lime wind spirals on the ground, rising wisps, speed lines when running
 //   DoubleDmg (Kraken Ink)  a purple ink pool with a slow tentacle swirl, ink drips, purple bubbles
-//   Shield (Barnacle Hide)  a gold shimmering bubble with sparkles
+//   Shield (Barnacle Hide)  a steel-blue shimmering barnacle bubble with sparkles (RUNE_COLORS.ironskin)
 //   Burning                 embers and a little smoke rising, a warm glow underfoot
 //   Bendy / Bouncy / Longshot  a small coloured ring in the rune colour, and motes
 // GameClient calls aura() every frame per visible unit. A unit with no buff bits and no live state
@@ -294,7 +294,7 @@ export class AuraSystem {
     bg.instanceCount = 0;
     this.bGeo = bg;
     this.bMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uGold: { value: new THREE.Color(0xffc23a).multiplyScalar(1.6) }, uHot: { value: new THREE.Color(0xfff2b0).multiplyScalar(2.2) } },
+      uniforms: { uTime: { value: 0 }, uGold: { value: new THREE.Color(RUNE_COLORS.ironskin.main).multiplyScalar(1.6) }, uHot: { value: new THREE.Color(RUNE_COLORS.ironskin.light).multiplyScalar(2.2) } },
       vertexShader: BUBBLE_VERT,
       fragmentShader: BUBBLE_FRAG,
       ...blendOpts,
@@ -496,7 +496,7 @@ export class AuraSystem {
       }
     }
 
-    // ---- Barnacle Hide (Shield): gold shimmer bubble
+    // ---- Barnacle Hide (Shield): steel-blue shimmer bubble
     if (k[B_SHIELD] > 0 && this.nBubbles < MAX_BUBBLES) {
       const i = this.nBubbles++;
       this.bPos[i * 3] = x;
@@ -509,7 +509,7 @@ export class AuraSystem {
         const v = Math.random() * 0.9 + 0.1;
         const s = sp.begin(Shape.Star);
         s.pos(x + Math.cos(a) * 1.1 * Math.sqrt(1 - v * v * 0.6), y + 0.95 + (v - 0.4) * 1.1, z + Math.sin(a) * 1.1 * Math.sqrt(1 - v * v * 0.6));
-        s.color(Math.random() < 0.5 ? 0xffe07a : 0xfff4c8, 2.6).size(0.26, 0.04);
+        s.color(Math.random() < 0.5 ? RUNE_COLORS.ironskin.light : 0xffffff, 2.6).size(0.26, 0.04);
         s.life = 0.45;
         s.rotV = 3;
         s.fin = 0.2;
