@@ -1,6 +1,6 @@
 // Bottom of the HUD: buffs and status tags, the HP bar (damage trail, shield, ticks), the three
 // ability portholes with cooldown sweeps, four item crates and the gold purse.
-import { BAL, ITEMS } from '../../../shared/constants.ts';
+import { BAL, ITEMS, RUNE_NAMES } from '../../../shared/constants.ts';
 import { UFlag, UnitState, type BuffSnap, type ItemSlot } from '../../../shared/types.ts';
 import type { Settings } from '../../settings.ts';
 import { h, noFocus, pulse, setClass, setDisplay, setText, setTransform, setVar } from '../dom.ts';
@@ -26,9 +26,8 @@ const BUFF_MAX: Record<BuffSnap['t'], number> = {
   longshot: BAL.powerHookTime,
 };
 const BUFF_NAME: Record<BuffSnap['t'], string> = {
-  haste: 'Haste', double: 'Double Damage', ironskin: 'Iron Skin', ghost: 'Ghost', bounty: 'Bounty',
+  ...RUNE_NAMES,
   pie: 'Healing Pie', puffball: 'Puffball', burn: 'Burning', spawn: 'Spawn shield',
-  bendy: 'Bendy Eel', bouncy: 'Boing Barb', longshot: 'Long Line',
 };
 const BUFF_ICON: Record<BuffSnap['t'], IconId> = {
   haste: 'haste', double: 'double', ironskin: 'ironskin', ghost: 'ghost', bounty: 'bounty',

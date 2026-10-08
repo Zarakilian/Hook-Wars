@@ -969,6 +969,9 @@ export function createFx(engine: Engine, quality: Quality): FxSystem {
     respawn,
     drownBubbles,
     footstep,
+    aura() {
+      // buff auras arrive with the fx pass
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

@@ -457,6 +457,7 @@ export class GameClient {
         stateTime: this.time - v.stateSince,
         time: this.time,
       });
+      this.fx.aura(id, v.pudgy.root.position, showDead ? 0 : u.fl, info.team);
       this.wake(v, dt);
     }
     // hide units we can no longer see; drop long-gone ones

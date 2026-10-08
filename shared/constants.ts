@@ -178,15 +178,41 @@ export const FAMILY_DEFS: Record<FamilyId, FamilyDef> = {
   bot: { id: 'bot', name: 'Butcher-Bot', title: 'Rivet-Ribbed Reclaimer', passive: 'Overclock', passiveBlurb: 'Chain Hook cooldown -8%.', hpMul: 1, speedMul: 1, hookCdMul: 0.92, regenOutOfCombat: 6 },
 };
 
+// Rune ids are wire values and never change. Display names and colours are our own nautical set
+// (the review flagged the old Haste / Double Damage / Bounty in red / blue / gold as a Dota copy).
 export const RUNE_NAMES: Record<RuneType, string> = {
-  haste: 'Haste',
-  double: 'Double Damage',
-  ironskin: 'Iron Skin',
-  ghost: 'Ghost',
-  bounty: 'Bounty',
+  haste: 'Tailwind',
+  double: 'Kraken Ink',
+  ironskin: 'Barnacle Hide',
+  ghost: 'Sea Fog',
+  bounty: 'Sunken Loot',
   bendy: 'Bendy Eel',
   bouncy: 'Boing Barb',
   longshot: 'Long Line',
+};
+
+/** One line per rune, for tooltips, the how-to and the HUD buff tooltip. */
+export const RUNE_BLURBS: Record<RuneType, string> = {
+  haste: 'A sea breeze at your back: run much faster.',
+  double: 'Kraken ink on your hook: double damage.',
+  ironskin: 'Barnacles harden your hide: take far less damage.',
+  ghost: 'Vanish into the fog: invisible to enemies until you act.',
+  bounty: 'Treasure from the deep: a pile of gold for you and a share for your team.',
+  bendy: 'Your hook curves toward your cursor while it flies.',
+  bouncy: 'Your hook ricochets off walls, rocks and posts.',
+  longshot: 'Your hook flies half again as far, and faster.',
+};
+
+/** Rune colours shared by the rune models, effects, minimap and HUD icons (main, light, dark). */
+export const RUNE_COLORS: Record<RuneType, { main: number; light: number; dark: number }> = {
+  haste: { main: 0x9be22a, light: 0xe6ff9a, dark: 0x3e6a10 },
+  double: { main: 0x8a3aff, light: 0xd2b0ff, dark: 0x34146e },
+  ironskin: { main: 0x6a9ad8, light: 0xc8e0ff, dark: 0x22406a },
+  ghost: { main: 0xc8d8e8, light: 0xffffff, dark: 0x5a6a80 },
+  bounty: { main: 0x1ec8c8, light: 0xa8fff4, dark: 0x0a5a64 },
+  bendy: { main: 0xffe14a, light: 0xfff6b0, dark: 0x8a6a10 },
+  bouncy: { main: 0xff5ac8, light: 0xffd0f0, dark: 0x8a1a6a },
+  longshot: { main: 0xff5a2a, light: 0xffc0a0, dark: 0x7a2010 },
 };
 
 /** Per-difficulty bot tuning. Read by shared/sim/bots.ts. */

@@ -127,6 +127,8 @@ export interface PudgyOptions {
   name: string;
   isLocal: boolean;
   quality: Quality;
+  /** 'showcase' = the Locker / Store / menu preview: finer voxels and extra detail, one instance on screen */
+  detail?: 'game' | 'showcase';
 }
 
 export interface PudgyAnimInput {
@@ -221,6 +223,12 @@ export interface FxSystem {
   respawn(p: THREE.Vector3, team: Team): void;
   drownBubbles(p: THREE.Vector3): void;
   footstep(p: THREE.Vector3, surface: 'ground' | 'shallow' | 'ice' | 'snow' | 'sand' | 'mud'): void;
+  /**
+   * Buff auras. Called every frame for every visible unit with its feet position and UFlag bits
+   * (Haste, DoubleDmg, Shield, Bendy, Bouncy, Longshot, Burning...). flags 0 or a unit not refreshed
+   * for a few frames fades its aura out. Must cost nothing for units with no buff bits.
+   */
+  aura(id: number, p: THREE.Vector3, flags: number, team: Team): void;
   dispose(): void;
 }
 

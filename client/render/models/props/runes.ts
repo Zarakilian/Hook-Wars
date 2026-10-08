@@ -1,20 +1,12 @@
 // Runes (floating, spinning, pulsing pickups) and bramble mines.
 import * as THREE from 'three';
+import { RUNE_COLORS } from '../../../../shared/constants.ts';
 import type { RuneType } from '../../../../shared/types.ts';
 import type { AnimatedView } from '../../contracts.ts';
 import { cachedModel, CH, curve, h3, halo, mix, PGrid, pmat, PROP_TIME, propsQuality, qLevel, rngFor, setPropTime, shade, toModel, type PropModel } from './common.ts';
 
-/** Rune palette: main hue, light core, dark frame. */
-export const RUNE_STYLE: Record<RuneType, { main: number; light: number; dark: number }> = {
-  haste: { main: 0xff4a2a, light: 0xffb060, dark: 0x8a1a10 },
-  double: { main: 0x3a7aff, light: 0x9ad0ff, dark: 0x14307a },
-  ironskin: { main: 0xff9a2a, light: 0xffe0a0, dark: 0x6a5a50 },
-  ghost: { main: 0xb0f0ff, light: 0xffffff, dark: 0x4a8aa0 },
-  bounty: { main: 0xffd23a, light: 0xfff2a0, dark: 0xa8761a },
-  bendy: { main: 0x2fd69a, light: 0xb8ffe0, dark: 0x0f6a4a },
-  bouncy: { main: 0xff5ac8, light: 0xffd0f0, dark: 0x8a1a6a },
-  longshot: { main: 0xff9a2a, light: 0xffe0a0, dark: 0x8a4a10 },
-};
+/** Rune palette: main hue, light core, dark frame (shared with fx, minimap and HUD). */
+export const RUNE_STYLE: Record<RuneType, { main: number; light: number; dark: number }> = RUNE_COLORS;
 
 type Mask = (x: number, y: number) => number; // 0 empty, 1 frame, 2 core, 3 detail (dark)
 
