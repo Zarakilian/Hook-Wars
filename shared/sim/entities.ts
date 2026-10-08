@@ -1,6 +1,6 @@
 // Mutable simulation entities. Only the sim mutates these; snapshots are built from them.
 import type {
-  BotDifficulty, CastKind, Cosmetics, FamilyId, HazardKind, ItemSlot, PlayerInput, RuneType, Team, UnitStateId, UpgradeStat,
+  BotDifficulty, CastKind, FamilyId, Loadout, HazardKind, ItemSlot, PlayerInput, RuneType, Team, UnitStateId, UpgradeStat,
 } from '../types.ts';
 
 export interface UnitStats {
@@ -21,7 +21,7 @@ export interface Unit {
   team: Team;
   family: FamilyId;
   name: string;
-  cosmetics: Cosmetics;
+  loadout: Loadout;
   isBot: boolean;
   botDifficulty: BotDifficulty;
   spawnIndex: number;

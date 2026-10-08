@@ -2,7 +2,7 @@
 import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN } from '../../../shared/constants.ts';
 import { cleanName, type Profile } from '../../../shared/protocol.ts';
 import { FAMILIES, type FamilyId } from '../../../shared/types.ts';
-import { COSMETIC_NAMES } from '../../render/contracts.ts';
+import { COSMETIC_SLOTS, cosmeticById, DEFAULT_LOADOUT, itemsFor, SLOT_NAMES, type CosmeticSlot } from '../../../shared/cosmetics.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
 import { icon } from '../icons.ts';
@@ -76,22 +76,28 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     cls: 'fam-seg',
     value: profile.family,
     options: FAMILIES.map((f) => ({ value: f, label: FAMILY_DEFS[f].name, icon: f, sub: FAMILY_DEFS[f].passive, title: `${FAMILY_DEFS[f].passive}: ${FAMILY_DEFS[f].passiveBlurb}` })),
-    onChange: (f) => save({ ...profile, family: f }),
+    onChange: (f) => save({ ...profile, family: f, loadout: { ...DEFAULT_LOADOUT[f] } }),
   });
   const famTitle = h('div', { class: 'fam-title' });
   const famPassive = h('div', { class: 'fam-passive' });
   const famBlurb = h('div', { class: 'fam-blurb' });
   const famDesc = h('div', { class: 'fam-desc cloth' }, famTitle, h('div', { class: 'fam-row' }, h('span', { class: 'fam-tag', text: 'Passive' }), famPassive), famBlurb);
 
-  const names = () => COSMETIC_NAMES[profile.family];
-  const hat = arrowPicker('Hat', names().hats, profile.cosmetics.hat, (i) => save({ ...profile, cosmetics: { ...profile.cosmetics, hat: i } }));
-  const accent = arrowPicker('Outfit', names().accents, profile.cosmetics.accent, (i) => save({ ...profile, cosmetics: { ...profile.cosmetics, accent: i } }));
-  const face = arrowPicker('Face', names().faces, profile.cosmetics.face, (i) => save({ ...profile, cosmetics: { ...profile.cosmetics, face: i } }));
+  // one picker per slot over [bare, ...catalog items for this family]
+  const slotOptions = (slot: CosmeticSlot) => ['', ...itemsFor(profile.family, slot).map((c) => c.id)];
+  const slotNames = (slot: CosmeticSlot) => slotOptions(slot).map((id) => (id ? cosmeticById(id)!.name : 'Bare'));
+  const slotIndex = (slot: CosmeticSlot) => Math.max(0, slotOptions(slot).indexOf(profile.loadout[slot] ?? ''));
+  const pick = (slot: CosmeticSlot) => arrowPicker(SLOT_NAMES[slot], slotNames(slot), slotIndex(slot), (i) => {
+    const id = slotOptions(slot)[i];
+    const loadout = { ...profile.loadout };
+    if (id) loadout[slot] = id;
+    else delete loadout[slot];
+    save({ ...profile, loadout });
+  });
+  const pickers = COSMETIC_SLOTS.map((slot) => ({ slot, p: pick(slot) }));
 
-  const dice = iconButton('dice', 'Random look', () => {
-    const n = names();
-    const r = (k: number) => Math.floor(Math.random() * k);
-    save({ ...profile, cosmetics: { hat: r(n.hats.length), accent: r(n.accents.length), face: r(n.faces.length) } });
+  const dice = iconButton('dice', 'Default look', () => {
+    save({ ...profile, loadout: { ...DEFAULT_LOADOUT[profile.family] } });
   }, 'dice-btn');
 
   const card = h('section', { class: 'panel profile-card', 'aria-label': 'Your Pudgy' },
@@ -100,7 +106,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     h('label', { class: 'name-field' }, h('span', { class: 'field-label', text: 'Name' }), nameIn, nameErr),
     famSeg.el,
     famDesc,
-    h('div', { class: 'cosm' }, hat.el, accent.el, face.el),
+    h('div', { class: 'cosm' }, ...pickers.map((x) => x.p.el)),
   );
 
   const el = h('div', { class: 'scr scr-menu' },
@@ -118,10 +124,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     famBlurb.textContent = def.passiveBlurb;
     famBadge.textContent = '';
     famBadge.append(icon(profile.family), h('span', { text: def.name }));
-    const n = COSMETIC_NAMES[profile.family];
-    hat.set(profile.cosmetics.hat, n.hats);
-    accent.set(profile.cosmetics.accent, n.accents);
-    face.set(profile.cosmetics.face, n.faces);
+    for (const { slot, p } of pickers) p.set(slotIndex(slot), slotNames(slot));
     if (document.activeElement !== nameIn && nameIn.value !== profile.name) nameIn.value = profile.name;
     ctx.preview.set(profile, s.settings.soloTeam);
   };

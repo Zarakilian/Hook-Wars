@@ -401,7 +401,7 @@ export class GameClient {
       const info = this.players.get(id);
       if (!info) continue;
       if (!v) {
-        const pudgy = createPudgy({ family: info.family, cosmetics: info.cosmetics, team: info.team, name: info.name, isLocal: id === this.youId, quality: this.engine.quality });
+        const pudgy = createPudgy({ family: info.family, loadout: info.loadout, team: info.team, name: info.name, isLocal: id === this.youId, quality: this.engine.quality });
         this.root.add(pudgy.root);
         v = { pudgy, family: info.family, fl: u.fl, wakeT: 0, state: u.st, stateSince: this.time, x: u.x, z: u.z, y: 0, face: u.f, speed: 0, lastSeen: this.time, visible: true, stepT: 0 };
         const view = v;
@@ -866,7 +866,7 @@ export class GameClient {
         // over open water the debris should splash on the surface, not sink into the bed
         const wy = this.water.surfaceHeight(ev.x, ev.z);
         if (Number.isFinite(wy) && wy + 0.8 > p.y) p.y = wy + 0.8;
-        if (info) this.fx.corpseBurst(p, pudgyPalette(info.family, info.cosmetics, info.team));
+        if (info) this.fx.corpseBurst(p, pudgyPalette(info.family, info.loadout, info.team));
         a.play('corpse', { x: ev.x, z: ev.z });
         this.cam.shake(0.3 * this.nearMe(ev.x, ev.z, 14));
         break;

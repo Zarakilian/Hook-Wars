@@ -17,7 +17,7 @@ function team5(size: number, diffOf: (team: Team, slot: number) => BotDifficulty
     const team = (i % 2) as Team;
     const slot = i >> 1;
     out.push({
-      id: i + 1, name: `Bot ${i + 1}`, team, family: FAMS[slot % 3], cosmetics: { hat: slot, accent: slot, face: slot },
+      id: i + 1, name: `Bot ${i + 1}`, team, family: FAMS[slot % 3], loadout: {},
       isBot: true, botDifficulty: diffOf(team, slot),
     });
   }
@@ -139,8 +139,8 @@ test('bots never stay in water that turns deep, and never walk into the enemy fo
 
 function duel(mapId: MapId, diff: BotDifficulty, seed: number) {
   const players: PlayerInfo[] = [
-    { id: 1, name: 'Bot', team: 0, family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: true, botDifficulty: diff },
-    { id: 2, name: 'Dummy', team: 1, family: 'ogre', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false },
+    { id: 1, name: 'Bot', team: 0, family: 'brawler', loadout: {}, isBot: true, botDifficulty: diff },
+    { id: 2, name: 'Dummy', team: 1, family: 'ogre', loadout: {}, isBot: false },
   ];
   const sim = new GameSim({ ...config(mapId, 'deep'), botFill: false }, players, seed);
   return { sim, bot: sim.unitById.get(1)!, dummy: sim.unitById.get(2)! };
@@ -179,9 +179,9 @@ test('combo: a bot hooks an enemy across the river and bashes them in to drown',
 
 test('saves: a bot hooks a drowning ally out of the river', () => {
   const players: PlayerInfo[] = [
-    { id: 1, name: 'Guard', team: 0, family: 'bot', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: true, botDifficulty: 'normal' },
-    { id: 2, name: 'Swimmer', team: 0, family: 'ogre', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false },
-    { id: 3, name: 'Far', team: 1, family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false },
+    { id: 1, name: 'Guard', team: 0, family: 'bot', loadout: {}, isBot: true, botDifficulty: 'normal' },
+    { id: 2, name: 'Swimmer', team: 0, family: 'ogre', loadout: {}, isBot: false },
+    { id: 3, name: 'Far', team: 1, family: 'brawler', loadout: {}, isBot: false },
   ];
   const sim = new GameSim({ ...config('muckmire', 'deep'), botFill: false }, players, 77);
   const far = sim.unitById.get(3)!;

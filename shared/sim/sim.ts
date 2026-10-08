@@ -82,7 +82,7 @@ export class GameSim {
     const sp = this.spawnPoint(p.team, spawnIndex);
     const maxHp = Math.round(BAL.maxHp * fam.hpMul);
     const u: Unit = {
-      id: p.id, team: p.team, family: p.family, name: p.name, cosmetics: { ...p.cosmetics }, isBot: p.isBot,
+      id: p.id, team: p.team, family: p.family, name: p.name, loadout: { ...p.loadout }, isBot: p.isBot,
       botDifficulty: p.botDifficulty ?? 'normal', spawnIndex,
       x: sp.x, z: sp.z, vx: 0, vz: 0, y: 0, face: p.team === 0 ? Math.PI / 2 : -Math.PI / 2,
       hp: maxHp, maxHp, state: UnitState.Alive, stateT: 0,

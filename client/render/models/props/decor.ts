@@ -14,6 +14,8 @@ import { iceMat } from './rocks.ts';
 const VARIANTS: Record<DecorKind, number> = {
   grass: 4, reeds: 3, lilypad: 3, mushroom: 3, flower: 4, fern: 3, snowtuft: 3, icicle: 3, shell: 3, starfish: 3, seaweed: 3,
   pebbles: 3, bones: 2, lantern: 1, rope: 2, gear: 2, sign: 2, firefly_swarm: 1, waterfall: 1, lockgate: 1,
+  // reference-map decor (modelled in the props pass; until then they draw nothing)
+  cattail: 0, mist: 0, lanternstring: 0, ropebridge: 0, banner: 0, icicles: 0, coralfan: 0, treasure: 0, chainhang: 0, cargonet: 0, rowboat: 0, flag: 0,
 };
 
 const sway = (amp: number, h: number) => pmat({ rough: 0.9, sway: amp, swayH: h });

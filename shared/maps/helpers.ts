@@ -137,9 +137,46 @@ export function inCircles(circles: Circle[], x: number, z: number, pad = 0): boo
 }
 
 /** Signed distance into the channel (> 0 inside water area), islands excluded. */
-export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'>, x: number, z: number): number {
+export function channelDepthAt(map: Pick<MapDef, 'river' | 'islands'> & Partial<Pick<MapDef, 'channels' | 'pools' | 'platforms'>>, x: number, z: number): number {
   const r = riverAt(map.river.points, z);
   let c = r.hw - Math.abs(x - r.x);
+  // braided side channels: only inside their own z range
+  if (map.channels) {
+    for (const ch of map.channels) {
+      const pts = ch.points;
+      if (z < pts[0].z || z > pts[pts.length - 1].z) continue;
+      const q = riverAt(pts, z);
+      const cc = q.hw - Math.abs(x - q.x);
+      if (cc > c) c = cc;
+    }
+  }
+  // lagoons and basins: rotated ellipses, metres inside the rim (approximate near the rim, exact on the axes)
+  if (map.pools) {
+    for (const p of map.pools) {
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const cs = Math.cos(p.rot);
+      const sn = Math.sin(p.rot);
+      const lx = dx * cs - dz * sn;
+      const lz = dx * sn + dz * cs;
+      const k = Math.sqrt((lx / p.rx) ** 2 + (lz / p.rz) ** 2);
+      const cc = (1 - k) * Math.min(p.rx, p.rz);
+      if (cc > c) c = cc;
+    }
+  }
+  // decks over the water are dry ground
+  if (map.platforms) {
+    for (const p of map.platforms) {
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const cs = Math.cos(p.rot);
+      const sn = Math.sin(p.rot);
+      const lx = dx * cs - dz * sn;
+      const lz = dx * sn + dz * cs;
+      const inside = Math.min(p.w / 2 - Math.abs(lx), p.d / 2 - Math.abs(lz));
+      if (-inside < c) c = -inside;
+    }
+  }
   for (const isl of map.islands) {
     const dx = x - isl.x;
     const dz = z - isl.z;

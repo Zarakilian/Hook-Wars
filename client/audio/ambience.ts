@@ -28,6 +28,10 @@ const RIVER: Record<MapId, RiverStyle> = {
   frostfang: { f1: 520, f2: 1500, base: 0.5 },
   coralcove: { f1: 620, f2: 1700, base: 0.36 },
   cogwater: { f1: 360, f2: 950, base: 0.5 },
+  mirelight: { f1: 300, f2: 760, base: 0.5 },
+  aurora: { f1: 520, f2: 1500, base: 0.48 },
+  maelstrom: { f1: 560, f2: 1600, base: 0.42 },
+  lanternwharf: { f1: 360, f2: 950, base: 0.5 },
 };
 
 // ---------------------------------------------------------------------------------------------

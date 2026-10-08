@@ -7,7 +7,12 @@
 //   anim.ts      procedural animation
 //   brawler.ts, ogre.ts, bot.ts  the three families and all their cosmetics
 import * as THREE from 'three';
-import type { Cosmetics, FamilyId, Team } from '../../../shared/types.ts';
+import type { Cosmetics, FamilyId, Loadout, Team } from '../../../shared/types.ts';
+
+/** Temporary: map a slot loadout onto the legacy index builders. */
+function legacy(_loadout: Loadout): Cosmetics {
+  return { hat: 0, accent: 0, face: 0 };
+}
 import { UnitState } from '../../../shared/types.ts';
 import { TEAM_COLORS, type PudgyAnimInput, type PudgyOneShot, type PudgyOptions, type PudgyPalette, type PudgyView } from '../contracts.ts';
 import { PudgyAnimator } from './pudgy/anim.ts';
@@ -19,7 +24,8 @@ import { buildOgre, ogrePalette } from './pudgy/ogre.ts';
 import { buildRig } from './pudgy/rig.ts';
 import type { FamilyBuild } from './pudgy/types.ts';
 
-export function pudgyPalette(family: FamilyId, cosmetics: Cosmetics, team: Team): PudgyPalette {
+export function pudgyPalette(family: FamilyId, loadout: Loadout, team: Team): PudgyPalette {
+  const cosmetics = legacy(loadout);
   if (family === 'ogre') return ogrePalette(cosmetics, team);
   if (family === 'bot') return botPalette(cosmetics, team);
   return brawlerPalette(cosmetics, team);
@@ -55,7 +61,7 @@ export interface PudgyViewEx extends PudgyView {
 }
 
 export function createPudgy(o: PudgyOptions): PudgyViewEx {
-  const fb = familyBuild(o.family, o.cosmetics, o.team);
+  const fb = familyBuild(o.family, legacy(o.loadout), o.team);
   const tc = TEAM_COLORS[o.team];
   const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light);
   const solid = makePudgyMaterial(uniforms, false);
@@ -181,7 +187,8 @@ if (typeof window !== 'undefined' && typeof location !== 'undefined' && location
           if (what === 'mix') for (let i = 0; i < 8; i++) combos.push({ hat: i, accent: (i * 3 + 1) % 8, face: i % 6 });
         }
         combos.forEach((c, i) => {
-          const v = createPudgy({ family: f, cosmetics: c, team: tm, name: `${f}${i}`, isLocal: false, quality: 'high' });
+          void c;
+          const v = createPudgy({ family: f, loadout: {}, team: tm, name: `${f}${i}`, isLocal: false, quality: 'high' });
           v.root.position.set(x + (i - (combos.length - 1) / 2) * sp, opts.y ?? 1.2, z + row * sp * 1.2);
           g.add(v.root);
           views.push(v);

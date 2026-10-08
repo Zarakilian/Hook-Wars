@@ -10,6 +10,13 @@ import { defaultProfile, parseClientMessage, type ClientMsg, type Profile, type 
 import type { MatchConfig } from '../shared/types.ts';
 import type { ServerConfig } from './config.ts';
 import { makeRoomCode, Room, type RoomClient } from './room.ts';
+import { createServerEconomy, type ServerEconomy } from './economy/index.ts';
+import type { EconomyClientMsg } from '../shared/economy.ts';
+
+const ECONOMY_MSGS = new Set<ClientMsg['t']>(['equip', 'storeBuy', 'walletChallenge', 'walletLink', 'usdcOrder', 'usdcSubmit', 'market', 'marketSell', 'marketBuy', 'marketCancel']);
+/** Economy messages fan out to disk and possibly the chain: a small bucket of their own. */
+const ECON_RATE = 3;
+const ECON_BURST = 12;
 
 const MAX_PAYLOAD = 4096;
 const HEARTBEAT_MS = 10_000;
@@ -41,6 +48,9 @@ interface Conn extends RoomClient {
   pingSent: number;
   connectedAt: number;
   lastMsg: number;
+  accountId: string | null;
+  econTokens: number;
+  econRefill: number;
 }
 
 export class GameServer {
@@ -55,9 +65,11 @@ export class GameServer {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private acc = 0;
   private last = 0;
+  readonly economy: ServerEconomy;
 
-  constructor(cfg: ServerConfig) {
+  constructor(cfg: ServerConfig, economy?: ServerEconomy) {
     this.cfg = cfg;
+    this.economy = economy ?? createServerEconomy(cfg);
     this.wss = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_PAYLOAD, // checked against the inflated size
@@ -148,6 +160,9 @@ export class GameServer {
       pingSent: 0,
       connectedAt: now,
       lastMsg: now,
+      accountId: null,
+      econTokens: ECON_BURST,
+      econRefill: now,
       send: (msg: ServerMsg) => this.sendRaw(conn, JSON.stringify(msg), false),
       sendRaw: (data: string, droppable: boolean) => this.sendRaw(conn, data, droppable),
     };
@@ -164,6 +179,7 @@ export class GameServer {
       if (!msg) return this.strike(conn, 1);
       conn.lastMsg = Date.now(); // only valid messages keep a socket alive
       if (LOBBY_MSGS.has(msg.t) && !this.takeLobbyToken(conn)) return;
+      if (ECONOMY_MSGS.has(msg.t) && !this.takeEconToken(conn)) return;
       try {
         this.route(conn, msg);
       } catch (err) {
@@ -207,6 +223,18 @@ export class GameServer {
     return true;
   }
 
+  private takeEconToken(c: Conn): boolean {
+    const now = Date.now();
+    c.econTokens = Math.min(ECON_BURST, c.econTokens + ((now - c.econRefill) / 1000) * ECON_RATE);
+    c.econRefill = now;
+    if (c.econTokens < 1) {
+      this.strike(c, 1);
+      return false;
+    }
+    c.econTokens -= 1;
+    return true;
+  }
+
   /** Misbehaviour counter. Enough strikes in a short window closes the connection. */
   private strike(c: Conn, weight: number): void {
     c.strikes += weight;
@@ -232,6 +260,11 @@ export class GameServer {
     else this.perIp.set(c.ip, n);
     if (c.room) c.room.leave(c.id);
     c.room = null;
+    try {
+      this.economy.onDisconnect(c);
+    } catch (err) {
+      console.error('[economy] disconnect', err);
+    }
   }
 
   // ------------------------------------------------------------------------------------------
@@ -244,6 +277,13 @@ export class GameServer {
       this.rooms.delete(rr.code);
       this.roomOwnerIp.delete(rr.code);
     });
+    r.onMatchEnd = (results) => {
+      try {
+        this.economy.onMatchEnd(results);
+      } catch (err) {
+        console.error('[economy] match end', err);
+      }
+    };
     this.rooms.set(code, r);
     this.roomOwnerIp.set(code, c.ip);
     return r;
@@ -289,6 +329,11 @@ export class GameServer {
       }
       c.hello = true;
       c.profile = msg.profile;
+      try {
+        c.profile = this.economy.onHello(c, msg.account); // only items the account owns are worn
+      } catch (err) {
+        console.error('[economy] hello', err);
+      }
       c.send({ t: 'welcome', id: c.id, v: PROTOCOL_VERSION, serverName: this.cfg.serverName, motd: this.cfg.motd });
       return;
     }
@@ -303,8 +348,8 @@ export class GameServer {
         c.send({ t: 'rooms', rooms: this.publicRooms() });
         return;
       case 'setProfile':
-        c.profile = msg.profile;
-        room?.setProfile(c.id, msg.profile);
+        c.profile = this.economy.sanitize(c, msg.profile);
+        room?.setProfile(c.id, c.profile);
         return;
       case 'createRoom': {
         const now = Date.now();
@@ -363,6 +408,16 @@ export class GameServer {
         return;
       }
       default:
+        if (ECONOMY_MSGS.has(msg.t)) {
+          try {
+            this.economy.route(c, msg as EconomyClientMsg);
+            if (msg.t === 'equip') room?.setProfile(c.id, c.profile);
+          } catch (err) {
+            console.error('[economy] route', err);
+            c.send({ t: 'econError', code: 'internal', message: 'Something went wrong. Please try again.' });
+          }
+          return;
+        }
         break;
     }
     if (!room) return;
@@ -472,6 +527,7 @@ export class GameServer {
     if (this.heartbeat) clearInterval(this.heartbeat);
     for (const c of this.conns.values()) c.ws.terminate();
     this.conns.clear();
+    this.economy.close();
   }
 
   stats(): { clients: number; rooms: number } {

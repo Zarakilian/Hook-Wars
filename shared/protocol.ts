@@ -4,10 +4,34 @@ import { DEFAULT_CONFIG, ITEM_IDS, MAX_CHAT_LEN, MAX_NAME_LEN, MAX_TEAM_SIZE, PR
 import { mapSupportsTidal } from './maps/index.ts';
 import {
   BOT_DIFFICULTIES, BTN_ALL, FAMILIES, HAZARD_MODES, MAP_IDS, RIVER_MODES, UPGRADE_STATS,
-  type BotDifficulty, type Cosmetics, type FamilyId, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type ScoreRow,
+  type BotDifficulty, type FamilyId, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type ScoreRow,
   type Snapshot, type Team, type UpgradeStat,
 } from './types.ts';
 import type { HazardInst } from './sim/entities.ts';
+import { cleanLoadout, cosmeticById, DEFAULT_LOADOUT, type Loadout } from './cosmetics.ts';
+import { isBase58, MAX_LIST_PEARLS, MIN_LIST_PEARLS, type EconomyClientMsg, type EconomyServerMsg, type Price } from './economy.ts';
+
+const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
+const ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
+
+function itemId(v: unknown): string | null {
+  return typeof v === 'string' && v.length <= 64 && cosmeticById(v) ? v : null;
+}
+
+function parsePrice(v: unknown): Price | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const p = v as Record<string, unknown>;
+  if (p.cur === 'pearls') {
+    const amount = typeof p.amount === 'number' && Number.isInteger(p.amount) && p.amount >= MIN_LIST_PEARLS && p.amount <= MAX_LIST_PEARLS ? p.amount : null;
+    return amount === null ? null : { cur: 'pearls', amount };
+  }
+  if (p.cur === 'usdc') {
+    // whole cents only, 0.10 to 10 000 USDC
+    const amount = typeof p.amount === 'number' && Number.isFinite(p.amount) && Math.round(p.amount * 100) === p.amount * 100 && p.amount >= 0.1 && p.amount <= 10_000 ? p.amount : null;
+    return amount === null ? null : { cur: 'usdc', amount };
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Client -> server
@@ -16,11 +40,12 @@ import type { HazardInst } from './sim/entities.ts';
 export interface Profile {
   name: string;
   family: FamilyId;
-  cosmetics: Cosmetics;
+  loadout: Loadout; // validated against the catalog here and against ownership on the server
 }
 
 export type ClientMsg =
-  | { t: 'hello'; v: number; profile: Profile }
+  | { t: 'hello'; v: number; profile: Profile; account?: string } // account = auth token from a previous visit
+  | EconomyClientMsg
   | { t: 'listRooms' }
   | { t: 'createRoom'; name: string; isPrivate: boolean; config: MatchConfig }
   | { t: 'joinRoom'; code: string }
@@ -57,7 +82,7 @@ export interface LobbySlot {
   name: string;
   team: Team | -1;
   family: FamilyId;
-  cosmetics: Cosmetics;
+  loadout: Loadout;
   isBot: boolean;
   ready: boolean;
   host: boolean;
@@ -101,7 +126,8 @@ export type ServerMsg =
   | { t: 'end'; e: MatchEnd }
   | { t: 'chat'; from: string; fromId: number; text: string; team: boolean; teamId: Team | -1 }
   | { t: 'pong'; c: number; s: number }
-  | { t: 'error'; code: string; message: string };
+  | { t: 'error'; code: string; message: string }
+  | EconomyServerMsg;
 
 // ---------------------------------------------------------------------------------------------
 // Validation helpers
@@ -146,22 +172,13 @@ export function cleanName(v: unknown): string | null {
   return s;
 }
 
-export function parseCosmetics(v: unknown): Cosmetics | null {
-  if (!isObj(v)) return null;
-  const hat = int(v.hat, 0, 63);
-  const accent = int(v.accent, 0, 63);
-  const face = int(v.face, 0, 63);
-  if (hat === null || accent === null || face === null) return null;
-  return { hat, accent, face };
-}
-
 export function parseProfile(v: unknown): Profile | null {
   if (!isObj(v)) return null;
   const name = cleanName(v.name);
   const family = oneOf(v.family, FAMILIES);
-  const cosmetics = parseCosmetics(v.cosmetics);
-  if (!name || !family || !cosmetics) return null;
-  return { name, family, cosmetics };
+  if (!name || !family) return null;
+  // unknown, wrong-family or wrong-slot items are dropped, never an error
+  return { name, family, loadout: cleanLoadout(family, v.loadout) };
 }
 
 /** Validate and normalise a match config. Tidal on a map without tides falls back to Deep Water. */
@@ -223,7 +240,37 @@ export function parseClientMessage(raw: string): ClientMsg | null {
     case 'hello': {
       const v = int(m.v, 0, 1e6);
       const profile = parseProfile(m.profile);
-      return v !== null && profile ? { t: 'hello', v, profile } : null;
+      if (v === null || !profile) return null;
+      if (m.account === undefined) return { t: 'hello', v, profile };
+      return typeof m.account === 'string' && TOKEN_RE.test(m.account) ? { t: 'hello', v, profile, account: m.account } : null;
+    }
+    case 'equip': {
+      const family = oneOf(m.family, FAMILIES);
+      return family ? { t: 'equip', family, loadout: cleanLoadout(family, m.loadout) } : null;
+    }
+    case 'storeBuy':
+    case 'usdcOrder': {
+      const item = itemId(m.item);
+      return item ? { t: m.t, item } : null;
+    }
+    case 'walletChallenge':
+    case 'market':
+      return { t: m.t };
+    case 'walletLink':
+      return isBase58(m.address, 32, 44) && isBase58(m.signature, 64, 100) ? { t: 'walletLink', address: m.address, signature: m.signature } : null;
+    case 'usdcSubmit': {
+      const order = typeof m.order === 'string' && ID_RE.test(m.order) ? m.order : null;
+      return order && isBase58(m.signature, 64, 100) ? { t: 'usdcSubmit', order, signature: m.signature } : null;
+    }
+    case 'marketSell': {
+      const instance = typeof m.instance === 'string' && ID_RE.test(m.instance) ? m.instance : null;
+      const price = parsePrice(m.price);
+      return instance && price ? { t: 'marketSell', instance, price } : null;
+    }
+    case 'marketBuy':
+    case 'marketCancel': {
+      const listing = typeof m.listing === 'string' && ID_RE.test(m.listing) ? m.listing : null;
+      return listing ? { t: m.t, listing } : null;
     }
     case 'listRooms':
     case 'quickPlay':
@@ -285,7 +332,7 @@ export function parseClientMessage(raw: string): ClientMsg | null {
 }
 
 export function defaultProfile(): Profile {
-  return { name: 'Pudgy', family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 } };
+  return { name: 'Pudgy', family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler } };
 }
 
 export function defaultConfig(): MatchConfig {

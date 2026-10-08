@@ -60,7 +60,7 @@ export const BOT_NAMES_UI: Record<BotDifficulty, { name: string; line: string }>
   brutal: { name: 'Brutal', line: 'Hooks you from across the map.' },
 };
 
-export const MAP_ICON: Record<MapId, IconId> = { muckmire: 'thorns', frostfang: 'ice', coralcove: 'fish', cogwater: 'lock' };
+export const MAP_ICON: Record<MapId, IconId> = { muckmire: 'thorns', frostfang: 'ice', coralcove: 'fish', cogwater: 'lock', mirelight: 'thorns', aurora: 'ice', maelstrom: 'fish', lanternwharf: 'lock' };
 
 // ---------------------------------------------------------------------------------------------
 // Keys

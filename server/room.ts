@@ -3,6 +3,8 @@ import { randomInt } from 'node:crypto';
 import { BOT_NAMES, MAX_TEAM_SIZE, TICK_DT } from '../shared/constants.ts';
 import type { LobbySlot, MatchEnd, MatchStart, Profile, RoomState, RoomSummary, ServerMsg } from '../shared/protocol.ts';
 import { GameSim } from '../shared/sim/sim.ts';
+import { randomBotLoadout } from '../shared/cosmetics.ts';
+import type { MatchResult } from './economy/api.ts';
 import { FAMILIES, UnitState, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type Team, type UpgradeStat } from '../shared/types.ts';
 
 export interface RoomClient {
@@ -40,6 +42,8 @@ export class Room {
   private onEmpty: (room: Room) => void;
   /** set when the lobby state changed; flushed once per tick so spam cannot multiply the fan-out */
   private dirty = false;
+  /** economy hook: rewards and stats for the humans still in the room when a match ends */
+  onMatchEnd: ((results: MatchResult[]) => void) | null = null;
 
   constructor(code: string, name: string, isPrivate: boolean, config: MatchConfig, host: RoomClient, onEmpty: (room: Room) => void) {
     this.code = code;
@@ -255,7 +259,7 @@ export class Room {
   }
 
   private playerInfo(c: RoomClient, team: Team): PlayerInfo {
-    return { id: c.id, name: c.profile.name, team, family: c.profile.family, cosmetics: c.profile.cosmetics, isBot: false };
+    return { id: c.id, name: c.profile.name, team, family: c.profile.family, loadout: c.profile.loadout, isBot: false };
   }
 
   private botName(): string {
@@ -272,12 +276,13 @@ export class Room {
 
   private botInfo(team: Team): PlayerInfo {
     const id = BOT_ID_BASE + ++this.botCounter;
+    const family = FAMILIES[randomInt(0, FAMILIES.length)];
     return {
       id,
       name: this.botName(),
       team,
-      family: FAMILIES[randomInt(0, FAMILIES.length)],
-      cosmetics: { hat: randomInt(0, 8), accent: randomInt(0, 8), face: randomInt(0, 8) },
+      family,
+      loadout: randomBotLoadout(family, () => randomInt(0, 1_000_000) / 1_000_000),
       isBot: true,
       botDifficulty: this.config.botDifficulty,
     };
@@ -322,6 +327,15 @@ export class Room {
         this.ended = true;
         const e: MatchEnd = { winner: sim.winner, score: [sim.score[0], sim.score[1]], rows: sim.scoreboard(), players: this.players };
         this.broadcast({ t: 'end', e });
+        if (this.onMatchEnd) {
+          const results: MatchResult[] = [];
+          for (const p of this.players) {
+            if (p.isBot || !this.members.has(p.id)) continue;
+            const row = e.rows.find((r) => r.i === p.id);
+            if (row) results.push({ connId: p.id, won: e.winner === p.team, row });
+          }
+          this.onMatchEnd(results);
+        }
       }
       this.endTimer += TICK_DT;
       if (this.endTimer >= RETURN_TO_LOBBY_SEC) this.backToLobby();
@@ -349,7 +363,7 @@ export class Room {
         name: m.client.profile.name,
         team: m.team,
         family: m.client.profile.family,
-        cosmetics: m.client.profile.cosmetics,
+        loadout: m.client.profile.loadout,
         isBot: false,
         ready: m.ready,
         host: m.client.id === this.hostId,

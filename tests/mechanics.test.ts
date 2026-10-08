@@ -8,7 +8,7 @@ import { getMap } from '../shared/maps/index.ts';
 import { Btn, UnitState, type MatchConfig, type PlayerInfo, type Team } from '../shared/types.ts';
 
 function players(teams: Team[]): PlayerInfo[] {
-  return teams.map((team, i) => ({ id: i + 1, name: `P${i + 1}`, team, family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false }));
+  return teams.map((team, i) => ({ id: i + 1, name: `P${i + 1}`, team, family: 'brawler', loadout: {}, isBot: false }));
 }
 
 function setup(teams: Team[], cfg: Partial<MatchConfig> = {}) {

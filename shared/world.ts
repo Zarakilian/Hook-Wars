@@ -108,8 +108,9 @@ export class World {
           }
         }
       }
+      const onLand = this.channel(x, z) <= 0;
       for (const p of this.moverPoses) {
-        if (!p.active) continue;
+        if (!p.active || onLand) continue;
         const res = pushOutOfCapsule(x, z, r, p.ax, p.az, p.bx, p.bz, p.r);
         if (res) {
           x = res.x;

@@ -36,12 +36,12 @@ export class Connection {
   private ws: WebSocket;
   private pingTimer: number;
 
-  constructor(url: string, profile: Profile) {
+  constructor(url: string, profile: Profile, account: string | null = null) {
     this.url = url;
     this.ws = new WebSocket(url);
     this.ws.addEventListener('open', () => {
       this.status = 'open';
-      this.send({ t: 'hello', v: PROTOCOL_VERSION, profile });
+      this.send(account ? { t: 'hello', v: PROTOCOL_VERSION, profile, account } : { t: 'hello', v: PROTOCOL_VERSION, profile });
       this.onStatus?.('open');
     });
     this.ws.addEventListener('message', (ev) => {

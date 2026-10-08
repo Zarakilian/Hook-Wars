@@ -2,6 +2,10 @@
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import type { ItemId, MatchConfig, Team, UpgradeStat } from '../shared/types.ts';
 import { createAudio } from './audio/audio.ts';
+import { createEconomy } from './economy/index.ts';
+import type { EconomyClient } from './economy/types.ts';
+import { matchPearls } from '../shared/cosmetics.ts';
+import { SOLO_PEARL_RATE } from '../shared/economy.ts';
 import { GameClient } from './game/GameClient.ts';
 import { Connection, defaultServerUrl, normaliseServerUrl } from './net/connection.ts';
 import { LocalSession, OnlineSession, type MatchSession } from './net/session.ts';
@@ -23,6 +27,7 @@ export class App {
   private toastId = 0;
   private menuOpen = false;
   private readonly act: AppActions;
+  readonly economy: EconomyClient;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.canvas = canvas;
@@ -41,7 +46,8 @@ export class App {
     this.audio = createAudio();
     this.audio.setVolumes(settings.master, settings.sfx, settings.music);
     this.act = this.actions();
-    this.ui = createUI(uiRoot, this.act);
+    this.economy = createEconomy();
+    this.ui = createUI(uiRoot, this.act, this.economy);
     const unlock = () => this.audio.unlock();
     window.addEventListener('pointerdown', unlock, { once: false });
     window.addEventListener('keydown', unlock, { once: false });
@@ -147,6 +153,12 @@ export class App {
       settings: this.state.settings,
       canvas: this.canvas,
       onEnd: (e) => {
+        if (session.local) {
+          // solo: Pearls go to the offline locker at a reduced rate (online, the server pays out)
+          const me = e.players.find((p) => p.id === session.start.you);
+          const row = e.rows.find((r) => r.i === session.start.you);
+          if (me && row) this.economy.grantLocal(Math.round(matchPearls(e.winner === me.team, row.k, row.hh, row.sv) * SOLO_PEARL_RATE), 'solo match');
+        }
         this.set({ match: { local: session.local, ended: e } });
         const g = this.game;
         this.ui.hud.showEnd(e, session.start.you, session.local);
@@ -224,6 +236,20 @@ export class App {
       case 'error':
         this.toast(m.message, 'error');
         break;
+      case 'account':
+      case 'market':
+      case 'walletChallenge':
+      case 'usdcOrder':
+      case 'reward':
+      case 'econError':
+        this.economy.receive(m);
+        if (m.t === 'account' && m.a.loadouts[this.state.profile.family]) {
+          // the server says what we may wear: keep the profile in step
+          this.state = { ...this.state, profile: { ...this.state.profile, loadout: m.a.loadouts[this.state.profile.family] } };
+          this.render();
+        }
+        if (m.t === 'reward') this.toast(`+${m.pearls} Pearls (${m.reason})`);
+        break;
       default:
         break;
     }
@@ -264,12 +290,15 @@ export class App {
         app.conn?.close();
         const s = { ...app.state.settings, serverUrl: url.trim() };
         saveSettings(s);
-        const conn = new Connection(full === defaultServerUrl() && !url.trim() ? defaultServerUrl() : full, app.state.profile);
+        const serverKey = full === defaultServerUrl() && !url.trim() ? defaultServerUrl() : full;
+        const conn = new Connection(serverKey, app.state.profile, app.economy.tokenFor(serverKey));
+        app.economy.attachServer((m) => conn.send(m as Parameters<Connection['send']>[0]), serverKey);
         app.conn = conn;
         conn.onMessage = (m) => app.onServer(m);
         conn.onStatus = (st, reason) => {
           if (app.conn !== conn) return;
           if (st === 'closed') {
+            app.economy.detachServer();
             const inMatch = !!app.game && !app.session?.local;
             if (inMatch) app.endGame();
             app.conn = null;
@@ -279,6 +308,7 @@ export class App {
         app.set({ settings: s, online: { ...app.state.online, status: 'connecting', url: full, error: undefined } });
       },
       disconnect() {
+        app.economy.detachServer();
         app.conn?.close();
         app.conn = null;
         app.set({ online: { status: 'idle', url: '', youId: -1, rooms: [] }, room: null, screen: 'online' });

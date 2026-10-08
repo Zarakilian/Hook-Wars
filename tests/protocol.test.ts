@@ -52,9 +52,12 @@ test('config validation clamps to known values and drops tidal on maps without t
 });
 
 test('hello requires a valid profile', () => {
-  const good = { t: 'hello', v: PROTOCOL_VERSION, profile: { name: 'Al', family: 'ogre', cosmetics: { hat: 1, accent: 2, face: 3 } } };
+  const good = { t: 'hello', v: PROTOCOL_VERSION, profile: { name: 'Al', family: 'ogre', loadout: {} } };
   assert.ok(parseClientMessage(JSON.stringify(good)));
   assert.equal(parseClientMessage(JSON.stringify({ ...good, profile: { ...good.profile, family: 'pudge' } })), null);
-  assert.equal(parseClientMessage(JSON.stringify({ ...good, profile: { ...good.profile, cosmetics: { hat: 999, accent: 0, face: 0 } } })), null);
+  // a loadout with junk, other-family or wrong-slot items is cleaned, never trusted
+  const junk = parseClientMessage(JSON.stringify({ ...good, profile: { ...good.profile, loadout: { head: 'brawler.captain_cap', hands: 'ogre.vine_tusk_hook', body: 'ogre.moss_mane', feet: 'x'.repeat(500) } } }));
+  assert.ok(junk && junk.t === 'hello');
+  if (junk && junk.t === 'hello') assert.deepEqual(junk.profile.loadout, { hands: 'ogre.vine_tusk_hook' });
   assert.equal(parseClientMessage(JSON.stringify({ ...good, profile: { ...good.profile, name: '   ' } })), null);
 });

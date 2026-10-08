@@ -15,7 +15,7 @@ function bots(n: number): PlayerInfo[] {
       name: `Bot ${i + 1}`,
       team: (i % 2) as Team,
       family: (['brawler', 'ogre', 'bot'] as const)[i % 3],
-      cosmetics: { hat: i, accent: i, face: i },
+      loadout: {},
       isBot: true,
       botDifficulty: (['easy', 'normal', 'hard', 'brutal'] as const)[i % 4],
     });
@@ -73,8 +73,8 @@ test('spawns and fountains are on land and clear of obstacles on every map', () 
 
 function duel(mapId = 'muckmire' as const, riverMode: MatchConfig['riverMode'] = 'deep') {
   const players: PlayerInfo[] = [
-    { id: 1, name: 'A', team: 0, family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false },
-    { id: 2, name: 'B', team: 1, family: 'ogre', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false },
+    { id: 1, name: 'A', team: 0, family: 'brawler', loadout: {}, isBot: false },
+    { id: 2, name: 'B', team: 1, family: 'ogre', loadout: {}, isBot: false },
   ];
   const sim = new GameSim({ ...DEFAULT_CONFIG, mapId, riverMode, hazards: 'none', botFill: false }, players, 7);
   // skip countdown

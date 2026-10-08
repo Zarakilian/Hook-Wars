@@ -2,6 +2,17 @@
 import { BOT_NAMES, TICK_DT } from '../../shared/constants.ts';
 import type { MatchEnd, MatchStart, Profile } from '../../shared/protocol.ts';
 import { GameSim } from '../../shared/sim/sim.ts';
+import { randomBotLoadout } from '../../shared/cosmetics.ts';
+
+/** tiny seeded RNG for bot outfits */
+function mulberry(a: number): () => number {
+  return () => {
+    let t = (a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 import { FAMILIES, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type Snapshot, type Team, type UpgradeStat } from '../../shared/types.ts';
 import type { Connection } from './connection.ts';
 
@@ -41,7 +52,7 @@ export class LocalSession implements MatchSession {
   constructor(config: MatchConfig, profile: Profile, team: Team) {
     const players: PlayerInfo[] = [];
     this.you = 1;
-    players.push({ id: this.you, name: profile.name, team, family: profile.family, cosmetics: profile.cosmetics, isBot: false });
+    players.push({ id: this.you, name: profile.name, team, family: profile.family, loadout: profile.loadout, isBot: false });
     let n = 0;
     const used = new Set<string>([profile.name]);
     const botName = () => {
@@ -64,7 +75,7 @@ export class LocalSession implements MatchSession {
           name: botName(),
           team: t,
           family: FAMILIES[id % FAMILIES.length],
-          cosmetics: { hat: id % 7, accent: (id * 3) % 7, face: (id * 5) % 7 },
+          loadout: randomBotLoadout(FAMILIES[id % FAMILIES.length], mulberry(id * 7919 + 17)),
           isBot: true,
           botDifficulty: config.botDifficulty,
         });

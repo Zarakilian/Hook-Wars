@@ -53,7 +53,7 @@ test('two clients create, join and play a match over websockets', async () => {
     const a = client(url);
     const b = client(url);
     await Promise.all([a.open, b.open]);
-    const profile = { name: 'Alice<script>', family: 'brawler', cosmetics: { hat: 1, accent: 2, face: 3 } };
+    const profile = { name: 'Alice<script>', family: 'brawler', loadout: {} };
     a.send({ t: 'hello', v: PROTOCOL_VERSION, profile });
     b.send({ t: 'hello', v: PROTOCOL_VERSION, profile: { ...profile, name: 'Bob', family: 'bot' } });
     const wa = await a.wait('welcome');
@@ -97,7 +97,7 @@ test('version mismatch is rejected', async () => {
   try {
     const c = client(`ws://127.0.0.1:${port}/ws`);
     await c.open;
-    c.send({ t: 'hello', v: 999, profile: { name: 'X', family: 'ogre', cosmetics: { hat: 0, accent: 0, face: 0 } } });
+    c.send({ t: 'hello', v: 999, profile: { name: 'X', family: 'ogre', loadout: {} } });
     const err = await c.wait('error');
     assert.equal(err.code, 'version');
   } finally {

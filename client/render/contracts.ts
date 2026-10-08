@@ -4,7 +4,7 @@ import type * as THREE from 'three';
 import type { Circle, Decor, MapDef, MoverDef, Obstacle } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
 import type {
-  AnnounceKey, CastKind, Cosmetics, FamilyId, HazardKind, MatchConfig, RiverState, RuneType, Team, UnitStateId,
+  AnnounceKey, CastKind, FamilyId, Loadout, HazardKind, MatchConfig, RiverState, RuneType, Team, UnitStateId,
 } from '../../shared/types.ts';
 
 export type Quality = 'low' | 'medium' | 'high' | 'ultra';
@@ -18,6 +18,7 @@ export const TEAM_COLORS: Record<Team, { main: number; dark: number; light: numb
 };
 
 /**
+ * @deprecated legacy option names for the old index-based builders. The catalog is shared/cosmetics.ts.
  * Cosmetic option names per family. Cosmetics indices are taken modulo these lengths.
  * client/render/models/pudgy.ts must build a distinct look for every entry; the UI shows these names.
  */
@@ -120,7 +121,8 @@ export interface WaterView {
 
 export interface PudgyOptions {
   family: FamilyId;
-  cosmetics: Cosmetics;
+  /** one cosmetic per slot (shared/cosmetics.ts); an empty slot shows the bare base */
+  loadout: Loadout;
   team: Team;
   name: string;
   isLocal: boolean;

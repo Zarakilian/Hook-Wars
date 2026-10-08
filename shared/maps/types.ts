@@ -29,6 +29,23 @@ export type PropKind =
   | 'bollard'
   | 'lamppost'
   | 'pipe'
+  // Mirelight Marsh (braided swamp)
+  | 'stilthut' // a little hut on stilts (circle, r ~ 1.6)
+  | 'swampstump' // a big hollow cypress stump
+  | 'lanternpost' // tall wooden post with a hanging lantern (emissive)
+  // Aurora Harbour (ice floes, fjord village)
+  | 'watchtower' // timber watchtower with a lit lamp (circle, r ~ 1.4)
+  | 'snowpine'
+  | 'iceshelf' // a chunky block of glacier ice
+  // Maelstrom Lagoon (whirlpool cove)
+  | 'seastack' // a tall rock pillar standing in the water, palms and vines on top
+  | 'shipwreck' // the broken hull of a ship (wall segment)
+  | 'cratepile'
+  // Lantern Wharf (canal city)
+  | 'crane' // a dockside timber crane with a hanging hook and load
+  | 'warehouse' // a brick warehouse frontage (wall segment, tall)
+  | 'gaslamp'
+  | 'bridgepier' // stone pier column under a bridge
   // Walls (segments)
   | 'wall_wood'
   | 'wall_stone'
@@ -60,7 +77,42 @@ export type DecorKind =
   | 'sign'
   | 'firefly_swarm'
   | 'waterfall'
-  | 'lockgate';
+  | 'lockgate'
+  // added for the four reference maps
+  | 'cattail'
+  | 'mist' // a low drifting mist bank
+  | 'lanternstring' // a rope of little lanterns between two posts
+  | 'ropebridge' // a high rope bridge (visual only, above play)
+  | 'banner'
+  | 'icicles'
+  | 'coralfan'
+  | 'treasure'
+  | 'chainhang'
+  | 'cargonet'
+  | 'rowboat' // a moored rowboat
+  | 'flag';
+
+/** Walkable decks over water: docks, bridges, piers, frozen floes. Hooks fly over them. */
+export type PlatformKind = 'dock' | 'bridge' | 'pier' | 'floe' | 'raftdeck';
+
+export interface Platform {
+  kind: PlatformKind;
+  x: number;
+  z: number;
+  w: number; // size along the platform's local x
+  d: number; // size along the platform's local z
+  rot: number; // yaw in radians
+  seed?: number;
+}
+
+/** Extra open water: lagoons, harbour basins (a rotated ellipse). */
+export interface Pool {
+  x: number;
+  z: number;
+  rx: number;
+  rz: number;
+  rot: number;
+}
 
 export interface CircleObstacle {
   shape: 'circle';
@@ -191,6 +243,12 @@ export interface MapDef {
   w: number; // x extent
   d: number; // z extent
   river: RiverDef;
+  /** extra braided channels (points need only cover their own z range; outside it they add nothing) */
+  channels?: RiverDef[];
+  /** extra open water (lagoons, basins) */
+  pools?: Pool[];
+  /** walkable decks over water (docks, bridges, piers, floes): channelDepthAt is negative on them */
+  platforms?: Platform[];
   islands: Circle[]; // ground islands inside the channel
   tide?: TideDef; // present = map supports the Tidal river mode
   special: HazardKind; // the map's own special hazard

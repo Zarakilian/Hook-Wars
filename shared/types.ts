@@ -1,21 +1,25 @@
+import type { Loadout } from './cosmetics.ts';
+
+export type { Loadout };
+
 // Core shared types. The sim, server, client and every render module agree on these.
 // Erasable syntax only (no enums): Node runs this file with type stripping.
 
 export type Team = 0 | 1;
 export type FamilyId = 'brawler' | 'ogre' | 'bot';
-export type MapId = 'muckmire' | 'frostfang' | 'coralcove' | 'cogwater';
+export type MapId = 'muckmire' | 'frostfang' | 'coralcove' | 'cogwater' | 'mirelight' | 'aurora' | 'maelstrom' | 'lanternwharf';
 export type RiverMode = 'deep' | 'dry' | 'tidal';
 export type HazardMode = 'none' | 'thorns' | 'bristles' | 'special' | 'mixed';
 export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'brutal';
 export type ControlScheme = 'modern' | 'classic';
 
 export const FAMILIES: readonly FamilyId[] = ['brawler', 'ogre', 'bot'];
-export const MAP_IDS: readonly MapId[] = ['muckmire', 'frostfang', 'coralcove', 'cogwater'];
+export const MAP_IDS: readonly MapId[] = ['muckmire', 'frostfang', 'coralcove', 'cogwater', 'mirelight', 'aurora', 'maelstrom', 'lanternwharf'];
 export const RIVER_MODES: readonly RiverMode[] = ['deep', 'dry', 'tidal'];
 export const HAZARD_MODES: readonly HazardMode[] = ['none', 'thorns', 'bristles', 'special', 'mixed'];
 export const BOT_DIFFICULTIES: readonly BotDifficulty[] = ['easy', 'normal', 'hard', 'brutal'];
 
-/** Cosmetic choices. Each index is taken modulo the option count of the family, so any int is safe. */
+/** @deprecated legacy index-based cosmetics, kept only for the old character builders. Use Loadout. */
 export interface Cosmetics {
   hat: number;
   accent: number;
@@ -38,7 +42,7 @@ export interface PlayerInfo {
   name: string;
   team: Team;
   family: FamilyId;
-  cosmetics: Cosmetics;
+  loadout: Loadout; // one cosmetic per slot, see shared/cosmetics.ts
   isBot: boolean;
   botDifficulty?: BotDifficulty;
 }

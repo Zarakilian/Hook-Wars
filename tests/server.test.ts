@@ -49,7 +49,7 @@ function wsClient(port: number) {
   return { ws, inbox, open, until, send: (m: unknown) => ws.send(JSON.stringify(m)) };
 }
 
-const PROFILE = { name: 'Tester', family: 'brawler', cosmetics: { hat: 0, accent: 0, face: 0 } };
+const PROFILE = { name: 'Tester', family: 'brawler', loadout: {} };
 
 test('an upgrade on another path that resets the TCP connection does not crash the server', async () => {
   const s = await startServer(true);
@@ -102,7 +102,7 @@ function fakeClient(id: number, name: string): RoomClient & { msgs: ServerMsg[] 
   const msgs: ServerMsg[] = [];
   return {
     id,
-    profile: { name, family: 'ogre', cosmetics: { hat: 0, accent: 0, face: 0 } },
+    profile: { name, family: 'ogre', loadout: {} },
     ping: 0,
     msgs,
     send: (m) => msgs.push(m),
@@ -131,7 +131,7 @@ test('leaving and rejoining a running match takes your own unit back, with its p
 });
 
 test('spectator snapshots do not reveal stealthed units or any mines', () => {
-  const players: PlayerInfo[] = [0, 1].map((team, i) => ({ id: i + 1, name: `P${i}`, team: team as 0 | 1, family: 'bot', cosmetics: { hat: 0, accent: 0, face: 0 }, isBot: false }));
+  const players: PlayerInfo[] = [0, 1].map((team, i) => ({ id: i + 1, name: `P${i}`, team: team as 0 | 1, family: 'bot', loadout: {}, isBot: false }));
   const sim = new GameSim({ ...DEFAULT_CONFIG, botFill: false }, players, 3);
   sim.step();
   const b = sim.unitById.get(2)!;

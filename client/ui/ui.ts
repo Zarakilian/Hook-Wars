@@ -14,9 +14,12 @@ import { buildSolo } from './screens/solo.ts';
 import type { AppActions, AppState, Screen, UI } from './types.ts';
 import { setUiSound } from './widgets.ts';
 
+import type { EconomyClient } from '../economy/types.ts';
+
 const HOWTO_KEY = 'hookwars.howto.seen.v1';
 
-export function createUI(root: HTMLElement, actions: AppActions): UI {
+export function createUI(root: HTMLElement, actions: AppActions, economy?: EconomyClient): UI {
+  void economy; // Locker, Store and Marketplace screens build on this (see client/economy/types.ts)
   setUiSound(actions.uiSound);
   root.classList.add('hw-ui');
 

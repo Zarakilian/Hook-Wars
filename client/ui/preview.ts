@@ -213,14 +213,14 @@ export class PudgyPreview {
   /** Show this profile (rebuilds the model only when family or cosmetics change). */
   set(p: Profile, team: Team): void {
     if (!this.renderer || !this.scene) return;
-    const key = `${p.family}|${p.cosmetics.hat}|${p.cosmetics.accent}|${p.cosmetics.face}|${team}`;
+    const key = `${p.family}|${JSON.stringify(p.loadout)}|${team}`;
     if (key === this.key) return;
     const firstBuild = this.key === '';
     const familyChanged = !firstBuild && this.key.split('|')[0] !== p.family;
     this.key = key;
     this.disposePudgy();
     try {
-      const v = createPudgy({ family: p.family, cosmetics: p.cosmetics, team, name: p.name, isLocal: true, quality: 'high' });
+      const v = createPudgy({ family: p.family, loadout: p.loadout, team, name: p.name, isLocal: true, quality: 'high' });
       v.root.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) {
