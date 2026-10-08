@@ -14,6 +14,35 @@ export function curvyRiver(d: number, opts: { amp: number; freq: number; phase: 
   return pts;
 }
 
+/**
+ * Point-symmetric river centreline: x(-z) = -x(z) and hw(-z) = hw(z), so both banks are the same
+ * shape under the (x, z) -> (-x, -z) mirror that withMirrors() uses for obstacles.
+ * x = amp sin(f z) + amp3 sin(2.7 f z); hw = hw + hwVar cos(hwFreq z). Samples from -d/2-4 to d/2+4.
+ */
+export function symmetricRiver(
+  d: number,
+  opts: { amp: number; freq: number; amp3?: number; hw: number; hwVar: number; hwFreq?: number; step?: number },
+): RiverPoint[] {
+  const pts: RiverPoint[] = [];
+  const step = opts.step ?? 2;
+  const n = Math.ceil((d / 2 + 4) / step);
+  const hf = opts.hwFreq ?? opts.freq * 1.7;
+  for (let i = -n; i <= n; i++) {
+    const z = i * step;
+    const x = Math.sin(z * opts.freq) * opts.amp + Math.sin(z * opts.freq * 2.7) * (opts.amp3 ?? 0);
+    const hw = opts.hw + Math.cos(z * hf) * opts.hwVar;
+    pts.push({ z, x: Math.abs(x) < 1e-9 ? 0 : x, hw });
+  }
+  return pts;
+}
+
+/** A list of points plus their point mirrors (-x, -z). Use for hazard slots and rune spots. */
+export function withMirroredPoints<T extends { x: number; z: number }>(list: T[]): T[] {
+  const out = [...list];
+  for (const p of list) if (Math.abs(p.x) > 1e-6 || Math.abs(p.z) > 1e-6) out.push({ ...p, x: -p.x, z: -p.z });
+  return out;
+}
+
 /** Centreline x and half width at z (linear between samples). */
 export function riverAt(points: RiverPoint[], z: number): { x: number; hw: number } {
   if (z <= points[0].z) return { x: points[0].x, hw: points[0].hw };

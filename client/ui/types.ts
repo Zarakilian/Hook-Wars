@@ -2,7 +2,7 @@
 // The app owns state and calls ui.render(state) whenever it changes; the UI calls actions.
 import type { MatchEnd, Profile, RoomState, RoomSummary } from '../../shared/protocol.ts';
 import type {
-  GameEvent, ItemId, MatchConfig, PlayerInfo, RiverState, ScoreRow, Team, UnitSnap, UpgradeStat, YouSnap,
+  GameEvent, HookSnap, ItemId, MatchConfig, PlayerInfo, RiverState, RuneSnap, ScoreRow, Team, UnitSnap, UpgradeStat, YouSnap,
 } from '../../shared/types.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
@@ -96,6 +96,10 @@ export interface HudFrame {
   screen: Map<number, { x: number; y: number; onScreen: boolean }>;
   /** world-space camera view rectangle corners on the ground (x,z pairs), for the minimap frustum */
   view: [number, number][];
+  /** Optional: live hooks (interpolated frame) for minimap hook lines. Not required by the HUD. */
+  hooks?: HookSnap[];
+  /** Optional: live runes (interpolated frame) for the minimap. Without it the HUD tracks runes from events. */
+  runes?: RuneSnap[];
 }
 
 export interface Hud {
