@@ -9,7 +9,7 @@ import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { bedY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
-import { buildDecor, buildProps, createFountainView } from '../models/props.ts';
+import { buildDecor, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
 import { HeightField, newCell } from './terrain/field.ts';
@@ -64,7 +64,8 @@ function decorForMode(map: MapDef, config: MatchConfig, biome: MapBiome): Decor[
     if ((d.kind === 'grass' || d.kind === 'fern' || d.kind === 'flower' || d.kind === 'snowtuft' || d.kind === 'mushroom') && biome.pathAmount(d.x, d.z) > 0.45) continue;
     out.push(d);
   }
-  return out.concat(biome.extraDecor());
+  // lilypads belong on warm water only
+  return out.concat(biome.extraDecor().filter((d) => !(d.kind === 'lilypad' && map.id === 'frostfang')));
 }
 
 export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardInst[], engine: Engine): WorldView {
@@ -222,11 +223,13 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   group.add(details.group);
 
   // ---------------------------------------------------------------- props, decor, fountains
-  group.add(buildProps(map.obstacles, map, height));
-  group.add(buildDecor(decorForMode(map, config, biome), map, height, () => waterY(map, level)));
+  const propsGroup = buildProps(map.obstacles, map, height, quality);
+  group.add(propsGroup);
+  const decorGroup = buildDecor(decorForMode(map, config, biome), map, height, () => waterY(map, level), quality);
+  group.add(decorGroup);
   const fountains: AnimatedView[] = [0, 1].map((t) => {
     const c = map.fountains[t];
-    const v = createFountainView(t as 0 | 1, c, map);
+    const v = createFountainView(t as 0 | 1, c, map, height);
     v.root.position.set(c.x, height(c.x, c.z), c.z);
     group.add(v.root);
     return v;
@@ -272,6 +275,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
       flora.dispose();
       details.dispose();
       for (const fv of fountains) fv.dispose();
+      disposePropGroup(propsGroup);
+      disposePropGroup(decorGroup);
     },
   };
 }
