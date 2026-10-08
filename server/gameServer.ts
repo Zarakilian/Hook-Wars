@@ -11,9 +11,9 @@ import type { MatchConfig } from '../shared/types.ts';
 import type { ServerConfig } from './config.ts';
 import { makeRoomCode, Room, type RoomClient } from './room.ts';
 import { createServerEconomy, type ServerEconomy } from './economy/index.ts';
-import type { EconomyClientMsg } from '../shared/economy.ts';
+import { ECONOMY_MSG_TYPES, type EconomyClientMsg } from '../shared/economy.ts';
 
-const ECONOMY_MSGS = new Set<ClientMsg['t']>(['equip', 'storeBuy', 'walletChallenge', 'walletLink', 'usdcOrder', 'usdcSubmit', 'market', 'marketSell', 'marketBuy', 'marketCancel']);
+const ECONOMY_MSGS = ECONOMY_MSG_TYPES;
 /** Economy messages fan out to disk and possibly the chain: a small bucket of their own. */
 const ECON_RATE = 3;
 const ECON_BURST = 12;

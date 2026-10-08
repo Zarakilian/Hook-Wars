@@ -1,7 +1,7 @@
 // Interfaces between the game client and every render/audio/UI module.
 // Each module may improve its implementation freely but must keep these signatures.
 import type * as THREE from 'three';
-import type { Circle, Decor, MapDef, MoverDef, Obstacle } from '../../shared/maps/types.ts';
+import type { Circle, Decor, MapDef, MoverDef, Obstacle, Platform } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
 import type {
   AnnounceKey, CastKind, FamilyId, Loadout, HazardKind, MatchConfig, RiverState, RuneType, Team, UnitStateId,
@@ -51,6 +51,15 @@ export function groundY(map: MapDef): number {
 /** River bed height (deepest point of the channel). */
 export function bedY(map: MapDef): number {
   return map.terrain.baseHeight - map.river.depth;
+}
+/**
+ * Top of a walkable platform deck. Three modules must agree on it: props builds the deck surface here,
+ * terrain's groundHeight() returns it for points on the platform (platformAt), and units stand on it.
+ * Bridges sit flush with the banks; docks, piers and raft decks a step lower; ice floes lower still.
+ */
+export function platformDeckY(map: MapDef, p: Pick<Platform, 'kind'>): number {
+  const drop = p.kind === 'bridge' ? 0 : p.kind === 'floe' ? 0.3 : p.kind === 'raftdeck' ? 0.2 : 0.15;
+  return map.terrain.baseHeight - drop;
 }
 /** Water surface height for a river level 0..1 (1 = full, just under the bank top). */
 export function waterY(map: MapDef, level: number): number {

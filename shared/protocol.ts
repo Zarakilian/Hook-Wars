@@ -9,30 +9,9 @@ import {
 } from './types.ts';
 import type { HazardInst } from './sim/entities.ts';
 import { cleanLoadout, cosmeticById, DEFAULT_LOADOUT, type Loadout } from './cosmetics.ts';
-import { isBase58, MAX_LIST_PEARLS, MIN_LIST_PEARLS, type EconomyClientMsg, type EconomyServerMsg, type Price } from './economy.ts';
+import { ECONOMY_MSG_TYPES, parseEconomyClientMsg, type EconomyClientMsg, type EconomyServerMsg } from './economy.ts';
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
-const ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
-
-function itemId(v: unknown): string | null {
-  return typeof v === 'string' && v.length <= 64 && cosmeticById(v) ? v : null;
-}
-
-function parsePrice(v: unknown): Price | null {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
-  const p = v as Record<string, unknown>;
-  if (p.cur === 'pearls') {
-    const amount = typeof p.amount === 'number' && Number.isInteger(p.amount) && p.amount >= MIN_LIST_PEARLS && p.amount <= MAX_LIST_PEARLS ? p.amount : null;
-    return amount === null ? null : { cur: 'pearls', amount };
-  }
-  if (p.cur === 'usdc') {
-    // whole cents only, 0.10 to 10 000 USDC
-    const amount = typeof p.amount === 'number' && Number.isFinite(p.amount) && Math.round(p.amount * 100) === p.amount * 100 && p.amount >= 0.1 && p.amount <= 10_000 ? p.amount : null;
-    return amount === null ? null : { cur: 'usdc', amount };
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Client -> server
 // ---------------------------------------------------------------------------------------------
@@ -236,6 +215,7 @@ export function parseClientMessage(raw: string): ClientMsg | null {
     return null;
   }
   if (!isObj(m) || typeof m.t !== 'string') return null;
+  if (ECONOMY_MSG_TYPES.has(m.t)) return parseEconomyClientMsg(m);
   switch (m.t) {
     case 'hello': {
       const v = int(m.v, 0, 1e6);
@@ -243,34 +223,6 @@ export function parseClientMessage(raw: string): ClientMsg | null {
       if (v === null || !profile) return null;
       if (m.account === undefined) return { t: 'hello', v, profile };
       return typeof m.account === 'string' && TOKEN_RE.test(m.account) ? { t: 'hello', v, profile, account: m.account } : null;
-    }
-    case 'equip': {
-      const family = oneOf(m.family, FAMILIES);
-      return family ? { t: 'equip', family, loadout: cleanLoadout(family, m.loadout) } : null;
-    }
-    case 'storeBuy':
-    case 'usdcOrder': {
-      const item = itemId(m.item);
-      return item ? { t: m.t, item } : null;
-    }
-    case 'walletChallenge':
-    case 'market':
-      return { t: m.t };
-    case 'walletLink':
-      return isBase58(m.address, 32, 44) && isBase58(m.signature, 64, 100) ? { t: 'walletLink', address: m.address, signature: m.signature } : null;
-    case 'usdcSubmit': {
-      const order = typeof m.order === 'string' && ID_RE.test(m.order) ? m.order : null;
-      return order && isBase58(m.signature, 64, 100) ? { t: 'usdcSubmit', order, signature: m.signature } : null;
-    }
-    case 'marketSell': {
-      const instance = typeof m.instance === 'string' && ID_RE.test(m.instance) ? m.instance : null;
-      const price = parsePrice(m.price);
-      return instance && price ? { t: 'marketSell', instance, price } : null;
-    }
-    case 'marketBuy':
-    case 'marketCancel': {
-      const listing = typeof m.listing === 'string' && ID_RE.test(m.listing) ? m.listing : null;
-      return listing ? { t: m.t, listing } : null;
     }
     case 'listRooms':
     case 'quickPlay':

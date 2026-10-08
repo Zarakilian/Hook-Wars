@@ -2,8 +2,8 @@
 // The game server is the source of truth for ownership (docs/economy.md). Solo play uses a local
 // account in the browser with the same shapes. Limited items also exist as Metaplex Core NFTs on
 // Solana devnet; mainnet stays off until the legal checklist in docs/economy.md is done.
-import type { CosmeticDef, Loadout } from './cosmetics.ts';
-import type { FamilyId } from './types.ts';
+import { cleanLoadout, cosmeticById, type CosmeticDef, type Loadout } from './cosmetics.ts';
+import { FAMILIES, type FamilyId } from './types.ts';
 
 export type ChainNetwork = 'off' | 'devnet' | 'mainnet';
 
@@ -56,7 +56,7 @@ export function isBase58(s: unknown, minLen: number, maxLen: number): s is strin
 }
 
 // ---------------------------------------------------------------------------------------------
-// Messages (validated in shared/protocol.ts)
+// Messages (parsed here; shared/protocol.ts delegates every type in ECONOMY_MSG_TYPES)
 // ---------------------------------------------------------------------------------------------
 
 export type EconomyClientMsg =
@@ -78,6 +78,67 @@ export type EconomyServerMsg =
   | { t: 'usdcOrder'; order: string; tx: string; expires: number } // tx = base64 serialized, partially signed
   | { t: 'reward'; pearls: number; reason: string }
   | { t: 'econError'; code: string; message: string };
+
+export const ECONOMY_MSG_TYPES: ReadonlySet<string> = new Set<EconomyClientMsg['t']>([
+  'equip', 'storeBuy', 'walletChallenge', 'walletLink', 'usdcOrder', 'usdcSubmit', 'market', 'marketSell', 'marketBuy', 'marketCancel',
+]);
+
+const ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
+
+function itemId(v: unknown): string | null {
+  return typeof v === 'string' && v.length <= 64 && cosmeticById(v) ? v : null;
+}
+
+function parsePrice(v: unknown): Price | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const p = v as Record<string, unknown>;
+  if (p.cur === 'pearls') {
+    const amount = typeof p.amount === 'number' && Number.isInteger(p.amount) && p.amount >= MIN_LIST_PEARLS && p.amount <= MAX_LIST_PEARLS ? p.amount : null;
+    return amount === null ? null : { cur: 'pearls', amount };
+  }
+  if (p.cur === 'usdc') {
+    // whole cents only, 0.10 to 10 000 USDC
+    const amount = typeof p.amount === 'number' && Number.isFinite(p.amount) && Math.round(p.amount * 100) === p.amount * 100 && p.amount >= 0.1 && p.amount <= 10_000 ? p.amount : null;
+    return amount === null ? null : { cur: 'usdc', amount };
+  }
+  return null;
+}
+
+/** Validate one economy message (already JSON-parsed, m.t in ECONOMY_MSG_TYPES). Null = drop it. */
+export function parseEconomyClientMsg(m: Record<string, unknown>): EconomyClientMsg | null {
+  switch (m.t) {
+    case 'equip': {
+      const family = typeof m.family === 'string' && (FAMILIES as readonly string[]).includes(m.family) ? (m.family as FamilyId) : null;
+      return family ? { t: 'equip', family, loadout: cleanLoadout(family, m.loadout) } : null;
+    }
+    case 'storeBuy':
+    case 'usdcOrder': {
+      const item = itemId(m.item);
+      return item ? { t: m.t, item } : null;
+    }
+    case 'walletChallenge':
+    case 'market':
+      return { t: m.t };
+    case 'walletLink':
+      return isBase58(m.address, 32, 44) && isBase58(m.signature, 64, 100) ? { t: 'walletLink', address: m.address, signature: m.signature } : null;
+    case 'usdcSubmit': {
+      const order = typeof m.order === 'string' && ID_RE.test(m.order) ? m.order : null;
+      return order && isBase58(m.signature, 64, 100) ? { t: 'usdcSubmit', order, signature: m.signature } : null;
+    }
+    case 'marketSell': {
+      const instance = typeof m.instance === 'string' && ID_RE.test(m.instance) ? m.instance : null;
+      const price = parsePrice(m.price);
+      return instance && price ? { t: 'marketSell', instance, price } : null;
+    }
+    case 'marketBuy':
+    case 'marketCancel': {
+      const listing = typeof m.listing === 'string' && ID_RE.test(m.listing) ? m.listing : null;
+      return listing ? { t: m.t, listing } : null;
+    }
+    default:
+      return null;
+  }
+}
 
 /** Message the wallet signs to prove it owns the address (Sign in with Solana style). */
 export function walletChallengeText(domain: string, accountId: string, nonce: string, issuedAt: string): string {

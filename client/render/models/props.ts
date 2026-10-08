@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import type { Circle, Decor, MapDef, MoverDef, Obstacle, Platform } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { RuneType, Team } from '../../../shared/types.ts';
-import { groundY, type AnimatedView, type HazardView, type HeightFn, type Quality } from '../contracts.ts';
+import { groundY, platformDeckY, type AnimatedView, type HazardView, type HeightFn, type Quality } from '../contracts.ts';
 import { buildPropsImpl } from './props/buildProps.ts';
 import { moodOf, setPropsQuality, setPropTime } from './props/common.ts';
 import { buildDecorImpl } from './props/decor.ts';
@@ -53,7 +53,7 @@ export function buildDecor(decor: Decor[], map: MapDef, height: HeightFn, waterY
 /** Ice floe, barge, log or raft sized to r and len. Origin at the waterline, +Z along the capsule axis. */
 /**
  * Walkable decks over water (docks, stone bridges, piers, frozen floes): one group for the whole map.
- * Origin is world space; decks sit at groundY(map). Called by the terrain module. (Stub until the props pass.)
+ * Origin is world space; deck tops sit at platformDeckY(map, p). Called by the terrain module. (Stub until the props pass.)
  */
 export function buildPlatforms(platforms: Platform[], map: MapDef, quality?: Quality): THREE.Group {
   void map;
@@ -63,7 +63,7 @@ export function buildPlatforms(platforms: Platform[], map: MapDef, quality?: Qua
   const mat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 0.9 });
   for (const p of platforms) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(p.w, 0.3, p.d), mat);
-    m.position.set(p.x, groundY(map) - 0.15, p.z);
+    m.position.set(p.x, platformDeckY(map, p) - 0.15, p.z);
     m.rotation.y = -p.rot;
     m.castShadow = true;
     m.receiveShadow = true;
