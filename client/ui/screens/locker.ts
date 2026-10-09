@@ -1,19 +1,21 @@
-// Locker: a big 3D showcase of your Pudgy, family tabs, slot tabs and an item grid per slot.
+// Locker: a big 3D showcase of your character, family tabs, slot tabs and an item grid per slot.
 // Owned items equip on click (economy.equip, and the saved profile stays in step); locked items are
 // tried on in the preview only, with a buy button right there. Nothing unowned is ever saved.
 import { FAMILY_DEFS } from '../../../shared/constants.ts';
 import { COSMETIC_SLOTS, cosmeticById, DEFAULT_LOADOUT, ownedLoadout, SLOT_NAMES, type CosmeticDef, type CosmeticSlot, type Loadout } from '../../../shared/cosmetics.ts';
+import { isSteam } from '../../platform.ts';
 import { FAMILIES, type FamilyId, type Team } from '../../../shared/types.ts';
 import { TEAM_COLORS } from '../../render/contracts.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
-import { catalogFor, copiesOf, fmtPearls, RARITY_INFO, serialText, SLOT_ICON, sourceLine } from '../econ.ts';
+import { catalogFor, fmtPearls, premiumOffer, SLOT_ICON, sourceLine } from '../econ.ts';
 import { icon, type IconId } from '../icons.ts';
 import { itemArt, itemCard, rarityPill, type ItemCard } from '../items.ts';
 import { navHint } from '../nav.ts';
 import { hubShell } from '../shell.ts';
 import type { AppState } from '../types.ts';
 import { button, clickSound, segmented, setButtonLabel } from '../widgets.ts';
+import { canUnequip, slotCanBeBare, wornLoadout } from '../wear.ts';
 
 export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
   const a = ctx.actions;
@@ -38,12 +40,12 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
   navHint.lockerFamily = null;
   navHint.lockerItem = null;
 
-  /** What this family wears right now (owned items only). */
+  /** What this family wears right now (owned items only; a missing hook is the default hook it holds). */
   const equipped = (f: FamilyId): Loadout => {
     const e = ctx.econ();
     const p = ctx.get().profile;
     const raw = e?.account?.loadouts[f] ?? (f === p.family ? p.loadout : DEFAULT_LOADOUT[f]);
-    return ownedLoadout(raw, ctx.owns);
+    return wornLoadout(f, raw, ctx.owns);
   };
   const lookFor = (f: FamilyId): Loadout => {
     const out: Loadout = { ...equipped(f) };
@@ -168,7 +170,8 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
 
   function rebuildGrid(): void {
     cards = catalogFor(family, slot).map((def) => itemCard(ctx, def, () => onCard(def)));
-    grid.replaceChildren(bareCard, ...cards.map((c) => c.el));
+    // no Bare card for the hook: an empty hands slot still holds the default hook
+    grid.replaceChildren(...(slotCanBeBare(slot) ? [bareCard] : []), ...cards.map((c) => c.el));
     grid.scrollTop = 0;
   }
 
@@ -211,16 +214,13 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     const isEq = eq[def.slot] === def.id;
     const trying = tryOn[def.slot] === def.id;
     dName.textContent = def.name;
-    const copies = copiesOf(ctx.econ()?.account, def.id);
-    const serial = copies.length && copies[0].serial !== undefined ? serialText(copies[0], def) : '';
     dMeta.replaceChildren(rarityPill(def), h('span', { class: 'lk-d-slot' }, icon(SLOT_ICON[def.slot]), h('span', { text: SLOT_NAMES[def.slot] })));
-    if (serial) dMeta.append(h('span', { class: 'serial', text: serial }));
     dBlurb.textContent = def.blurb;
     dSource.textContent = sourceLine(def);
     if (owned) {
       if (isEq) {
         dActions.append(h('span', { class: 'lk-eq-badge' }, icon('check'), h('span', { text: 'Equipped' })));
-        if (def.rarity !== 'default' || true) {
+        if (canUnequip(def)) {
           dActions.append(button('Unequip', () => {
             const lo = { ...eq };
             delete lo[def.slot];
@@ -239,11 +239,15 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     }
     // locked: buy or go to the store
     const e = ctx.econ();
-    if (def.rarity === 'limited') {
-      dActions.append(button(`${def.usdc?.toFixed(2)} USDC in Store`, () => {
-        navHint.storeItem = def.id;
-        a.go('store');
-      }, { cls: 'primary limited-btn', icon: 'usdc' }));
+    if (def.rarity === 'premium') {
+      // sold for real money in the Steam version only; the browser never offers to buy it
+      const offer = premiumOffer(def, isSteam());
+      if (offer.buyable) {
+        dActions.append(button(`${offer.text} in Store`, () => {
+          navHint.storeItem = def.id;
+          a.go('store');
+        }, { cls: 'primary premium-btn', icon: 'sparkle' }));
+      } else dActions.append(h('span', { class: 'lk-steam-note' }, icon('sparkle'), h('span', { text: offer.text })));
     } else if (def.pearls !== undefined) {
       const have = e?.account?.pearls ?? 0;
       const short = def.pearls - have;
@@ -300,13 +304,11 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     revert.classList.toggle('hidden', !anyTry);
     for (const c of cards) {
       const owned = ctx.owns(c.def.id);
-      const copies = copiesOf(ctx.econ()?.account, c.def.id);
       c.set({
         owned,
         equipped: eq[slot] === c.def.id,
         selected: selected === c.def.id,
         trying: tryOn[slot] === c.def.id && !owned,
-        note: copies.length && copies[0].serial !== undefined ? serialText(copies[0], c.def) : undefined,
       });
     }
     bareCard.classList.toggle('equipped', !eq[slot]);
@@ -338,7 +340,6 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
     paint();
   });
   paint();
-  void RARITY_INFO;
   void (null as unknown as IconId);
 
   return {

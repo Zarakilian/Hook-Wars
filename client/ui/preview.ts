@@ -1,16 +1,21 @@
-// Live 3D preview of your Pudgy (menu, Locker, Store): one small WebGLRenderer for the whole session,
+// Live 3D preview of your character (menu, Locker, Store): one small WebGLRenderer for the whole session,
 // a wooden dock pedestal, a turntable you can drag, and an idle animation. Leaving a screen stops
 // rendering and frees the model, but keeps the context: creating and force-losing a context on every
 // screen change makes Chrome block WebGL for the page.
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { CosmeticSlot, Loadout } from '../../shared/cosmetics.ts';
+import { UNIT_NOUN } from '../../shared/constants.ts';
 import type { Profile } from '../../shared/protocol.ts';
 import { UnitState, type FamilyId, type Team } from '../../shared/types.ts';
 import type { PudgyOneShot, PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
+import { fitDistance, meshCorners } from './previewFit.ts';
 
-const ONE_SHOTS: PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'grapple', 'melee'];
+/** Random show-offs (idle and on click). No grapple: it throws the arm and hook high over the head. */
+export const ONE_SHOTS: readonly PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'melee'];
+/** Camera tilt above the look-at target (radians). */
+const TILT = 0.28;
 
 /** Camera framing per slot: look-at height (fraction of the model height) and distance multiplier. */
 const FOCUS: Record<CosmeticSlot | 'all', { y: number; d: number }> = {
@@ -67,6 +72,9 @@ export class PudgyPreview {
   private idleSpin = true;
   /** last look shown, so a remount (renderer re-created) restores it */
   private look: PreviewLook | null = null;
+  /** family of the last model built (kept across unmounts): the spawn pop plays only for a new family */
+  private lastFamily: FamilyId | null = null;
+  private readonly corners: THREE.Vector3[] = [];
 
   constructor() {
     this.canvas = this.makeCanvas();
@@ -75,7 +83,7 @@ export class PudgyPreview {
   private makeCanvas(): HTMLCanvasElement {
     const c = document.createElement('canvas');
     c.className = 'preview-canvas';
-    c.setAttribute('aria-label', 'Your Pudgy. Drag to spin, click to show off.');
+    c.setAttribute('aria-label', `Your ${UNIT_NOUN.one}. Drag to spin, click to show off.`);
     c.setAttribute('role', 'img');
     c.addEventListener('pointerdown', (e) => {
       this.dragging = true;
@@ -119,7 +127,7 @@ export class PudgyPreview {
       this.init();
     }
     if (!this.renderer) return;
-    if (this.look && this.key === '') this.show(this.look, 'spawn');
+    if (this.look && this.key === '') this.show(this.look);
     this.resizeObs?.disconnect();
     this.resizeObs = new ResizeObserver(() => this.resize());
     this.resizeObs.observe(this.canvas);
@@ -276,7 +284,9 @@ export class PudgyPreview {
 
   /**
    * Show any look (Locker try-on, Store preview). Rebuilds only when family, loadout or team change.
-   * anim: one-shot to play after a rebuild ('celebrate' by default when only the outfit changed).
+   * anim: one-shot to play after a rebuild. By default: the spawn pop for a family the preview has not
+   * just shown, 'celebrate' when only the outfit changed, and nothing when a screen re-opens on the
+   * same family (so the menu does not pop on every visit).
    */
   show(look: PreviewLook, anim?: PudgyOneShot | null): void {
     this.look = { ...look, loadout: { ...look.loadout } };
@@ -284,12 +294,13 @@ export class PudgyPreview {
     const key = `${look.family}|${JSON.stringify(look.loadout)}|${look.team}`;
     if (key === this.key) return;
     const firstBuild = this.key === '';
-    const familyChanged = !firstBuild && this.key.split('|')[0] !== look.family;
+    const familyChanged = this.lastFamily !== look.family;
     this.key = key;
+    this.lastFamily = look.family;
     if (familyChanged || firstBuild) this.modelH = 0;
     this.disposePudgy();
     try {
-      const v = createPudgy({ family: look.family, loadout: look.loadout, team: look.team, name: look.name ?? 'Pudgy', isLocal: true, quality: 'high', detail: 'showcase' });
+      const v = createPudgy({ family: look.family, loadout: look.loadout, team: look.team, name: look.name ?? UNIT_NOUN.one, isLocal: true, quality: 'high', detail: 'showcase' });
       v.root.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) {
@@ -302,11 +313,11 @@ export class PudgyPreview {
       v.update(1 / 60, this.anim(0));
       this.spinner.updateMatrixWorld(true);
       this.frameModel();
-      const shot = anim === undefined ? (familyChanged || firstBuild ? 'spawn' : 'celebrate') : anim;
+      const shot = anim === undefined ? (familyChanged ? 'spawn' : firstBuild ? null : 'celebrate') : anim;
       if (shot) v.play(shot);
       this.refitIn = shot === 'spawn' ? 0.9 : 0.15;
     } catch (err) {
-      console.warn('[preview] could not build the Pudgy model', err);
+      console.warn('[preview] could not build the character model', err);
       this.pudgy = null;
     }
     this.renderOnce(0);
@@ -335,7 +346,7 @@ export class PudgyPreview {
 
   private frameModel(): void {
     if (!this.camera) return;
-    // Pudgies are roughly 2 to 3 m tall. Clamp the measured box so a one-shot pose (or a model
+    // Characters are roughly 2 to 3 m tall. Clamp the measured box so a one-shot pose (or a model
     // that starts its spawn pop at scale 0) never makes the camera crop or lose the character.
     let height = this.modelH > 0 ? this.modelH : 2;
     let width = 1.8;
@@ -429,11 +440,27 @@ export class PudgyPreview {
         this.showOff();
       }
     }
+    if (this.pudgy && this.focusKey === 'all') this.keepInFrame();
     const cam = this.camera;
-    const tilt = 0.28;
-    cam.position.set(0, this.target.y + Math.sin(tilt) * this.dist, Math.cos(tilt) * this.dist);
+    cam.position.set(0, this.target.y + Math.sin(TILT) * this.dist, Math.cos(TILT) * this.dist);
     cam.lookAt(this.target);
     r.render(this.scene, cam);
+  }
+
+  /**
+   * Whole-body view: pull the camera back as far as this frame's pose needs, so a spawn pop, a
+   * show-off or a tall hat never leaves the frame (or slides under the "Drag to spin" pill). The
+   * normal ease then brings the camera back in once the pose settles.
+   */
+  private keepInFrame(): void {
+    if (!this.pudgy || !this.camera) return;
+    this.spinner.rotation.y = this.yaw;
+    this.spinner.updateMatrixWorld(true);
+    const need = fitDistance(meshCorners(this.pudgy.root, this.corners), { fov: this.camera.fov, aspect: this.camera.aspect, tilt: TILT, target: this.target });
+    if (need > this.camDist) {
+      this.camDist = need;
+      this.dist = need;
+    }
   }
 
   private resize(): void {

@@ -1,7 +1,7 @@
 // The server trusts nothing a client sends. These tests throw junk at the validator.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanName, cleanText, parseClientMessage, parseConfig } from '../shared/protocol.ts';
+import { cleanName, cleanText, defaultProfile, FUNNY_NAMES, parseClientMessage, parseConfig, parseProfile } from '../shared/protocol.ts';
 import { DEFAULT_CONFIG, PROTOCOL_VERSION } from '../shared/constants.ts';
 import { Rng } from '../shared/math.ts';
 
@@ -60,4 +60,15 @@ test('hello requires a valid profile', () => {
   assert.ok(junk && junk.t === 'hello');
   if (junk && junk.t === 'hello') assert.deepEqual(junk.profile.loadout, { hands: 'ogre.vine_tusk_hook' });
   assert.equal(parseClientMessage(JSON.stringify({ ...good, profile: { ...good.profile, name: '   ' } })), null);
+});
+
+test('the fallback player name is an original fun name, never a Pudge echo, and valid on the wire', () => {
+  const p = defaultProfile();
+  assert.deepEqual(parseProfile(p), p, 'the default profile must pass its own validation');
+  assert.doesNotMatch(p.name, /pudg|butcher/i);
+  assert.ok(FUNNY_NAMES.includes(p.name));
+  for (const n of FUNNY_NAMES) {
+    assert.doesNotMatch(n, /pudg|butcher/i);
+    assert.equal(cleanName(`${n}99`), `${n}99`, `${n} plus two digits must fit a name`);
+  }
 });

@@ -1,5 +1,6 @@
-// Aurora Harbour: sparkling snow banks, icy gravel shores and frost-stone plazas round a frozen fjord
-// harbour. Past the far edge the harbour opens wide, full of glowing ice floes, up to a far shore of
+// Aurora Harbour: the harbour ice itself (the reference's packed floes, not Frostfang's snowfield):
+// snow-capped slabs of blue harbour ice with dark frozen leads between them, broken ice-shelf blocks
+// with glowing blue sides along every shore, and glowing glacier ice down to the water. Past the far edge the harbour opens wide, full of glowing ice floes, up to a far shore of
 // icicle-hung cliffs with a lantern-lit village of log cabins on its terraces and jagged peaks behind
 // under the aurora. Snowy cliffs with timber piers and cranes close in on the sides, and past the near
 // edge the harbour runs out to open water with icebergs. The harbour freezes with the river on Tidal.
@@ -9,7 +10,7 @@ import { fbm2, valueNoise2 } from '../../../../../shared/math.ts';
 import type { MatchConfig } from '../../../../../shared/types.ts';
 import type { Quality } from '../../../contracts.ts';
 import { hashVox } from '../../../voxel/voxel.ts';
-import { BaseBiome, SIDE, SURF, clamp01, h01, jit, mix, mosaic, pathSegs, pick, shade, sstep, strata } from '../biome.ts';
+import { BaseBiome, LIP, SIDE, SURF, clamp01, h01, jit, mix, mosaic, pathSegs, pick, shade, sstep, strata } from '../biome.ts';
 import type { Cell, SideOut } from '../field.ts';
 import type { BackdropRule } from '../flora.ts';
 import type { MistDef } from '../mist.ts';
@@ -19,6 +20,17 @@ const GLACIER = [0x9ccbe6, 0x86b9da, 0xb4daee, 0x74a8cc, 0xc8e6f4];
 const ROCK = [0x525c74, 0x465068, 0x5e6880, 0x3c465c, 0x58627a];
 const FROST_TILE = [0x8796a8, 0x7a899c, 0x93a2b3, 0x6f7e91, 0x9eacbc];
 const ICICLE = [0xd6ecf8, 0xc2e2f4, 0xe6f4fb, 0xaed8f0];
+/** bare blue harbour ice on the slabs */
+const SLAB_ICE = [0x8cc0e4, 0x78b2dc, 0x9ccae8, 0x6aa6d4, 0xa8d2ec];
+/** the frozen leads between the slabs */
+const LEAD = [0x173a52, 0x1c445e, 0x143248];
+/** glowing ice on the sides of the slabs and shelf blocks */
+const GLOW_ICE = [0x8fd0f2, 0x7cc4ee, 0xa4dcf6, 0x6cb8e8];
+/** biome-local side ids: slab and shelf-block edges, the shelf's glacier face down to the water */
+const SIDE_SLAB = 21;
+const SIDE_SHELF = 22;
+/** width of the broken ice shelf along the shores (m): visual only, the sim water starts at c = 0 */
+const SHELF = 3.4;
 
 export class AuroraBiome extends BaseBiome implements MapBiome {
   private readonly zone = { z: 0, t: 0 };
@@ -126,6 +138,30 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
       path = this.pathAmount(x, z);
       if (path > 0) land -= 0.06 * sstep(0, 0.6, path);
     }
+    // the harbour ice: slabs on the open ground, broken shelf blocks along the shores
+    let ice = 0; // 0 none, 1 snow slab, 2 bare-ice slab, 3 lead, 4 shelf block
+    let iceId = 0;
+    if (cliff <= 0 && o < -0.2 && pd > 0.7 && fine && c <= LIP) {
+      if (c > -SHELF) {
+        const v = this.voronoi(x + (valueNoise2(x * 0.7, z * 0.7, 560) - 0.5) * 0.5, z, 0.95);
+        iceId = this.cellId;
+        ice = 4;
+        // blocks step down toward the water, all above the full water line
+        const k = (c + SHELF) / (SHELF + LIP);
+        land += (0.0625 + 0.0625 * Math.floor(hashVox(iceId, 3, 0, 561) * 3)) * Math.pow(1 - k, 0.7) + (v < 0.07 ? -0.0625 : 0);
+      } else if (path < 0.3) {
+        const v = this.voronoi(x * 0.92 + (valueNoise2(x * 0.3, z * 0.3, 562) - 0.5) * 1.4, z + (valueNoise2(x * 0.3, z * 0.3, 563) - 0.5) * 1.4, 0.3);
+        iceId = this.cellId;
+        // leads open wider toward the water, where the floes break up
+        if (v < 0.05 + sstep(-9, -3.5, c) * 0.06 + (valueNoise2(x * 1.3, z * 1.3, 564) - 0.5) * 0.04) {
+          ice = 3;
+          land = Math.max(this.fullY + 0.06, land - 0.125);
+        } else {
+          ice = hashVox(iceId, 1, 0, 565) < 0.3 ? 2 : 1;
+          land += [0.0625, 0.125, 0.1875][Math.floor(hashVox(iceId, 2, 0, 566) * 3)];
+        }
+      }
+    }
     const zn = this.zone;
     let h = land;
     if (cliff <= 0) {
@@ -147,9 +183,13 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
       // the waterline band of the cliffs is blue glacier ice, the rest snowy rock
       side = SIDE.ICE;
     }
+    // the profile keeps the shelf above the lip; make sure no block dips toward the water line
+    if (ice === 4 && h < this.fullY + 0.12) h = this.fullY + 0.12;
     out.h = h;
     out.q = cliff > 0 ? (fine ? 0.25 : 0.5) : surf === SURF.WALL ? 0.25 : !fine ? 0.5 : 1 / 16;
     if (cliff <= 0) side = surf === SURF.WALL || surf === SURF.BED || surf === SURF.BANK || surf === SURF.SEABED ? SIDE.ROCK : surf === SURF.PLAZA || surf === SURF.KERB ? SIDE.STONE : SIDE.SNOWROCK;
+    if (ice > 0 && surf !== SURF.WALL && surf !== SURF.BED) side = ice === 4 ? SIDE_SHELF : SIDE_SLAB;
+    if (surf === SURF.WALL && o < 0) side = SIDE_SHELF;
     out.side = side;
     out.tag = 0;
     let col: number;
@@ -179,6 +219,12 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
         break;
       case SURF.BANK: {
         const t = zn.t;
+        if (ice === 4) {
+          col = this.shelfTop(x, z, ix, iz, iceId, (c + SHELF) / (SHELF + LIP));
+          rough = 0.5;
+          spk = 0.8;
+          break;
+        }
         if (h01(ix, iz, 21) > t * 1.5 - 0.2) col = mosaic(this.snow, valueNoise2(x * 0.3, z * 0.3, 85), ix, iz, 1, 0.04, 0.08);
         else col = shade(pick(tr.bank, ix, iz, 2), 1 - t * 0.18);
         if (h01(ix, iz, 22) < 0.05) col = pick(ROCK, ix, iz, 3);
@@ -187,6 +233,13 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
         break;
       }
       case SURF.WALL:
+        if (o < 0) {
+          // glacier ice down to the water
+          col = shade(pick(GLOW_ICE, ix, iz, 6), 0.92 - zn.t * 0.2);
+          if (h01(ix, iz, 24) < 0.2) col = mix(col, 0xeaf6fc, 0.5);
+          rough = 0.45;
+          break;
+        }
         col = shade(mix(pick(tr.bank, ix, iz, 6), pick(ROCK, ix, iz, 7), 0.5), 0.9 - zn.t * 0.15);
         if (h01(ix, iz, 24) < 0.22) col = mix(col, 0xcfe4f2, 0.55);
         rough = 0.35;
@@ -213,8 +266,32 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
         spk = 0.4;
         break;
       default: {
+        if (ice === 4) {
+          col = this.shelfTop(x, z, ix, iz, iceId, (c + SHELF) / (SHELF + LIP));
+          rough = 0.5;
+          spk = 0.8;
+          break;
+        }
+        if (ice === 3) {
+          // a frozen lead between two slabs: dark sea ice
+          col = jit(pick(LEAD, ix, iz, 567), ix, iz, 0.06);
+          if (h01(ix, iz, 568) < 0.15) col = mix(col, 0x6fb6dc, 0.4);
+          rough = 0.4;
+          spk = 0.2;
+          break;
+        }
+        if (ice === 2) {
+          // a slab blown bare: blue harbour ice with snow drifts on it
+          const dr = valueNoise2(x * 0.45, z * 0.45, 569);
+          col = dr > 0.62 ? mosaic(this.snow, dr, ix, iz, 570, 0.03, 0.06) : mosaic(SLAB_ICE, valueNoise2(x * 0.25, z * 0.25, 571), ix, iz, 572, 0.04, 0.1);
+          if (dr <= 0.62 && h01(ix, iz, 573) < 0.06) col = mix(col, 0xeaf6fc, 0.6); // frost cracks
+          rough = dr > 0.62 ? 0.75 : 0.5; // not glassier: a glossy slab mirrors the moon into the camera
+          spk = 1;
+          break;
+        }
         const patch = valueNoise2(x * 0.08, z * 0.08, 46) * 0.7 + valueNoise2(x * 0.35, z * 0.35, 49) * 0.3;
         col = mosaic(this.snow, patch, ix, iz, 13, 0.035, 0.08);
+        if (ice === 1 && h01(ix, iz, 574) < 0.08 * (1 - patch)) col = pick(SLAB_ICE, ix, iz, 575); // ice showing through
         if (cliff > 0) col = shade(col, 0.96 + clamp01(cliff / 40) * 0.06);
         const r = h01(ix, iz, 26);
         if (r < 0.012) col = pick(ROCK, ix, iz, 14);
@@ -285,6 +362,22 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
         out.color = strata(FROST_TILE, ix, iy, iz, 98, 0.06);
         out.rough = 0.6;
         return;
+      case SIDE_SLAB:
+      case SIDE_SHELF: {
+        // glowing blue ice under a snow lip (slab and shelf-block edges, the glacier face to the water)
+        if (depth < 0.07 && side === SIDE_SLAB) {
+          out.color = shade(this.snow[2], 0.95);
+          out.rough = 0.7;
+          return;
+        }
+        let c = strata(GLOW_ICE, ix >> 1, iy, iz >> 1, 576, 0.06);
+        if (hashVox(ix, iy, iz, 577) < 0.12) c = mix(c, 0xeaf6fc, 0.55);
+        const yy = (y0 + y1) * 0.5;
+        out.color = c;
+        out.emit = yy < this.fullY + 0.5 ? 1.3 : side === SIDE_SHELF ? 0.75 : 0.55;
+        out.rough = 0.3;
+        return;
+      }
       default: {
         let c = strata(tr.bank, ix, iy, iz, 99, 0.08);
         if (hashVox(ix, iy, iz, 100) < 0.22) c = mix(c, 0xcfe4f2, 0.5);
@@ -292,6 +385,14 @@ export class AuroraBiome extends BaseBiome implements MapBiome {
         out.rough = 0.45;
       }
     }
+  }
+
+  /** Top of a broken ice-shelf block: snow caps on the land side, bare glassy ice toward the water. */
+  private shelfTop(x: number, z: number, ix: number, iz: number, id: number, k: number): number {
+    const bare = hashVox(id, 4, 0, 578) < 0.25 + k * 0.45;
+    let col = bare ? mosaic(SLAB_ICE, valueNoise2(x * 0.5, z * 0.5, 579), ix, iz, 580, 0.04, 0.1) : mosaic(this.snow, valueNoise2(x * 0.4, z * 0.4, 581), ix, iz, 582, 0.03, 0.06);
+    if (bare && h01(ix, iz, 583) < 0.25) col = mix(col, 0xeaf6fc, 0.65); // a dusting of snow
+    return col;
   }
 
   /** True when (x, z) is a flat spot on a cliff terrace (for cabins). */

@@ -13,10 +13,24 @@ import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, Sk
 // Palette (ref03 / ref10)
 // ---------------------------------------------------------------------------------------------
 
-const STEEL = 0x948c83;
-const STEEL_L = 0xaaa298;
-const STEEL_D = 0x5e5852;
+// dark gunmetal-brown riveted steel (ref10 belly panels #8f7160 / #7c6653 under studio light); the
+// old light-grey set (STEEL 0x948c83...) rendered at about twice the reference luminance (finding 34)
+const STEEL = 0x625649;
+const STEEL_L = 0x786a5c;
+const STEEL_D = 0x3e362f;
 const GUN = 0x4a4744;
+/** weathered, rust-warm hazard-plate steel (default body, crane boom and housing; ref03) */
+const PLATE = 0x5e4a3c;
+/** darker rusty plate (grille dome, stomper feet) */
+const PLATE_D = 0x4c3e34;
+/** pipes and smokestacks */
+const PIPE = 0x463e38;
+/** polished pistons and shafts */
+const PISTON = 0x7e7a74;
+/** the left fist */
+const FIST = 0x5a524a;
+/** pulley sheaves and tread wheels */
+const SHEAVE = 0x6e6c6a;
 const RUST = [0x9a5630, 0xb86a34, 0x7e4626, 0xa85e2c] as const;
 const HAZ = 0xe0a030;
 const HAZ_D = 0x2a2624;
@@ -116,7 +130,7 @@ function buildBody(l: Look): RGrid {
   const [bx, by, bz] = BELLY_C;
   const [rx, ry, rz] = BELLY_R;
   let skinC: ColorFn = plate(STEEL, 1);
-  if (body === 'hazard_plates') skinC = rusty(plate(0x877d72, 2), 0.15, 3);
+  if (body === 'hazard_plates') skinC = rusty(plate(PLATE, 2), 0.15, 3);
   else if (body === 'clean_chrome') skinC = (x, y, z) => shade(CHROME, 0.88 + hv(x, y, z, 4) * 0.14);
   else if (body === 'brass_boiler') skinC = (x, y, z) => shade(BRASS, 0.86 + hv(x, y, z, 5) * 0.18);
   else if (body === 'copper_coils') skinC = plate(0x6a625c, 6);
@@ -138,11 +152,13 @@ function buildBody(l: Look): RGrid {
   if (body !== 'clean_chrome' && body !== 'brass_boiler') {
     g.repaint((x, y) => y === 23 || y === 24, CH.rubber, band, true);
     g.repaint((x, y) => y === 12, CH.rubber, band, true);
+    // dark gunmetal straps under and over the yellow bands, riveted with lighter studs (ref10)
+    g.repaint((x, y) => y === 21 || y === 22 || y === 13 || y === 14, CH.iron, (x, y, z) => shade(GUN, 0.86 + hv(x, y, z, 6) * 0.2), true);
   }
   const at = (y: number) => rx * Math.sqrt(Math.max(0, 1 - ((y + 0.5 - by) / ry) ** 2)) + 0.05;
   rivetRing(g, bx, bz, at(25), 25, 28, shade(STEEL_D, 1.1));
-  rivetRing(g, bx, bz, at(22), 22, 28, shade(STEEL_D, 1.1));
-  rivetRing(g, bx, bz, at(13), 13, 26, shade(STEEL_D, 1.1));
+  rivetRing(g, bx, bz, at(22), 22, 28, STEEL_L);
+  rivetRing(g, bx, bz, at(13), 13, 26, STEEL_L);
 
   switch (body) {
     case 'hazard_plates': {
@@ -161,9 +177,9 @@ function buildBody(l: Look): RGrid {
         g.tube(13.4, 20, 3.6, 13.4, 20, 8.4, 0.45, VALVE);
         g.tube(13.4, 17.6, 6, 13.4, 22.4, 6, 0.45, VALVE);
         // pipes bending round the belly
-        g.tube(10.5, 16, 7.5, 12.4, 13, 4, 0.9, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 13) * 0.2));
-        g.tube(12.4, 13, 4, 12, 12, -4, 0.9, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 13) * 0.2));
-        g.tube(-11.5, 27, 3, -12, 22, 7, 0.8, (x, y, z) => shade(0x5a524c, 0.85 + hv(x, y, z, 14) * 0.2));
+        g.tube(10.5, 16, 7.5, 12.4, 13, 4, 0.9, (x, y, z) => shade(PIPE, 0.85 + hv(x, y, z, 13) * 0.2));
+        g.tube(12.4, 13, 4, 12, 12, -4, 0.9, (x, y, z) => shade(PIPE, 0.85 + hv(x, y, z, 13) * 0.2));
+        g.tube(-11.5, 27, 3, -12, 22, 7, 0.8, (x, y, z) => shade(PIPE, 0.85 + hv(x, y, z, 14) * 0.2));
       });
       break;
     }
@@ -298,7 +314,7 @@ function buildHat(id: string): RGrid {
     case 'grille_dome': {
       // riveted dome cap with hazard paint and a furnace grille cage over the visor
       g.on(CH.iron, () => {
-        g.blob(cx, cy + 0.6, cz, 5.9, 4.8, 5.7, rusty(plate(0x6e655c, 31, 2), 0.25, 32), (x, y) => y >= 34.5);
+        g.blob(cx, cy + 0.6, cz, 5.9, 4.8, 5.7, rusty(plate(PLATE_D, 31, 2), 0.25, 32), (x, y) => y >= 34.5);
         g.cyl('y', cx, cz, 6, 34, 34, gun);
         g.put(0, 38, cz, gun);
       });
@@ -436,8 +452,8 @@ function buildUpperArm(l: Look, crane: boolean): RGrid {
     g.cyl('z', sx + 0.4, 20.5, 2.6, Math.floor(sz - 3), Math.floor(sz + 3), gun);
     if (crane) {
       // crane housing over the shoulder (behind the pauldron) and a hydraulic piston on the outside
-      g.box(sx - 2.5, 20, sz - 3.5, sx + 3, 24, sz + 3.5, plate(0x877d72, 54, 2));
-      g.tube(sx + 3.4, 25, sz + 1.5, sx + 3.2, 20, sz + 1.8, 0.75, 0x9aa0a6);
+      g.box(sx - 2.5, 20, sz - 3.5, sx + 3, 24, sz + 3.5, plate(PLATE, 54, 2));
+      g.tube(sx + 3.4, 25, sz + 1.5, sx + 3.2, 20, sz + 1.8, 0.75, PISTON);
       g.tube(sx + 3.4, 25, sz + 1.5, sx + 3.3, 22, sz + 1.6, 1, 0x4a4846);
     }
   });
@@ -452,13 +468,16 @@ function buildLowerArm(l: Look): RGrid {
   const [hx, hy, hz] = SK.hand;
   const body = slug(l.body);
   g.on(CH.iron, () => {
-    g.sblob(ex + 0.3, 16, ez + 0.6, 3.7, 4.4, 3.7, 3, plate(STEEL, 61, 3));
+    g.sblob(ex + 0.3, 16, ez + 0.6, 3.7, 4.4, 3.7, 3, plate(PLATE, 61, 3));
     g.cyl('y', hx, hz, 2.3, 11, 12, gun);
-    g.sblob(hx, hy + 0.6, hz + 0.6, 3.5, 2.6, 3.6, 3, plate(STEEL_L, 62, 2));
+    // a dark gunmetal fist (ref10), not polished steel: it faces the key light and read white
+    g.sblob(hx, hy + 0.6, hz + 0.6, 3.5, 2.6, 3.6, 3, plate(FIST, 62, 2));
     for (let i = 0; i < 3; i++) g.sblob(hx + 2 - i * 2, hy - 2, hz + 2.6, 0.9, 1.6, 1, 2.5, gun);
     g.sblob(hx - 3.2, hy + 0.2, hz + 2.2, 0.9, 1.6, 0.9, 2.5, gun);
   });
   g.repaint((x, y, z) => x > ex + 2.6 && y >= 14 && y <= 18, CH.rubber, body === 'hazard_plates' ? rusty(hazard(63, 'zy'), 0.15, 64) : hazard(63, 'zy'), true);
+  // the hazard armour wraps round to the front of the forearm (ref10)
+  g.repaint((x, y, z) => x <= ex + 2.6 && z > ez + 2.6 && y >= 14 && y <= 18, CH.rubber, body === 'hazard_plates' ? rusty(hazard(65), 0.15, 66) : hazard(65), true);
   return g;
 }
 
@@ -468,13 +487,13 @@ function buildCraneArm(): RGrid {
   const [ex, , ez] = SK.elbow;
   const [hx, hy, hz] = SK.hand;
   g.on(CH.iron, () => {
-    g.box(ex - 3.5, 11, ez - 3.5, ex + 3.5, 19, ez + 3.5, plate(0x877d72, 71, 3));
+    g.box(ex - 3.5, 11, ez - 3.5, ex + 3.5, 19, ez + 3.5, plate(PLATE, 71, 3));
     g.box(ex - 2.5, 10, ez - 2.5, ex + 2.5, 10, ez + 2.5, gun);
     // a gear box on the outer face
     g.cyl('x', 16, ez, 2.2, Math.floor(ex + 3.5), Math.floor(ex + 4.5), gun);
     // pulley block with a sheave the cable runs over
     g.box(hx - 2.5, hy + 0.5, hz - 2, hx + 2, hy + 2.5, hz + 1.5, gun);
-    g.cyl('x', hy + 1.5, hz, 1.6, Math.floor(hx - 1), Math.floor(hx + 1), (x, y, z) => shade(0x8a8f96, 0.9 + hv(x, y, z, 72) * 0.15));
+    g.cyl('x', hy + 1.5, hz, 1.6, Math.floor(hx - 1), Math.floor(hx + 1), (x, y, z) => shade(SHEAVE, 0.9 + hv(x, y, z, 72) * 0.15));
     // cable and the chains down the side
     for (let y = 12; y <= 18; y++) g.put(ex - 3.5, y, ez + ((y % 2) ? 1 : 0), (y % 2) ? 0x5a5a5a : 0x3a3a3a);
   });
@@ -497,16 +516,16 @@ function buildLeg(l: Look): RGrid {
     // thigh piston and a knee gear
     g.cyl('y', lx, lz, 2.9, 7, 11, plate(STEEL, 81, 3));
     g.cyl('x', 6, lz + 0.5, 2.6, Math.floor(lx - 3), Math.floor(lx + 2), gun);
-    g.cyl('y', lx, lz + 0.4, 2.4, 3, 6, (x, y, z) => shade(0x9aa0a6, 0.88 + hv(x, y, z, 82) * 0.14));
+    g.cyl('y', lx, lz + 0.4, 2.4, 3, 6, (x, y, z) => shade(PISTON, 0.88 + hv(x, y, z, 82) * 0.14));
   });
   // team band round the thigh
   g.on(CH.rubber, () => g.cyl('y', lx, lz, 3.2, 9, 10, teamCloth(l.t, 83)));
   if (feet === 'stomper_feet') {
     // heavy piston feet with hazard trim
     g.on(CH.iron, () => {
-      g.sblob(lx, 2, lz + 1.5, 4.8, 2.2, 6.2, 3, rusty(plate(0x6e655c, 84, 2), 0.25, 85));
+      g.sblob(lx, 2, lz + 1.5, 4.8, 2.2, 6.2, 3, rusty(plate(PLATE_D, 84, 2), 0.25, 85));
       g.box(lx - 4, 0, lz - 4, lx + 3, 0, lz + 7, gun);
-      for (const dx of [-3, 2]) g.tube(lx + dx, 4, lz - 1, lx + dx * 0.6, 7, lz, 0.6, 0x9aa0a6);
+      for (const dx of [-3, 2]) g.tube(lx + dx, 4, lz - 1, lx + dx * 0.6, 7, lz, 0.6, PISTON);
     });
     g.repaint((x, y, z) => z >= lz + 6 && y >= 1 && y <= 3, CH.rubber, hazard(86), true);
     // toe claws
@@ -520,7 +539,7 @@ function buildLeg(l: Look): RGrid {
       g.sblob(lx, 2.6, lz + 1, 3.4, 2.6, 6.8, 4, (x, y, z) => ((z + 100) % 2 === 0 ? RUBBER : shade(RUBBER, 1.6)));
     });
     g.on(CH.iron, () => {
-      for (const zz of [-3.5, 1, 5.5]) g.cyl('x', 2.6, lz + zz, 1.5, Math.floor(lx - 4), Math.floor(lx + 3), (x, y, z) => shade(0x8a8f96, 0.85 + hv(x, y, z, 87) * 0.2));
+      for (const zz of [-3.5, 1, 5.5]) g.cyl('x', 2.6, lz + zz, 1.5, Math.floor(lx - 4), Math.floor(lx + 3), (x, y, z) => shade(SHEAVE, 0.85 + hv(x, y, z, 87) * 0.2));
     });
   } else {
     // plain flat feet
@@ -579,7 +598,7 @@ function buildHook(id: string): RGrid {
       // crane_hook: a pulley block and a fat red and grey crane hook
       g.on(CH.iron, () => {
         g.box(-2, -2, 3, 1, 1, 6, gun);
-        g.cyl('x', 0, 4.5, 1.4, -3, 2, (x, y, z) => shade(0x8a8f96, 0.88 + hv(x, y, z, 94) * 0.15));
+        g.cyl('x', 0, 4.5, 1.4, -3, 2, (x, y, z) => shade(SHEAVE, 0.88 + hv(x, y, z, 94) * 0.15));
       });
       const hookC = (seed: number): ColorFn => (x, y, z) => {
         const outer = P.y < -0.5;
@@ -610,7 +629,7 @@ function buildBack(id: string): RGrid {
     for (const sx of [1, -1]) {
       const x = sx * 6.5;
       g.on(CH.iron, () => {
-        g.cyl('y', x, -9.5, 2.2, 22, 37, rusty(plate(0x5a524c, 101, 4), 0.25, 102));
+        g.cyl('y', x, -9.5, 2.2, 22, 37, rusty(plate(PIPE, 101, 4), 0.25, 102));
         g.cyl('y', x, -9.5, 2.7, 37, 38, gun);
         g.cyl('y', x, -9.5, 2.6, 26, 26, gun);
         g.box(x - 1, 20, -9, x, 23, -6, gun);
@@ -672,7 +691,7 @@ function buildBackExtra(id: string): RGrid {
 
 export function botPalette(l: Look): PudgyPalette {
   const body = slug(l.body);
-  const shell = body === 'hazard_plates' ? 0x6e655c : body === 'clean_chrome' ? CHROME : body === 'brass_boiler' ? BRASS : body === 'copper_coils' ? COPPER : STEEL;
+  const shell = body === 'hazard_plates' ? PLATE : body === 'clean_chrome' ? CHROME : body === 'brass_boiler' ? BRASS : body === 'copper_coils' ? COPPER : STEEL;
   return { skin: shell, skinDark: STEEL_D, cloth: l.t.main, accent: HAZ, metal: slug(l.head) === 'chrome_crown' ? CHROME : GUN, extra: [RUST[0], GLOW, VALVE, l.t.dark, STEEL_L] };
 }
 
@@ -726,10 +745,12 @@ export function buildBot(l: Look): FamilyBuild {
     parts,
     palette: botPalette(l),
     scale: SCALE,
-    // the hook hangs on its cable from the crane pulley and swings
+    // the hook hangs on its cable from the crane pulley and swings. The cable starts inside the
+    // pulley block (15 cm above the hand socket), so the hook and its shackle hang clear of the
+    // ground in every idle and run pose (hookClearance.test.ts)
     hookDangles: true,
-    hookMount: { pos: [0, -0.02, 0], rot: [Math.PI / 2, 0, 0] },
-    hangMount: { pos: [0, -0.02, 0], rot: [Math.PI / 2, 0, 0] },
+    hookMount: { pos: [0, 0.15, 0], rot: [Math.PI / 2, 0, 0] },
+    hangMount: { pos: [0, 0.15, 0], rot: [Math.PI / 2, 0, 0] },
     gripMount: { pos: [0, -0.05, 0.02], rot: [Math.PI / 2, 0, 0] },
     puffs,
     corpseLift: 0.62,

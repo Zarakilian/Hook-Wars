@@ -1,4 +1,5 @@
-// Maelstrom Lagoon: lush grass and golden sand round a turquoise lagoon. High grey stone cliffs hung
+// Maelstrom Lagoon: golden sand, grey rock shelves and a few tufts of jungle round a turquoise lagoon,
+// with wet sand, coral heads and rock ledges along the water (the reference's beach, not a lawn). High grey stone cliffs hung
 // with vines ring the cove: the river pours in over the cliff behind the far edge (z = -24) through a
 // square notch, and more waterfalls spill off the far and side cliffs into plunge pools. Palms and
 // jungle crown the cliff tops. Past the near edge the river runs out over a beach into the open sea,
@@ -21,6 +22,18 @@ const VINES = [0x3f7a2e, 0x4c8a36, 0x356a26, 0x5a9a40];
 const TILE = [0xe8d6aa, 0xdcc89a, 0xf0e0ba, 0xd0bc8e];
 const SHELLS = [0xf4e6d4, 0xf0c8b8, 0xe8d8c0];
 const JUNGLE_FLOOR = [0x4c7a2c, 0x588634, 0x426c26, 0x629038];
+/** grey shore rock (the reference's ledges and sea-stack stone) */
+const SHORE_ROCK = [0x8c887e, 0x7c786e, 0x9c988c, 0x6e6a60, 0x86827a];
+/** jungle grass tufts on the sand */
+const JUNGLE_GRASS = [0x4a8a2e, 0x55983a, 0x3f7a28, 0x62a442, 0x4f9034];
+/** wet sand by the water, darkest at the edge */
+const WET_SAND = [0x86683f, 0x7a5e3a, 0x927246, 0x6e5434];
+/** the wash at the water's edge: wet sand under a film of lagoon water */
+const WASH = 0x5ccac0;
+/** coral heads on the wet sand and in the shallows */
+const CORAL_HEADS = [0xe8584a, 0xf08a3a, 0xf06a9a, 0xa860d0, 0xf4c446, 0xe8607a];
+/** side id of the grey shore rock (biome-local) */
+const SIDE_SHORE = 20;
 const OUTER_Z0 = -96;
 
 /** Cliff lip above the bank top where the river falls in: the water module hangs its sheet at groundY + 2.7. */
@@ -58,6 +71,31 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
       ],
       0.75,
     );
+  }
+
+  /**
+   * Grey rock shelf on the open ground: > 0 inside a shelf (distance to its edge), 0 on sand.
+   * Voronoi plates about 3 m across, a quarter of them rock, more in some stretches than others.
+   */
+  rockShelf(x: number, z: number): number {
+    const v = this.voronoi(x * 1.15 + (valueNoise2(x * 0.5, z * 0.5, 156) - 0.5) * 0.9, z + (valueNoise2(x * 0.4, z * 0.4, 165) - 0.5) * 0.9, 0.22);
+    const want = 0.1 + valueNoise2(x * 0.045, z * 0.045, 157) * 0.2;
+    if (hashVox(this.cellId, 1, 0, 158) > want) return 0;
+    const e = v - 0.1 - (valueNoise2(x * 0.8, z * 0.8, 159) - 0.5) * 0.18;
+    return e > 0 ? e : 0;
+  }
+
+  /** 0..1 patch of jungle grass on the sand (round the backfield palms, never by the water). */
+  jungle(x: number, z: number): number {
+    const ax = Math.abs(x);
+    if (ax < 13) return 0;
+    const n = fbm2(x * 0.09, z * 0.09, 2, 160) + sstep(18, 30, ax) * 0.18;
+    return clamp01((n - 0.58) * 6) * sstep(13, 17, ax);
+  }
+
+  /** Rock ledges down the lagoon banks (runs of a few metres along the shore). */
+  ledge(x: number, z: number): boolean {
+    return valueNoise2(x * 0.22 + 4, z * 0.22, 161) > 0.6;
   }
 
   /** z of the far cliff face: ragged, square at the river notch, set back round the plunge pools. */
@@ -183,6 +221,7 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
       }
     }
     let path = 0;
+    let rock = 0;
     if (pd < 0) {
       land = T;
       surf = pd > -0.3 ? SURF.KERB : SURF.PLAZA;
@@ -193,13 +232,18 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
       path = this.pathAmount(x, z);
       if (path > 0) land -= 0.05 * sstep(0, 0.6, path);
     }
+    if (mode === 0 && o < 0 && pd > 0.9 && path < 0.15 && c < -this.bankW - 0.3) {
+      // low grey rock shelves standing out of the sand
+      rock = this.rockShelf(x, z);
+      if (rock > 0) land += rock > 0.22 ? 0.25 : 0.125;
+    }
     const zn = this.zone;
     let h = land;
     if (mode === 0 || mode === 3) {
       h = this.profile(c, land, zn, x, z);
       if (zn.z >= 2) {
         surf = zn.z === 2 ? SURF.WALL : SURF.BED;
-        side = SIDE.SAND;
+        side = zn.z === 2 && o < 0 && this.ledge(x, z) ? SIDE_SHORE : SIDE.SAND;
         if (zn.z === 3) {
           h += this.bedNoise(x, z) * 0.6;
           if (fine) h += Math.sin(x * 2.1 + Math.sin(z * 0.4) * 1.5) * 0.025; // sand ripples
@@ -221,11 +265,22 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
       zn.z = 0;
       c = -9;
     }
+    if (rock > 0 && surf === SURF.LAND) side = SIDE_SHORE;
+    // coral heads on the wet sand by the water
+    let coral = -1;
+    if (surf === SURF.BANK && fine && zn.t > 0.55) {
+      const cv = this.voronoi(x, z, 1.7);
+      if (cv > 0.2 && hashVox(this.cellId, 7, 0, 130) < 0.05) {
+        coral = Math.floor(hashVox(this.cellId, 8, 0, 131) * CORAL_HEADS.length);
+        h += 0.125;
+        side = SIDE.CORAL;
+      }
+    }
     out.h = h;
     out.q = mode === 1 || mode === 2 || surf === SURF.WALL ? 0.25 : !fine ? 0.5 : surf === SURF.FLOOR ? 0.125 : 1 / 16;
     if (mode === 1 && !fine) out.q = 0.5;
     out.side = side;
-    out.tag = 0;
+    out.tag = coral < 0 ? 0 : coral;
     let col: number;
     let rough = 0.9;
     let spk = 0;
@@ -251,18 +306,37 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
         rough = 0.7;
         break;
       case SURF.BANK: {
+        // dry golden sand darkening into glossy wet sand at the water, coral heads and shells on it
         const t = zn.t;
-        if (h01(ix, iz, 21) > t * 2.2 - 0.25 && t < 0.45) col = mosaic(this.grass, 0.4, ix, iz, 1, 0.06, 0.1);
-        else col = mosaic(this.sand, valueNoise2(x * 0.2, z * 0.2, 42) * 0.8 + 0.1, ix, iz, 2, 0.04, 0.08);
-        if (h01(ix, iz, 22) < 0.03) col = pick(SHELLS, ix, iz, 3);
-        rough = 0.9;
-        spk = 0.7;
+        const dryS = mosaic(this.sand, valueNoise2(x * 0.2, z * 0.2, 42) * 0.8 + 0.1, ix, iz, 2, 0.04, 0.08);
+        const wet = clamp01((t - 0.25) / 0.6 + (valueNoise2(x * 0.6, z * 0.6, 132) - 0.5) * 0.5);
+        col = mix(dryS, mosaic(WET_SAND, valueNoise2(x * 0.4, z * 0.4, 133), ix, iz, 3, 0.05, 0.1), wet);
+        if (fine && wet > 0.2 && Math.sin(x * 2.6 + Math.sin(z * 0.5) * 1.8) > 0.55) col = shade(col, 1.07); // ripples
+        // the last metre: the lagoon's wash over the sand, a foam-white tide line just behind it
+        const wash = clamp01((t - 0.8) / 0.15 + (valueNoise2(x * 0.9, z * 0.9, 162) - 0.5) * 0.6);
+        if (wash > 0) col = mix(col, WASH, wash * 0.5);
+        else if (t > 0.7 && h01(ix, iz, 163) < 0.35 * sstep(0.7, 0.8, t)) col = mix(col, 0xf2efe6, 0.55);
+        if (coral >= 0) col = jit(shade(CORAL_HEADS[coral], 0.95 + h01(ix, iz, 134) * 0.15), ix, iz, 0.06);
+        else if (h01(ix, iz, 22) < 0.04) col = pick(SHELLS, ix, iz, 3);
+        rough = coral >= 0 ? 0.7 : 0.9 - wet * 0.55;
+        spk = 0.7 * (1 - wet);
         break;
       }
       case SURF.WALL:
+        // wet sand slope into the lagoon, broken by grey rock ledges crusted with coral
+        if (o < 0 && this.ledge(x, z)) {
+          col = jit(pick(SHORE_ROCK, ix >> 1, iz >> 1, 135), ix, iz, 0.07);
+          if (h01(ix, iz, 136) < 0.22) col = pick(CORAL_HEADS, ix >> 1, iz >> 1, 137);
+          else if (h01(ix, iz, 138) < 0.12) col = pick(MOSS, ix, iz, 139);
+          rough = 0.6;
+        } else {
+          col = shade(mosaic(WET_SAND, valueNoise2(x * 0.3, z * 0.3, 140), ix, iz, 4, 0.05, 0.08), 1.05 - zn.t * 0.12);
+          if (h01(ix, iz, 141) < 0.06) col = pick(CORAL_HEADS, ix, iz, 142);
+          rough = 0.4;
+        }
+        break;
       case SURF.SAND:
         col = mosaic(this.sand, valueNoise2(x * 0.15, z * 0.15, 43) * 0.7 + 0.15, ix, iz, 4, 0.05, 0.08);
-        if (surf === SURF.WALL) col = shade(col, 0.94 - zn.t * 0.1);
         if (h01(ix, iz, 23) < 0.025) col = pick(SHELLS, ix, iz, 5);
         rough = 0.92;
         spk = 0.8;
@@ -272,7 +346,9 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
         col = mosaic(byLum(pal), valueNoise2(x * 0.2, z * 0.2, 44) * 0.6 + 0.2, ix, iz, 6, 0.05, 0.1);
         if (fine && Math.sin(x * 2.1 + Math.sin(z * 0.4) * 1.5) > 0.6) col = shade(col, 1.06);
         if (h01(ix, iz, 24) < 0.03) col = pick(SHELLS, ix, iz, 7);
-        if (h01(ix, iz, 25) < 0.014) col = h01(ix, iz, 26) < 0.5 ? 0xe8806a : 0xb070d0; // coral bits
+        // coral reef along the foot of the banks, thinning out toward the deep middle
+        if (h01(ix >> 1, iz >> 1, 25) < 0.03 + (1 - zn.t) * 0.16) col = shade(pick(CORAL_HEADS, ix >> 1, iz >> 1, 26), 0.92);
+        else if (h01(ix >> 2, iz >> 2, 143) < 0.06 * (1 - zn.t * 0.6)) col = pick(SHORE_ROCK, ix, iz, 144);
         rough = this.dry ? 0.95 : 0.7;
         spk = this.dry ? 0.8 : 0;
         break;
@@ -295,16 +371,30 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
         break;
       }
       default: {
+        if (rock > 0) {
+          // grey rock shelf: blocky stone, moss in the cracks, a lighter weathered top
+          col = jit(pick(SHORE_ROCK, ix >> 1, iz >> 1, 145), ix, iz, 0.07);
+          if (rock > 0.22) col = shade(col, 1.07 + (valueNoise2(x * 0.7, z * 0.7, 164) - 0.5) * 0.12);
+          if (h01(ix, iz, 146) < 0.07 * sstep(0.28, 0.05, rock)) col = pick(MOSS, ix, iz, 147); // moss creeping round the foot
+          rough = 0.78;
+          break;
+        }
+        // golden sand with wind ripples
         const patch = valueNoise2(x * 0.07, z * 0.07, 46) * 0.7 + valueNoise2(x * 0.3, z * 0.3, 49) * 0.3;
-        col = mosaic(this.grass, patch, ix, iz, 13, 0.06, 0.1);
+        col = mosaic(this.grass, patch, ix, iz, 13, 0.05, 0.08);
+        if (fine && Math.sin(x * 1.7 + z * 0.6 + Math.sin(z * 0.35 + x * 0.1) * 2.2) > 0.72) col = shade(col, 0.94);
+        const jg = this.jungle(x, z);
+        if (jg > 0 && h01(ix, iz, 149) < jg) col = mosaic(JUNGLE_GRASS, valueNoise2(x * 0.4, z * 0.4, 150), ix, iz, 151, 0.07, 0.12);
         const r = h01(ix, iz, 28);
-        if (r < 0.015) col = 0xf2d24a;
-        else if (r < 0.03) col = 0xe86a8a;
+        if (r < 0.008) col = pick(SHELLS, ix, iz, 152);
+        else if (r < 0.012) col = pick(SHORE_ROCK, ix, iz, 153);
         if (path > 0.2) {
+          // trodden sand: darker, packed
           const p = (path - 0.2) / 0.5;
-          if (h01(ix, iz, 29) < p * 0.85) col = mix(mosaic(byLum(tr.dirt), valueNoise2(x * 0.5, z * 0.5, 50), ix, iz, 16, 0.05, 0.12), col, 0.3);
+          if (h01(ix, iz, 29) < p * 0.85) col = shade(mosaic(byLum(tr.dirt), valueNoise2(x * 0.5, z * 0.5, 50), ix, iz, 16, 0.05, 0.12), 0.97);
         }
         rough = 0.9;
+        spk = jg > 0.5 ? 0 : 0.45;
       }
     }
     out.top = col;
@@ -337,6 +427,14 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
       }
       case SIDE.STONE:
         out.color = strata(TILE, ix, iy, iz, 116, 0.05);
+        return;
+      case SIDE_SHORE:
+        out.color = shade(strata(SHORE_ROCK, ix >> 1, iy, iz >> 1, 154, 0.07), 0.86);
+        out.rough = 0.8;
+        return;
+      case SIDE.CORAL:
+        out.color = shade(CORAL_HEADS[_tag % CORAL_HEADS.length], 0.8 + hashVox(ix, iy, iz, 155) * 0.12);
+        out.rough = 0.7;
         return;
       default: {
         const c = strata(this.sand, ix, iy, iz, 117, 0.06);
@@ -394,6 +492,8 @@ export class MaelstromBiome extends BaseBiome implements MapBiome {
     const inPlay = (x: number, z: number) => Math.abs(x) < this.halfW - 0.3 && Math.abs(z) < this.halfD - 0.3 && this.plazaDist(x, z) > 0.3 && offDeck(x, z);
     return [
       { model: 'shellbits', spacing: rich ? 1.1 : 1.7, scale: [0.7, 1.3], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -this.bankW && c < 0.1 ? 0.45 : 0; } },
+      // little coral bushes on the wet sand right by the water (walk-through, like the decor fans)
+      { model: 'coral', spacing: rich ? 2.2 : 3, scale: [0.4, 0.7], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -1.7 && c < -0.25 && !this.nearIsland(x, z) ? 0.4 : 0; } },
       { model: 'shellbits', spacing: rich ? 1.3 : 2, scale: [0.8, 1.4], density: (x, z) => (inPlay(x, z) && this.channel(x, z) > 2.4 ? (this.dry ? 0.55 : 0.3) : 0), underwater: true },
       { model: 'coral', spacing: rich ? 2.6 : 3.6, scale: [0.6, 1.0], density: (x, z) => (inPlay(x, z) && this.channel(x, z) > 2.6 && Math.hypot(x, z) > 6 ? 0.3 : 0), underwater: true },
       { model: 'pebble', spacing: rich ? 2 : 3, scale: [0.6, 1.1], density: (x, z) => (inPlay(x, z) && this.channel(x, z) < -this.bankW - 0.5 ? 0.15 : 0) },

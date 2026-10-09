@@ -1,5 +1,5 @@
-/* Hook Wars v2 UI: the hub (Locker, Store, Market, Career), the profile chip, the wallet panel,
-   item cards and the refreshed main menu. Mood from the references: warm lantern light on dark
+/* Hook Wars v2 UI: the hub (Locker, Store, Market, Career), the profile chip, item cards and the
+   refreshed main menu. Mood from the references: warm lantern light on dark
    wet wood, brass and rope, deep night-blue water. Sizes are rem (the root scales with the
    viewport); every micro-label has a pixel floor so nothing drops under 11 px at 1280x720. */
 
@@ -15,7 +15,6 @@
   --wet-wood-2: #3a2616;
   --pearl: #f4ecff;
   --pearl-mid: #cdbde8;
-  --usdc: #4aa3ff;
   --glass: rgba(10, 20, 32, 0.62);
   --glass-hi: rgba(255, 220, 160, 0.12);
   --micro: max(11px, 0.78rem);
@@ -198,7 +197,6 @@
 .hub-tab:focus-visible,
 .pcp-who:focus-visible,
 .pcp-pearls:focus-visible,
-.pcp-wallet:focus-visible,
 .item-card:focus-visible,
 .lk-fam:focus-visible,
 .lk-slot:focus-visible,
@@ -256,7 +254,7 @@
 }
 
 /* ------------------------------------------------------------------------------------------
-   Profile chip: [family porthole | name, family] [pearl balance] [wallet] [devnet]
+   Profile chip: [family porthole | name, family] [pearl balance]
    ------------------------------------------------------------------------------------------ */
 .pchip {
   display: flex;
@@ -359,73 +357,6 @@
   0% { transform: scale(1); }
   35% { transform: scale(1.14); box-shadow: inset 0 0 0 0.12rem rgba(244, 236, 255, 0.8), 0 0 1.2rem rgba(220, 200, 255, 0.6); }
   100% { transform: scale(1); }
-}
-
-.pcp-wallet {
-  padding: 0.25rem 0.85rem 0.25rem 0.5rem;
-  font-weight: 800;
-  font-size: var(--small);
-}
-
-.pcp-wallet-ico {
-  width: 1.45rem;
-  height: 1.45rem;
-}
-
-.pcp-wallet.linked {
-  color: #c9f7d8;
-  box-shadow: inset 0 0 0 0.12rem rgba(127, 211, 106, 0.55);
-}
-
-.pcp-wallet.linked .pcp-wallet-text {
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  letter-spacing: 0.02em;
-}
-
-.pcp-net,
-.net-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  align-self: center;
-  padding: 0.28rem 0.6rem;
-  border-radius: 1rem;
-  font-family: var(--font-head);
-  font-size: var(--micro);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #0a1e12;
-  background: linear-gradient(180deg, #b8ffcf, #5fd38a);
-  box-shadow: 0 0 0 0.1rem #0d3a1d, 0 0 0.8rem rgba(95, 211, 138, 0.4);
-  white-space: nowrap;
-}
-
-.pcp-net::before,
-.net-badge.devnet::before {
-  content: '';
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: #0d5a2a;
-  box-shadow: 0 0 0 0.12rem rgba(255, 255, 255, 0.5);
-  animation: netBlink 2s ease-in-out infinite;
-}
-
-@keyframes netBlink {
-  50% { opacity: 0.35; }
-}
-
-.pcp-net.mainnet,
-.net-badge.mainnet {
-  color: #2a1000;
-  background: linear-gradient(180deg, #ffd59a, #ff9a3a);
-  box-shadow: 0 0 0 0.1rem #4a1d00;
-}
-
-.net-badge.off {
-  color: rgba(255, 236, 200, 0.8);
-  background: rgba(255, 238, 205, 0.12);
-  box-shadow: inset 0 0 0 0.1rem rgba(255, 228, 185, 0.25);
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -659,10 +590,12 @@
   color: var(--cream);
 }
 
-.ic-cur-name {
+/* Premium items: the Steam price in the Steam version, a plain note in the browser */
+.ic-steam {
+  color: #ffd27a;
   font-size: var(--micro);
   font-weight: 900;
-  color: #a8d4ff;
+  line-height: 1.15;
 }
 
 .ic-eq {
@@ -684,44 +617,14 @@
   letter-spacing: 0.05em;
 }
 
-.ic-limited {
-  position: absolute;
-  top: 0.15rem;
-  left: 0.15rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0.2rem 0.5rem 0.2rem 0.3rem;
-  border-radius: 0.6rem 0.4rem 0.6rem 0.4rem;
-  font-family: var(--font-head);
-  font-size: var(--micro);
-  letter-spacing: 0.04em;
-  color: #2a1400;
-  background: linear-gradient(110deg, #ffe08a 0%, #ffb43a 40%, #fff2c0 50%, #ffb43a 60%, #e48a10 100%) 0 0 / 250% 100%;
-  box-shadow: 0 0 0 0.1rem #4a2400, 0 0.2rem 0.5rem rgba(0, 0, 0, 0.45);
-  animation: limitedShine 3.2s ease-in-out infinite;
-  pointer-events: none;
-  z-index: 1;
-}
-
-.ic-limited .ico {
-  width: 0.95rem;
-  height: 0.95rem;
-}
-
-@keyframes limitedShine {
-  0%, 60% { background-position: 100% 0; }
-  100% { background-position: -150% 0; }
-}
-
-.item-card.r-limited {
+.item-card.r-premium {
   background:
     radial-gradient(120% 60% at 50% 0%, rgba(255, 180, 58, 0.2), transparent 60%),
     linear-gradient(180deg, #4a301c, #33200f);
 }
 
 .item-card.r-epic .ic-art-wrap::after,
-.item-card.r-limited .ic-art-wrap::after {
+.item-card.r-premium .ic-art-wrap::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -773,23 +676,12 @@
   box-shadow: 0 0 0 0.1rem rgba(0, 0, 0, 0.45);
 }
 
-.rarity-pill.r-limited {
+.rarity-pill.r-premium {
   background: linear-gradient(110deg, #ffe08a, #ffb43a 50%, #e48a10);
 }
 
-.serial {
-  display: inline-flex;
-  padding: 0.16rem 0.5rem;
-  border-radius: 0.4rem;
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  font-size: var(--micro);
-  font-weight: 800;
-  color: #ffe6b0;
-  background: rgba(10, 5, 2, 0.75);
-  box-shadow: inset 0 0 0 0.1rem rgba(255, 180, 58, 0.55);
-}
-
-.devnet-note {
+/* a short status line (e.g. "Signing in to your account on this server...") */
+.info-note {
   display: flex;
   align-items: flex-start;
   gap: 0.55rem;
@@ -798,32 +690,35 @@
   font-size: var(--small);
   font-weight: 700;
   line-height: 1.3;
-  color: #d8fbe6;
-  background: rgba(30, 110, 70, 0.32);
-  box-shadow: inset 0 0 0 0.12rem rgba(95, 211, 138, 0.5);
+  color: #dcecff;
+  background: rgba(40, 90, 150, 0.32);
+  box-shadow: inset 0 0 0 0.12rem rgba(120, 180, 255, 0.45);
 }
 
-.devnet-note .ico {
+.info-note .ico {
   width: 1.3rem;
   height: 1.3rem;
   flex: none;
   margin-top: 0.05rem;
 }
 
-.devnet-note.big {
-  padding: 0.8rem 1rem;
-  font-size: 0.98rem;
-  margin-bottom: 1rem;
+/* Locker: a Premium item in the browser version (a plain note, not a button) */
+.lk-steam-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem 0.3rem 0.45rem;
+  border-radius: 0.6rem;
+  font-size: var(--small);
+  font-weight: 900;
+  color: #7a4200;
+  background: rgba(255, 180, 58, 0.2);
+  box-shadow: inset 0 0 0 0.1rem rgba(200, 120, 20, 0.45);
 }
 
-.devnet-note strong {
-  color: #fff;
-}
-
-.cloth .devnet-note {
-  color: #0f3a22;
-  background: rgba(60, 170, 100, 0.18);
-  box-shadow: inset 0 0 0 0.12rem rgba(40, 130, 70, 0.45);
+.lk-steam-note .ico {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .empty-state.big {
@@ -878,7 +773,7 @@
   height: 1.05rem;
 }
 
-.btn.limited-btn {
+.btn.premium-btn {
   --b-top: #ffe08a;
   --b-mid: #ffb43a;
   --b-bot: #d97e10;
@@ -1598,15 +1493,11 @@
   color: var(--ink-soft);
 }
 
-.stp-supply {
-  margin-left: 0.4rem;
-  padding: 0.12rem 0.5rem;
-  border-radius: 0.5rem;
-  font-size: var(--micro);
-  font-weight: 900;
-  color: #6a3a00;
-  background: rgba(255, 180, 58, 0.25);
-  box-shadow: inset 0 0 0 0.1rem rgba(200, 120, 20, 0.5);
+.stp-steam {
+  font-family: var(--font-head);
+  font-size: 1.25rem;
+  line-height: 1.1;
+  color: #8a4a00;
 }
 
 .st-d-actions {
@@ -1975,95 +1866,9 @@
   margin: 0;
 }
 
-/* ------------------------------------------------------------------------------------------
-   Wallet panel
-   ------------------------------------------------------------------------------------------ */
-.wallet-panel {
-  width: min(92vw, 36rem);
-  display: flex;
-  flex-direction: column;
-}
-
 .wp-head-ico {
   width: 2.2rem;
   height: 2.2rem;
-}
-
-.wl-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-}
-
-.wl-status {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  padding: 0.8rem 0.9rem;
-  border-radius: 0.8rem;
-  background: rgba(10, 5, 2, 0.35);
-  box-shadow: inset 0 0 0 0.12rem rgba(255, 220, 160, 0.14);
-}
-
-.wl-ico {
-  width: 2.6rem;
-  height: 2.6rem;
-  flex: none;
-}
-
-.wl-st-texts {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.wl-st-text {
-  font-family: var(--font-head);
-  font-size: 1.3rem;
-}
-
-.wl-st-sub {
-  font-size: var(--small);
-  font-weight: 700;
-  color: rgba(255, 236, 200, 0.72);
-}
-
-.wl-addr {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.55rem 0.6rem 0.55rem 0.9rem;
-  border-radius: 0.7rem;
-  background: rgba(127, 211, 106, 0.12);
-  box-shadow: inset 0 0 0 0.12rem rgba(127, 211, 106, 0.45);
-}
-
-.wl-addr-label {
-  font-size: var(--micro);
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #b8f59a;
-}
-
-.wl-addr-code {
-  flex: 1 1 auto;
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: var(--cream);
-}
-
-.wl-explain {
-  margin: 0;
-  font-size: 0.95rem;
-  line-height: 1.4;
-}
-
-.wallet-panel .err-box {
-  margin: 0;
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -2942,6 +2747,22 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Wide screens (16:9 and 16:10): all 8 maps in one row, so every rule, the river and hazard pickers
+   and Start fit on one screen at 1280x720 and 1920x1080 alike (the root font scales with the
+   viewport, so a layout that overflows at 720p overflows at 1080p too). The mood chip keeps its
+   colour dots; its label is the card's tooltip. 4:3 screens keep the two-column grid above. */
+@media (min-aspect-ratio: 3/2) {
+  .cfg-solo .map-cards,
+  .cfg-room .map-cards {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+
+  .cfg-solo .mc-sw-label,
+  .cfg-room .mc-sw-label {
+    display: none;
+  }
 }
 
 .scr-solo .wide-panel > .panel-head .panel-title {

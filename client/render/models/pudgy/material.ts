@@ -1,6 +1,7 @@
 // Pudgy material: MeshStandardMaterial patched to read the per-vertex `surf` attribute
-// (roughness, metalness, two emissive weights; roughness above 1.5 marks a premium sparkling voxel)
-// plus per-character uniforms for glow pulses, hit flash, a soft team rim light and the sparkle clock.
+// (roughness, metalness, two emissive weights; roughness above 1.5 marks a premium sparkling voxel,
+// metalness above 1.5 a team-coloured voxel) plus per-character uniforms for glow pulses, hit flash,
+// a soft team rim light, the self-lit team accent and the sparkle clock.
 // Every character gets its own small material instance (uniform values differ per unit), but all
 // instances report the same program cache key, so the GPU compiles one shader for all of them.
 import * as THREE from 'three';
@@ -16,9 +17,14 @@ export interface PudgyUniforms {
   uTime: { value: number };
   /** 0..1 strength of premium sparkles (0 turns them off) */
   uSparkle: { value: number };
+  /**
+   * Self-lit share of team-coloured voxels (emissive = albedo * uTeamGlow). Keeps the team hue on the
+   * body under tinted map light (sunset, moonlight), where a lit-only trim turns mauve or brown.
+   */
+  uTeamGlow: { value: number };
 }
 
-export function makeUniforms(rim: number, rimColor: number): PudgyUniforms {
+export function makeUniforms(rim: number, rimColor: number, teamGlow = 0): PudgyUniforms {
   return {
     uGlowA: { value: 2.2 },
     uGlowB: { value: 1.5 },
@@ -28,6 +34,7 @@ export function makeUniforms(rim: number, rimColor: number): PudgyUniforms {
     uRimColor: { value: new THREE.Color(rimColor) },
     uTime: { value: 0 },
     uSparkle: { value: 1 },
+    uTeamGlow: { value: teamGlow },
   };
 }
 
@@ -47,6 +54,7 @@ uniform float uRim;
 uniform vec3 uRimColor;
 uniform float uTime;
 uniform float uSparkle;
+uniform float uTeamGlow;
 float pudgyHash(vec3 p) {
   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
 }
@@ -71,6 +79,7 @@ export function makePudgyMaterial(u: PudgyUniforms, transparent: boolean): THREE
     sh.uniforms.uRimColor = u.uRimColor;
     sh.uniforms.uTime = u.uTime;
     sh.uniforms.uSparkle = u.uSparkle;
+    sh.uniforms.uTeamGlow = u.uTeamGlow;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>\n${VERT_HEAD}`)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vSurf = surf;\n  vObjPos = position;');
@@ -80,11 +89,11 @@ export function makePudgyMaterial(u: PudgyUniforms, transparent: boolean): THREE
         '#include <roughnessmap_fragment>',
         '#include <roughnessmap_fragment>\n  float pudgyPrem = step(1.5, vSurf.x);\n  roughnessFactor = vSurf.x - 2.0 * pudgyPrem;',
       )
-      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vSurf.y;')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  float pudgyTeam = step(1.5, vSurf.y);\n  metalnessFactor = vSurf.y - 2.0 * pudgyTeam;')
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>
-  totalEmissiveRadiance += diffuseColor.rgb * (vSurf.z * uGlowA + vSurf.w * uGlowB);
+  totalEmissiveRadiance += diffuseColor.rgb * (vSurf.z * uGlowA + vSurf.w * uGlowB + pudgyTeam * uTeamGlow);
   {
     vec3 pudgyView = normalize(vViewPosition);
     float pudgyFres = 1.0 - clamp(dot(normal, pudgyView), 0.0, 1.0);
@@ -102,6 +111,6 @@ export function makePudgyMaterial(u: PudgyUniforms, transparent: boolean): THREE
   }`,
       );
   };
-  m.customProgramCacheKey = () => 'pudgy-surf-v2';
+  m.customProgramCacheKey = () => 'pudgy-surf-v3';
   return m;
 }

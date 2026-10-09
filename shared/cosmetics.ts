@@ -18,11 +18,12 @@ export const SLOT_NAMES: Record<CosmeticSlot, string> = {
 
 /**
  * default  = everyone owns it, part of the family's reference look
- * common / rare / epic = bought with Pearls (server inventory); epic can be traded for Pearls
- * limited  = fixed supply, minted as a Metaplex Core NFT, bought and traded for USDC (devnet until legal sign-off)
+ * common / rare / epic = bought with Pearls, which you earn by playing; epic can be traded for Pearls
+ * premium  = bought with real money in the Steam version (Steam Item Store, tradable on the Steam
+ *            Community Market). The free browser version shows them as "Available in the Steam version".
  */
-export type Rarity = 'default' | 'common' | 'rare' | 'epic' | 'limited';
-export const RARITIES: readonly Rarity[] = ['default', 'common', 'rare', 'epic', 'limited'];
+export type Rarity = 'default' | 'common' | 'rare' | 'epic' | 'premium';
+export const RARITIES: readonly Rarity[] = ['default', 'common', 'rare', 'epic', 'premium'];
 
 export interface CosmeticDef {
   id: string; // `${family}.${slug}`, permanent
@@ -32,8 +33,7 @@ export interface CosmeticDef {
   rarity: Rarity;
   blurb: string;
   pearls?: number; // price in Pearls (common / rare / epic)
-  usdc?: number; // price in USDC (limited)
-  supply?: number; // limited editions only
+  usd?: number; // price in US dollars on Steam (premium); Steam converts it per region
   tradable: boolean;
 }
 
@@ -44,8 +44,8 @@ const D = (family: FamilyId, slot: CosmeticSlot, slug: string, name: string, blu
   ({ id: `${family}.${slug}`, family, slot, name, rarity: 'default', blurb, tradable: false });
 const P = (family: FamilyId, slot: CosmeticSlot, slug: string, name: string, rarity: 'common' | 'rare' | 'epic', pearls: number, blurb: string): CosmeticDef =>
   ({ id: `${family}.${slug}`, family, slot, name, rarity, blurb, pearls, tradable: rarity === 'epic' });
-const L = (family: FamilyId, slot: CosmeticSlot, slug: string, name: string, usdc: number, supply: number, blurb: string): CosmeticDef =>
-  ({ id: `${family}.${slug}`, family, slot, name, rarity: 'limited', blurb, usdc, supply, tradable: true });
+const PM = (family: FamilyId, slot: CosmeticSlot, slug: string, name: string, usd: number, blurb: string): CosmeticDef =>
+  ({ id: `${family}.${slug}`, family, slot, name, rarity: 'premium', blurb, usd, tradable: true });
 
 export const COSMETICS: readonly CosmeticDef[] = [
   // ---------------------------------------------------------------- Harbour Brawler
@@ -69,7 +69,7 @@ export const COSMETICS: readonly CosmeticDef[] = [
   P('brawler', 'feet', 'clogs', 'Wooden Clogs', 'common', 250, 'Clack clack clack.'),
   P('brawler', 'back', 'lobster_pot', 'Lobster Pot', 'common', 350, 'A wicker pot with a grumpy lobster inside.'),
   P('brawler', 'back', 'barrel_pack', 'Rum Barrel', 'rare', 900, 'A little barrel strapped to the back.'),
-  L('brawler', 'hands', 'golden_harpoon', 'Golden Harpoon', 9, 500, 'Limited edition. A gilded harpoon with a pearl inlay.'),
+  PM('brawler', 'hands', 'golden_harpoon', 'Golden Harpoon', 1.99, 'A gilded harpoon with a pearl inlay.'),
 
   // ---------------------------------------------------------------- Swamp Ogre
   // default set = reference render: moss mane, tooth necklace, vine-bound tusk hook, moss drapes, reed skirt
@@ -92,7 +92,7 @@ export const COSMETICS: readonly CosmeticDef[] = [
   P('ogre', 'feet', 'reed_wraps', 'Reed Wraps', 'common', 250, 'Feet wrapped in woven reeds.'),
   P('ogre', 'back', 'firefly_jar', 'Firefly Jar', 'common', 350, 'A jar of fireflies on a string.'),
   P('ogre', 'back', 'stump_pack', 'Stump Backpack', 'rare', 900, 'A hollow stump, full of snacks.'),
-  L('ogre', 'face', 'crystal_tusks', 'Crystal Tusks', 9, 500, 'Limited edition. Tusks of glowing amethyst.'),
+  PM('ogre', 'face', 'crystal_tusks', 'Crystal Tusks', 1.99, 'Tusks of glowing amethyst.'),
 
   // ---------------------------------------------------------------- Butcher-Bot
   // default set = reference render: rusted hazard plating, grille dome, twin smokestacks, crane hook, heavy feet
@@ -115,7 +115,7 @@ export const COSMETICS: readonly CosmeticDef[] = [
   P('bot', 'feet', 'treads', 'Tank Treads', 'common', 250, 'Rolls instead of stomping.'),
   P('bot', 'back', 'propeller', 'Propeller Pack', 'common', 350, 'It does not actually fly.'),
   P('bot', 'back', 'gear_wheel', 'Gear Wheel', 'rare', 900, 'A big turning cog.'),
-  L('bot', 'head', 'chrome_crown', 'Chrome Crown', 9, 500, 'Limited edition. A mirror-chrome crown with ruby lamps.'),
+  PM('bot', 'head', 'chrome_crown', 'Chrome Crown', 1.99, 'A mirror-chrome crown with ruby lamps.'),
 ];
 
 const BY_ID = new Map(COSMETICS.map((c) => [c.id, c]));
@@ -169,7 +169,7 @@ export function randomBotLoadout(family: FamilyId, rnd: () => number): Loadout {
   const out: Loadout = { ...DEFAULT_LOADOUT[family] };
   for (const slot of COSMETIC_SLOTS) {
     if (rnd() > 0.35) continue;
-    const pool = COSMETICS.filter((c) => c.family === family && c.slot === slot && c.rarity !== 'limited');
+    const pool = COSMETICS.filter((c) => c.family === family && c.slot === slot && c.rarity !== 'premium');
     if (pool.length) out[slot] = pool[Math.floor(rnd() * pool.length) % pool.length].id;
   }
   return out;

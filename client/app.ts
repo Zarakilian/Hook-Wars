@@ -6,13 +6,24 @@ import { createEconomy } from './economy/index.ts';
 import type { EconomyClient } from './economy/types.ts';
 import { soloPearls } from './ui/hud/endscreen.ts';
 import { GameClient } from './game/GameClient.ts';
-import { Connection, defaultServerUrl, normaliseServerUrl } from './net/connection.ts';
+import { AutoRejoin } from './net/autorejoin.ts';
+import { Connection, normaliseServerUrl } from './net/connection.ts';
 import { LocalSession, OnlineSession, type MatchSession } from './net/session.ts';
-import type { AudioSystem, Engine, Quality } from './render/contracts.ts';
+import type { AudioSystem, Engine, Quality, SfxId } from './render/contracts.ts';
 import { createEngine } from './render/engine.ts';
 import { autoQuality, loadProfile, loadSettings, saveProfile, saveSettings, type Settings } from './settings.ts';
 import type { AppActions, AppState, ChatLine, Screen, UI } from './ui/types.ts';
 import { createUI } from './ui/ui.ts';
+
+/** UI sound hooks -> sound ids (kinds without a sound are silent). */
+const UI_SOUNDS: Readonly<Record<string, SfxId>> = {
+  click: 'uiClick',
+  hover: 'uiHover',
+  open: 'uiOpen',
+  purchase: 'purchase',
+  equip: 'equip',
+  listingSold: 'listingSold',
+};
 
 export class App {
   private state: AppState;
@@ -21,8 +32,10 @@ export class App {
   private readonly audio: AudioSystem;
   private readonly canvas: HTMLCanvasElement;
   private conn: Connection | null = null;
-  private rejoinTimer = 0;
-  private rejoinTries = 0;
+  /** retry schedule for taking a dropped online match back */
+  private readonly rejoin = new AutoRejoin();
+  /** the connection a rejoin retry opened (null once it is replaced or closed) */
+  private retryConn: Connection | null = null;
   private session: MatchSession | null = null;
   private game: GameClient | null = null;
   private toastId = 0;
@@ -130,12 +143,32 @@ export class App {
   }
 
   private scheduleRejoin(url: string): void {
-    window.clearTimeout(this.rejoinTimer);
-    const delay = [500, 1500, 3000, 5000][Math.min(this.rejoinTries++, 3)];
     this.toast('Connection lost. Rejoining your match...');
-    this.rejoinTimer = window.setTimeout(() => {
-      if (!this.conn) this.act.connect(url);
-    }, delay);
+    // a retry never runs while a connection is open or any match (a solo one started meanwhile) is running
+    this.rejoin.schedule(() => {
+      this.openConnection(url);
+      this.retryConn = this.conn;
+    }, () => !this.conn && !this.game);
+  }
+
+  /**
+   * A solo match is starting: nothing online may replace it later. The pending rejoin is cancelled for
+   * good (the token stays for a manual rejoin by code), a retry socket still on its way in is closed, and
+   * an online room we are still in is left.
+   */
+  private leaveOnlineForSolo(): void {
+    this.rejoin.cancel();
+    const c = this.conn;
+    // a retry socket is unfinished until 'welcome' (online status 'connected') and its auto-rejoin answer
+    if (c && c === this.retryConn && (this.state.online.status !== 'connected' || c.autoRejoining)) {
+      this.conn = null;
+      this.retryConn = null;
+      this.economy.detachServer();
+      c.close();
+      this.state = { ...this.state, online: { ...this.state.online, status: 'idle', error: undefined }, room: null };
+    } else if (c && this.state.room) {
+      c.send({ t: 'leaveRoom' }); // the server answers leftRoom, which never touches a solo match
+    }
   }
 
   private toast(text: string, kind: 'info' | 'error' = 'info'): void {
@@ -215,7 +248,7 @@ export class App {
       case 'room': {
         const wasMatch = this.state.room?.phase === 'match';
         this.state = { ...this.state, room: m.room };
-        if (m.room.phase === 'lobby' && wasMatch && this.game) {
+        if (m.room.phase === 'lobby' && wasMatch && this.game && !this.session?.local) {
           // server returned everyone to the lobby after the match
           this.endGame();
           this.set({ screen: 'lobby', match: null });
@@ -224,12 +257,23 @@ export class App {
         break;
       }
       case 'leftRoom':
+        if (this.session?.local) {
+          // out of the online room (left it for solo, or the server closed it): the solo match carries on
+          this.set({ room: null });
+          break;
+        }
         this.endGame();
         this.set({ room: null, screen: 'online', match: null, chat: [] });
         this.conn?.send({ t: 'listRooms' });
         break;
       case 'start':
-        this.rejoinTries = 0;
+        if (this.session?.local) {
+          // a late rejoin (or a lobby we were still in) started while a solo match runs: the solo match
+          // stays and we leave the online one (its token stays for a manual rejoin by code)
+          this.conn?.send({ t: 'leaveRoom' });
+          break;
+        }
+        this.rejoin.reset();
         if (this.conn) this.beginMatch(new OnlineSession(this.conn, m.m));
         break;
       case 'players':
@@ -249,8 +293,6 @@ export class App {
         break;
       case 'account':
       case 'market':
-      case 'walletChallenge':
-      case 'usdcOrder':
       case 'reward':
       case 'econError':
         this.economy.receive(m);
@@ -264,6 +306,43 @@ export class App {
       default:
         break;
     }
+  }
+
+  /**
+   * Open a connection to a server: the player's address, or the one a rejoin retry reuses. An empty
+   * address means the default server (the browser build: the host that served the page).
+   */
+  private openConnection(url: string): void {
+    const full = normaliseServerUrl(url);
+    if (!full) {
+      this.toast(url.trim() ? 'That server address does not look right.' : 'Type a server address, like host:port.', 'error');
+      return;
+    }
+    this.conn?.close();
+    this.retryConn = null;
+    const s = { ...this.state.settings, serverUrl: url.trim() };
+    saveSettings(s);
+    // the full address keys this server's account token and the rejoin tokens
+    const serverKey = full;
+    const conn = new Connection(serverKey, this.state.profile, this.economy.tokenFor(serverKey));
+    this.economy.attachServer((m) => conn.send(m as Parameters<Connection['send']>[0]), serverKey);
+    this.conn = conn;
+    conn.onMessage = (m) => this.onServer(m);
+    conn.onStatus = (st, reason) => {
+      if (this.conn !== conn) return;
+      if (st === 'closed') {
+        this.economy.detachServer();
+        const inMatch = !!this.game && !this.session?.local;
+        if (inMatch) this.endGame();
+        this.conn = null;
+        if (this.retryConn === conn) this.retryConn = null;
+        this.set({ online: { ...this.state.online, status: 'error', error: reason }, room: null, screen: inMatch || this.state.screen === 'lobby' ? 'online' : this.state.screen, match: inMatch ? null : this.state.match });
+        // rejoinable() is null after a deliberate leave, once the 90 s grace window has passed and after
+        // the player started a solo match; a retry never interrupts a solo match either
+        if (conn.rejoinable() && !this.session?.local) this.scheduleRejoin(url);
+      }
+    };
+    this.set({ settings: s, online: { ...this.state.online, status: 'connecting', url: full, error: undefined } });
   }
 
   private actions(): AppActions {
@@ -290,38 +369,17 @@ export class App {
       },
       startSolo(config: MatchConfig, team: Team) {
         app.audio.unlock();
+        app.leaveOnlineForSolo();
         app.beginMatch(new LocalSession(config, app.state.profile, team));
       },
       connect(url: string) {
-        const full = normaliseServerUrl(url);
-        if (!full) {
-          app.toast('That server address does not look right.', 'error');
-          return;
-        }
-        app.conn?.close();
-        const s = { ...app.state.settings, serverUrl: url.trim() };
-        saveSettings(s);
-        const serverKey = full === defaultServerUrl() && !url.trim() ? defaultServerUrl() : full;
-        const conn = new Connection(serverKey, app.state.profile, app.economy.tokenFor(serverKey));
-        app.economy.attachServer((m) => conn.send(m as Parameters<Connection['send']>[0]), serverKey);
-        app.conn = conn;
-        conn.onMessage = (m) => app.onServer(m);
-        conn.onStatus = (st, reason) => {
-          if (app.conn !== conn) return;
-          if (st === 'closed') {
-            app.economy.detachServer();
-            const inMatch = !!app.game && !app.session?.local;
-            if (inMatch) app.endGame();
-            app.conn = null;
-            app.set({ online: { ...app.state.online, status: 'error', error: reason }, room: null, screen: inMatch || app.state.screen === 'lobby' ? 'online' : app.state.screen, match: inMatch ? null : app.state.match });
-            // rejoinable() is null after a deliberate leave or once the 90 s grace window has passed
-            if (conn.rejoinable()) app.scheduleRejoin(url);
-          }
-        };
-        app.set({ settings: s, online: { ...app.state.online, status: 'connecting', url: full, error: undefined } });
+        // connecting by hand replaces a pending retry (a dropped match on this server still rejoins at 'welcome')
+        app.rejoin.stop();
+        app.openConnection(url);
       },
       disconnect() {
-        window.clearTimeout(app.rejoinTimer);
+        app.rejoin.stop();
+        app.retryConn = null;
         app.economy.detachServer();
         app.conn?.close();
         app.conn = null;
@@ -399,7 +457,8 @@ export class App {
       },
       uiSound(kind) {
         app.audio.unlock();
-        app.audio.play(kind === 'click' ? 'uiClick' : kind === 'hover' ? 'uiHover' : kind === 'open' ? 'uiOpen' : kind);
+        const id = UI_SOUNDS[kind];
+        if (id) app.audio.play(id);
       },
     };
   }

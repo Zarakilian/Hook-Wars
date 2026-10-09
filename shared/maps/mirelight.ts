@@ -4,7 +4,16 @@
 // Stump islands sit in the main river. Tidal mode: the marsh floods and drains.
 // Point symmetric: every gameplay element mirrors through (0, 0).
 import { channelDepthAt, clearOf, inCircles, platformAt, riverAt, scatter, symmetricRiver, withMirroredPoints, withMirrors } from './helpers.ts';
+import { valueNoise2 } from '../math.ts';
 import type { Decor, HazardSlot, MapDef, Obstacle, Platform, RiverDef, RiverPoint } from './types.ts';
+
+/**
+ * The marsh's wet ground: above 0.58 the terrain draws wet mud, above 0.71 a standing puddle (visual
+ * only: the sim ground is flat). Shared with the terrain biome so reeds can ring the puddles.
+ */
+export function mireMud(x: number, z: number): number {
+  return valueNoise2(x * 0.13, z * 0.13, 501) * 0.72 + valueNoise2(x * 0.55, z * 0.55, 502) * 0.28;
+}
 
 const W = 72;
 const D = 48;
@@ -64,19 +73,21 @@ const plazas = fountains.map((f) => ({ x: f.x, z: f.z, r: f.r + 0.8 }));
 const offDeck = (x: number, z: number) => !platformAt(partial, x, z);
 const onGround = (x: number, z: number) =>
   depth(x, z) < -1.0 && offDeck(x, z) && clearOf(obstacles, x, z, 0.6) && Math.abs(x) < W / 2 - 1 && Math.abs(z) < D / 2 - 0.6 && !inCircles(plazas, x, z);
-const shore = (x: number, z: number) => { const c = depth(x, z); return c > -1.9 && c < 0.45 && offDeck(x, z) && clearOf(obstacles, x, z, 0.4); };
+const shore = (x: number, z: number) => { const c = depth(x, z); return c > -2.6 && c < 0.45 && offDeck(x, z) && clearOf(obstacles, x, z, 0.4); };
 const inWater = (x: number, z: number) => depth(x, z) > 0.7 && offDeck(x, z) && !inCircles(islands, x, z, 0.8);
 
 const decor: Decor[] = [
-  ...scatter(partial, { kind: 'grass', count: 230, seed: 51, scale: [0.7, 1.35], accept: onGround }),
-  ...scatter(partial, { kind: 'cattail', count: 90, seed: 52, scale: [0.8, 1.45], accept: shore }),
-  ...scatter(partial, { kind: 'reeds', count: 40, seed: 58, scale: [0.8, 1.3], accept: shore }),
-  ...scatter(partial, { kind: 'lilypad', count: 84, seed: 53, scale: [0.7, 1.4], accept: inWater }),
+  ...scatter(partial, { kind: 'grass', count: 150, seed: 51, scale: [0.7, 1.35], accept: onGround }),
+  ...scatter(partial, { kind: 'cattail', count: 150, seed: 52, scale: [0.8, 1.45], accept: shore }),
+  ...scatter(partial, { kind: 'reeds', count: 70, seed: 58, scale: [0.8, 1.3], accept: shore }),
+  // cattails and reeds round the puddles out on the moss
+  ...scatter(partial, { kind: 'cattail', count: 70, seed: 60, scale: [0.7, 1.2], accept: (x, z) => { const m = mireMud(x, z); return m > 0.62 && m < 0.72 && onGround(x, z); } }),
+  ...scatter(partial, { kind: 'lilypad', count: 150, seed: 53, scale: [0.7, 1.4], accept: inWater }),
   ...scatter(partial, { kind: 'fern', count: 46, seed: 54, scale: [0.7, 1.2], accept: (x, z) => onGround(x, z) && Math.abs(x) > 8 }),
   ...scatter(partial, { kind: 'mushroom', count: 30, seed: 55, scale: [0.6, 1.1], accept: (x, z) => onGround(x, z) && !clearOf(obstacles, x, z, 2.2) }),
-  ...scatter(partial, { kind: 'flower', count: 16, seed: 59, scale: [0.6, 1.0], accept: onGround }),
+  ...scatter(partial, { kind: 'flower', count: 8, seed: 59, scale: [0.6, 1.0], accept: onGround }),
   ...scatter(partial, { kind: 'firefly_swarm', count: 14, seed: 56, scale: [1, 1], accept: (x, z) => Math.abs(x) < 22 && clearOf(obstacles, x, z, 0.5) }),
-  ...scatter(partial, { kind: 'mist', count: 12, seed: 57, scale: [1, 1.6], accept: (x, z) => depth(x, z) > 1.2 }),
+  ...scatter(partial, { kind: 'mist', count: 18, seed: 57, scale: [1, 1.6], accept: (x, z) => depth(x, z) > 1.2 }),
   // set dressing: moored rowboats, lantern strings over the docks, a rope on each pier
   { kind: 'rowboat', x: -6.3, z: -9.4, rot: 0.35, scale: 1, seed: 1 },
   { kind: 'rowboat', x: 6.3, z: 9.4, rot: 0.35 + Math.PI, scale: 1, seed: 2 },
@@ -135,8 +146,9 @@ export const mirelight: MapDef = {
     skyHorizon: 0xff8a4e,
     groundAmbient: 0x3e3c34,
     ambientIntensity: 1.2,
-    fogColor: 0x7c6474,
-    fogDensity: 0.0095,
+    // a warmer, thinner haze than v2's mauve one: the moss and the dark water read through it
+    fogColor: 0x6e5856,
+    fogDensity: 0.0082,
     weather: 'fireflies',
     aurora: false,
     waterShallow: 0x5e5a44,
@@ -147,10 +159,11 @@ export const mirelight: MapDef = {
     bloom: 0.75,
   },
   terrain: {
-    grass: [0x4a7a2c, 0x568834, 0x3f6c26, 0x62923c, 0x4c7a2e, 0x6c9a42],
-    dirt: [0x58422e, 0x4c3a28, 0x664d34, 0x4a3828],
-    bank: [0x47392a, 0x54442e, 0x3c3124, 0x5a4832],
-    bed: [0x332d21, 0x2a261c, 0x3e3525, 0x30291e],
+    // moss mats (the ground and its tufts), wet peat, black shore mud (the reference's marsh, not a lawn)
+    grass: [0x3e5a22, 0x4a6828, 0x354f1d, 0x587a30, 0x426024, 0x628436],
+    dirt: [0x4a3826, 0x3e3020, 0x564230, 0x3a2c1e],
+    bank: [0x2e2418, 0x3a2e1f, 0x261e14, 0x43352a],
+    bed: [0x2a251b, 0x221e16, 0x332c21, 0x28221a],
     dryBed: [0x6a5840, 0x5c4d38, 0x766248, 0x524438, 0x635340],
     cliff: [0x4a4a3c, 0x55554a, 0x3e3f34],
     baseHeight: 1.2,

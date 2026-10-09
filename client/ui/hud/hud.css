@@ -2684,12 +2684,17 @@ table.stats tr.you td {
   height: 2rem;
 }
 
+/* a named hook power-up: its name in the flow above the ring, so neighbours never overlap */
+.buff-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  flex: none;
+}
+
 .bf-name {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  margin-bottom: 0.2rem;
-  transform: translateX(-50%);
+  position: relative;
   padding: 0.04rem 0.35rem;
   border-radius: 0.4rem;
   font-family: var(--font-head);

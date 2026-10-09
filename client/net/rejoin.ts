@@ -109,4 +109,22 @@ export class RejoinStore {
   remove(url: string, code: string): void {
     this.save(this.load().filter((e) => !(e.url === url && e.code === code)));
   }
+
+  /**
+   * The player moved on (started a solo match): no dropped match on any server may be auto-rejoined
+   * any more. Tokens stay, so a manual rejoin by room code still takes the unit back inside the grace
+   * window. Returns how many entries were dropped before.
+   */
+  cancelAuto(): number {
+    const list = this.load();
+    let n = 0;
+    for (const e of list) {
+      if (e.dropped > 0) {
+        e.dropped = 0;
+        n++;
+      }
+    }
+    if (n > 0) this.save(list);
+    return n;
+  }
 }

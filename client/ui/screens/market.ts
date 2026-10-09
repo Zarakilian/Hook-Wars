@@ -1,15 +1,17 @@
-// Market: player listings with filters (family, slot, rarity) and price sorting; your own listings
-// with Cancel; and a Sell tab of your tradable copies with a price dialog and a 5% fee preview.
-// The server settles every trade (docs/economy.md, phase 1). Offline there is nobody to trade
-// with, so the screen says how to get online instead.
+// Market: player listings with filters (family, slot) and price sorting; your own listings with
+// Cancel; and a Sell tab of your tradable copies with a price dialog and a 5% fee preview. Every
+// trade is in Pearls and only Epic items trade here (Premium items trade on the Steam Community
+// Market in the Steam version). The server settles every trade (docs/economy.md). Offline there is
+// nobody to trade with, so the screen says how to get online instead.
 import { FAMILY_DEFS } from '../../../shared/constants.ts';
 import { COSMETIC_SLOTS, cosmeticById, SLOT_NAMES, type CosmeticDef, type CosmeticSlot } from '../../../shared/cosmetics.ts';
-import { canTrade, canTradeForPearls, MAX_LISTINGS_PER_ACCOUNT, type Listing, type OwnedItem } from '../../../shared/economy.ts';
+import { MAX_LISTINGS_PER_ACCOUNT, type Listing, type OwnedItem } from '../../../shared/economy.ts';
+import { isSteam } from '../../platform.ts';
 import { FAMILIES, type FamilyId } from '../../../shared/types.ts';
 import type { EconomyState } from '../../economy/types.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
-import { FEE_PCT, fmtPearls, fmtPrice, LIST_LIMITS, marketFee, RARITY_INFO, sellerReceives, serialText, SLOT_ICON, suggestPrice } from '../econ.ts';
+import { FEE_PCT, fmtPearls, fmtPrice, LIST_LIMITS, marketFee, marketTradable, sellerReceives, SLOT_ICON, suggestPrice } from '../econ.ts';
 import { icon } from '../icons.ts';
 import { itemArt, itemCard, rarityPill, type ItemCard } from '../items.ts';
 import { econUnavailable, hubShell } from '../shell.ts';
@@ -39,12 +41,12 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     return { el: shell.el, update: (s) => shell.update(s), destroy: () => shell.destroy() };
   }
   const releaseThumbs = ctx.thumbs.hold();
-  econ.refreshMarket();
+  // live listing updates only while this screen is open (they would share the line with a match)
+  const unwatch = econ.watchMarket();
 
   let tab: Tab = 'browse';
   let fam: Any<FamilyId> = 'all';
   let slot: Any<CosmeticSlot> = 'all';
-  let rarity: Any<'epic' | 'limited'> = 'all';
   let sort: Sort = 'low';
 
   // ---------------------------------------------------------------- filters (left)
@@ -82,16 +84,6 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       paint(true);
     },
   });
-  const raritySeg = segmented<Any<'epic' | 'limited'>>({
-    label: 'Rarity',
-    cls: 'seg-small mk-filter',
-    value: rarity,
-    options: [{ value: 'all', label: 'Any' }, { value: 'epic', label: 'Epic' }, { value: 'limited', label: 'Limited' }],
-    onChange: (v) => {
-      rarity = v;
-      paint(true);
-    },
-  });
   const sortSeg = segmented<Sort>({
     label: 'Sort',
     cls: 'seg-small mk-sort',
@@ -106,7 +98,6 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
   const filters = h('aside', { class: 'mk-filters' },
     h('div', { class: 'mk-f-title', text: 'Family' }), famSeg.el,
     h('div', { class: 'mk-f-title', text: 'Slot' }), slotSeg.el,
-    h('div', { class: 'mk-f-title', text: 'Rarity' }), raritySeg.el,
     h('div', { class: 'mk-fee cloth' },
       h('span', { class: 'mk-fee-big', text: `${FEE_PCT}%` }),
       h('span', { class: 'mk-fee-text', text: 'Market fee on every sale. It is taken from the seller, so the buyer pays the listed price.' })));
@@ -118,7 +109,8 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       h('strong', { text: 'Connect to an online server to trade' }),
       h('span', { text: 'The Market runs on the game server, which settles every trade. Your offline locker cannot trade.' })),
     button('Play Online', () => a.go('online'), { cls: 'primary', icon: 'globe' }));
-  const signing = h('div', { class: 'devnet-note hidden' }, icon('clock'), h('span', { text: 'Signing in to your account on this server...' }));
+  const signingText = h('span', { text: 'Signing in to your account on this server...' });
+  const signing = h('div', { class: 'info-note hidden' }, icon('clock'), signingText);
   const count = h('span', { class: 'mk-count' });
   const bar = h('div', { class: 'mk-bar' }, tabs.el, count, h('span', { class: 'head-spacer' }), sortSeg.el, refresh);
   const grid = h('div', { class: 'mk-grid', role: 'list' });
@@ -128,7 +120,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
 
   // ---------------------------------------------------------------- helpers
   const matches = (d: CosmeticDef | undefined): d is CosmeticDef =>
-    !!d && (fam === 'all' || d.family === fam) && (slot === 'all' || d.slot === slot) && (rarity === 'all' || d.rarity === rarity);
+    !!d && (fam === 'all' || d.family === fam) && (slot === 'all' || d.slot === slot);
   const myId = () => ctx.econ()?.account?.id ?? '';
   const sorted = (ls: Listing[]) => {
     const out = [...ls];
@@ -136,8 +128,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     else out.sort((x, y) => (sort === 'low' ? 1 : -1) * (priceValue(x) - priceValue(y)) || y.created - x.created);
     return out;
   };
-  // Pearls and USDC never mix in one sort order: Pearl listings first, then USDC
-  const priceValue = (l: Listing) => (l.price.cur === 'pearls' ? l.price.amount : 1e9 + l.price.amount * 100);
+  const priceValue = (l: Listing) => l.price.amount;
 
   let cards: { card: ItemCard; listing?: Listing; copy?: OwnedItem }[] = [];
   let lastKey = '';
@@ -158,7 +149,8 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     const local = e.mode === 'local';
     offline.classList.toggle('hidden', !local);
     signing.classList.toggle('hidden', local || !!e.account);
-    const key = `${tab}|${fam}|${slot}|${rarity}|${sort}|${e.mode}|${e.listings.map((l) => l.id).join(',')}|${(e.account?.owned ?? []).map((o) => `${o.instance}${o.listed ?? ''}`).join(',')}`;
+    signingText.textContent = e.accountError ?? 'Signing in to your account on this server...';
+    const key = `${tab}|${fam}|${slot}|${sort}|${e.mode}|${e.listings.map((l) => l.id).join(',')}|${(e.account?.owned ?? []).map((o) => `${o.instance}${o.listed ?? ''}`).join(',')}`;
     if (!force && key === lastKey) {
       paintCards(e);
       return;
@@ -179,7 +171,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       empty.classList.toggle('hidden', ls.length > 0 || local);
       empty.replaceChildren(icon(tab === 'mine' ? 'tag' : 'market'), h('span', { text: tab === 'mine' ? 'You have nothing for sale. Open Sell to list an Epic item.' : e.listings.length ? 'Nothing matches these filters.' : 'No listings yet. Be the first to sell something.' }));
     } else {
-      const copies = (e.account?.owned ?? []).filter((o) => canTrade(cosmeticById(o.item)) && matches(cosmeticById(o.item)));
+      const copies = (e.account?.owned ?? []).filter((o) => marketTradable(cosmeticById(o.item)) && matches(cosmeticById(o.item)));
       for (const o of copies) {
         const d = cosmeticById(o.item)!;
         const c = itemCard(ctx, d, () => openSell(o, d));
@@ -190,7 +182,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       const n = (e.account?.owned ?? []).filter((o) => o.listed).length;
       count.textContent = `${copies.length} tradable · ${n}/${MAX_LISTINGS_PER_ACCOUNT} listed`;
       empty.classList.toggle('hidden', copies.length > 0);
-      empty.replaceChildren(icon('pearl'), h('span', { text: 'No tradable items. Epic items from the Store can be sold here; Common, Rare and starter items cannot.' }));
+      empty.replaceChildren(icon('pearl'), h('span', { text: `No tradable items. Epic items from the Store can be sold here; Common, Rare and starter items cannot.${isSteam() ? ' Premium items trade on the Steam Community Market.' : ''}` }));
     }
     grid.scrollTop = 0;
     paintCards(e);
@@ -203,11 +195,11 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       if (x.listing) {
         const l = x.listing;
         const mine = l.seller === myId();
-        x.card.set({ owned: true, price: l.price, note: l.serial !== undefined ? serialText(l, x.card.def) : undefined });
-        x.card.el.classList.toggle('cant', !mine && (local || l.price.cur !== 'pearls' || pearls < l.price.amount));
+        x.card.set({ owned: true, price: l.price });
+        x.card.el.classList.toggle('cant', !mine && (local || pearls < l.price.amount));
       } else if (x.copy) {
         const o = x.copy;
-        x.card.set({ owned: true, price: null, note: o.listed ? 'Listed for sale' : o.serial !== undefined ? serialText(o, x.card.def) : canTradeForPearls(x.card.def) ? 'Click to sell' : 'USDC trading soon' });
+        x.card.set({ owned: true, price: null, note: o.listed ? 'Listed for sale' : 'Click to sell' });
         x.card.el.classList.toggle('listed', !!o.listed);
       }
     }
@@ -231,9 +223,8 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     let close = () => {};
     const pearls = e.account?.pearls ?? 0;
     const local = e.mode === 'local';
-    const usdc = l.price.cur !== 'pearls';
-    const short = l.price.cur === 'pearls' ? l.price.amount - pearls : 0;
-    const why = local ? 'Connect to an online server to trade.' : usdc ? 'USDC trades for Limited items arrive in a later update.' : short > 0 ? `You need ${fmtPearls(short)} more Pearls.` : '';
+    const short = l.price.amount - pearls;
+    const why = local ? 'Connect to an online server to trade.' : short > 0 ? `You need ${fmtPearls(short)} more Pearls.` : '';
     const buy = button(`Buy for ${fmtPrice(l.price)}`, () => {
       ctx.buyListing(l);
       close();
@@ -242,10 +233,9 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       itemHead(d),
       h('div', { class: 'mk-d-rows' },
         row('Seller', l.sellerName),
-        l.serial !== undefined ? row('Edition', serialText(l, d)) : null,
         row('Listed', ago(l.created)),
         row('Price', fmtPrice(l.price), 'strong'),
-        !usdc && !local ? row('Your Pearls after', fmtPearls(Math.max(0, pearls - (l.price.cur === 'pearls' ? l.price.amount : 0)))) : null),
+        !local ? row('Your Pearls after', fmtPearls(Math.max(0, pearls - l.price.amount))) : null),
       why ? h('p', { class: 'err-box', text: why }) : null);
     const dlg = h('div', { class: 'panel market-dialog' }, header('Buy from the Market', 'market', () => close()), body,
       h('footer', { class: 'panel-foot' }, h('span', { class: 'head-spacer' }), button('Cancel', () => close(), { cls: 'ghost' }), buy));
@@ -256,7 +246,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     let close = () => {};
     const dlg = h('div', { class: 'panel market-dialog' }, header('Your listing', 'tag', () => close()),
       h('div', { class: 'panel-body mk-dialog' }, itemHead(d),
-        h('div', { class: 'mk-d-rows' }, row('Price', fmtPrice(l.price), 'strong'), row('You receive', l.price.cur === 'pearls' ? `${fmtPearls(sellerReceives(l.price))} Pearls` : fmtPrice({ cur: 'usdc', amount: sellerReceives(l.price) })), row('Listed', ago(l.created)))),
+        h('div', { class: 'mk-d-rows' }, row('Price', fmtPrice(l.price), 'strong'), row('You receive', `${fmtPearls(sellerReceives(l.price))} Pearls`), row('Listed', ago(l.created)))),
       h('footer', { class: 'panel-foot' }, h('span', { class: 'head-spacer' }), button('Keep it listed', () => close(), { cls: 'ghost' }),
         button('Cancel listing', () => {
           ctx.noteCancel(l.id, l.instance);
@@ -277,7 +267,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     }
     let close = () => {};
     const local = e.mode === 'local';
-    const pearlTrade = canTradeForPearls(d);
+    const pearlTrade = marketTradable(d);
     const listedNow = (e.account?.owned ?? []).filter((x) => x.listed).length;
     const input = h('input', { class: 'text-in mk-price-in', type: 'number', inputmode: 'numeric', min: LIST_LIMITS.min, max: LIST_LIMITS.max, step: 1, 'aria-label': 'Price in Pearls' });
     input.value = String(suggestPrice(d));
@@ -294,7 +284,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     const valid = (v: number): boolean => {
       let why = '';
       if (local) why = 'Connect to an online server to trade.';
-      else if (!pearlTrade) why = 'Limited items trade for USDC on-chain, which arrives in a later update.';
+      else if (!pearlTrade) why = 'Only Epic items trade for Pearls here.';
       else if (listedNow >= MAX_LISTINGS_PER_ACCOUNT) why = `You already have ${MAX_LISTINGS_PER_ACCOUNT} items listed. Cancel one first.`;
       else if (!Number.isInteger(v)) why = 'Use a whole number of Pearls.';
       else if (v < LIST_LIMITS.min) why = `The lowest price is ${fmtPearls(LIST_LIMITS.min)} Pearls.`;
@@ -307,8 +297,8 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     const update = () => {
       const v = Math.floor(Number(input.value) || 0);
       const ok = Number.isFinite(v) && v > 0;
-      fee.textContent = ok ? `-${fmtPearls(marketFee({ cur: 'pearls', amount: v }))}` : '-';
-      get.textContent = ok ? fmtPearls(sellerReceives({ cur: 'pearls', amount: v })) : '-';
+      fee.textContent = ok ? `-${fmtPearls(marketFee({ amount: v }))}` : '-';
+      get.textContent = ok ? fmtPearls(sellerReceives({ amount: v })) : '-';
       valid(Number(input.value));
     };
     input.addEventListener('input', update);
@@ -321,7 +311,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       update();
     };
     const body = h('div', { class: 'panel-body mk-dialog' },
-      itemHead(d, o.serial !== undefined ? `Edition ${serialText(o, d)}` : undefined),
+      itemHead(d),
       h('label', { class: 'mk-price' },
         h('span', { class: 'mk-price-label', text: 'Your price' }),
         h('span', { class: 'mk-price-row' }, icon('pearl', 'mk-price-ico'), input, h('span', { class: 'mk-price-cur', text: 'Pearls' }),
@@ -347,7 +337,6 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
 
   const unsub = ctx.onEcon(() => paint());
   paint(true);
-  void RARITY_INFO;
 
   return {
     el: shell.el,
@@ -356,6 +345,7 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     },
     destroy() {
       unsub();
+      unwatch();
       shell.destroy();
       releaseThumbs();
     },

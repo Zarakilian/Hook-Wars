@@ -16,6 +16,7 @@ function mulberry(a: number): () => number {
 }
 import { FAMILIES, type ItemId, type MatchConfig, type PlayerInfo, type PlayerInput, type Snapshot, type Team, type UpgradeStat } from '../../shared/types.ts';
 import type { Connection } from './connection.ts';
+import { CATCH_UP_MS, CATCH_UP_TICKS } from './interp.ts';
 
 export interface MatchSession {
   readonly local: boolean;
@@ -112,12 +113,12 @@ export class LocalSession implements MatchSession {
     if (this.last < 0) this.last = nowMs;
     if (nowMs <= this.last) return; // clocks must only move forward
     // catch up as far as the input side does (GameClient: 0.5 s, 15 ticks), so every input has its tick
-    const dt = Math.min(0.5, (nowMs - this.last) / 1000);
+    const dt = Math.min(CATCH_UP_MS, nowMs - this.last) / 1000;
     this.last = nowMs;
     if (this.paused) return;
     this.acc += dt;
     let steps = 0;
-    while (this.acc >= TICK_DT && steps < 15) {
+    while (this.acc >= TICK_DT && steps < CATCH_UP_TICKS) {
       this.acc -= TICK_DT;
       steps++;
       this.sim.step();

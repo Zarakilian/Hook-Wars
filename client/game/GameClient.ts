@@ -1,7 +1,7 @@
 // One running match on the client: input -> session, snapshots -> interpolated views,
 // events -> effects, audio and HUD. Owns every per-match render object.
 import * as THREE from 'three';
-import { BAL, HOOK_LEVELS, TICK_DT } from '../../shared/constants.ts';
+import { BAL, TICK_DT } from '../../shared/constants.ts';
 import { channelDepthAt } from '../../shared/maps/helpers.ts';
 import { getMap } from '../../shared/maps/index.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
@@ -13,7 +13,7 @@ import {
   Btn, UFlag, UnitState, type GameEvent, type MatchConfig, type PlayerInfo, type ScoreRow, type Snapshot, type UnitSnap, type YouSnap,
 } from '../../shared/types.ts';
 import type { Frame } from '../net/interp.ts';
-import { SnapshotBuffer } from '../net/interp.ts';
+import { CATCH_UP_MS, CATCH_UP_TICKS, FRAME_CLAMP_MS, SnapshotBuffer } from '../net/interp.ts';
 import { Predictor } from '../net/prediction.ts';
 import type { MatchSession } from '../net/session.ts';
 import {
@@ -28,6 +28,7 @@ import { createWater, syncWaterMovers } from '../render/world/water.ts';
 import type { Settings } from '../settings.ts';
 import type { Hud, HudFrame } from '../ui/types.ts';
 import { CameraRig } from './camera.ts';
+import { ghostHookParams } from './ghost.ts';
 import { InputController } from './input.ts';
 
 export interface GameClientDeps {
@@ -249,22 +250,17 @@ export class GameClient {
 
   private startGhost(you: YouSnap): void {
     const aim = this.input.peekPressAim() ?? this.input.aim;
-    const items = you.items;
-    const has = (t: string) => you.buffs.some((b) => b.t === t);
-    const fx =
-      (items.some((s) => s && s.id === 'ember') ? 1 : 0) |
-      (items.some((s) => s && s.id === 'ricochet') || has('bouncy') ? 2 : 0) |
-      (has('bendy') ? 4 : 0) |
-      (has('longshot') ? 8 : 0);
+    // speed, range and look of the hook the server will launch (Long Line: +15% speed, +50% range)
+    const hook = ghostHookParams(you);
     this.ghost?.chain?.dispose();
     const start = this.time + BAL.hookWindup;
     this.ghost = {
       start,
       deadline: start + this.session.rtt() / 1000 + (this.buffer.delay + 1) * TICK_DT + 0.1,
-      speed: HOOK_LEVELS.speed[you.up.speed],
-      radius: HOOK_LEVELS.width[you.up.width],
-      range: you.hookRange,
-      fx,
+      speed: hook.speed,
+      radius: hook.radius,
+      range: hook.range,
+      fx: hook.fx,
       aimX: aim.x,
       aimZ: aim.z,
       dx: 0,
@@ -299,7 +295,7 @@ export class GameClient {
     this.clockNow = now;
     if (this.last < 0) this.last = now;
     const rawMs = now - this.last;
-    const dtMs = clamp(rawMs, 0, 100);
+    const dtMs = clamp(rawMs, 0, FRAME_CLAMP_MS);
     this.last = now;
     const dt = dtMs / 1000;
     this.time += dt;
@@ -310,20 +306,21 @@ export class GameClient {
       this.input.takePressed(); // solo pause: drop presses and send nothing while the sim is frozen
       this.input.takePressAim();
     } else {
-      // inputs use the raw elapsed time (up to 0.5 s), rendering keeps the 100 ms clamp
-      this.tickAcc += clamp(rawMs, 0, 500) / 1000;
-      while (this.tickAcc >= TICK_DT && n < 15) {
+      // inputs use the raw elapsed time (up to 0.5 s), animation and the camera keep the 100 ms clamp
+      this.tickAcc += clamp(rawMs, 0, CATCH_UP_MS) / 1000;
+      while (this.tickAcc >= TICK_DT && n < CATCH_UP_TICKS) {
         this.tickAcc -= TICK_DT;
         this.localTick();
         n++;
       }
-      if (n === 15) this.tickAcc = 0;
+      if (n === CATCH_UP_TICKS) this.tickAcc = 0;
     }
     // solo: step the sim after this frame's input was queued, so nothing waits a tick
     this.session.pump(now);
     const alpha = this.tickAcc / TICK_DT;
 
-    const renderTick = this.buffer.advance(now, dtMs);
+    // solo: the render clock moves as far as the sim just stepped (up to 0.5 s) and holds while paused
+    const renderTick = this.buffer.frameTick(now, rawMs, this.paused);
     const f = this.buffer.sample(renderTick);
     if (!f) {
       this.engine.update(dt, this.time, this.cam.focusPoint.x, this.cam.focusPoint.z);

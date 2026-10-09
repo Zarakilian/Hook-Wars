@@ -766,7 +766,7 @@ const craneHook: SkinRecipe = {
   coil: { x: 0, z: -0.42, r: 0.1 },
   link: 'chain',
   tether: 'cable',
-  tetherLen: 0.2,
+  tetherLen: 0.08,
   hot: [-0.2, 0, 0.06],
   heat: HOT_FRONT(-0.25, 0.1),
   draw(b) {
@@ -812,7 +812,7 @@ const magnetHook: SkinRecipe = {
   coil: { x: 0, z: -0.42, r: 0.09 },
   link: 'hose',
   tether: 'cable',
-  tetherLen: 0.2,
+  tetherLen: 0.08,
   hot: [0, 0, 0.26],
   heat: HOT_FRONT(-0.05, 0.25),
   draw(b) {
@@ -880,7 +880,7 @@ const clawGrabber: SkinRecipe = {
   closable: true,
   link: 'steelcable',
   tether: 'cable',
-  tetherLen: 0.22,
+  tetherLen: 0.1,
   hot: [0, 0, 0.26],
   heat: HOT_FRONT(-0.05, 0.25),
   draw: (b, closed) => clawDraw(b, closed),

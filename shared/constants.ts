@@ -175,11 +175,14 @@ export interface FamilyDef {
 export const FAMILY_DEFS: Record<FamilyId, FamilyDef> = {
   brawler: { id: 'brawler', name: 'Harbour Brawler', title: 'Fishmonger of the Docks', passive: 'Sea Legs', passiveBlurb: '+8% move speed.', hpMul: 1, speedMul: 1.08, hookCdMul: 1, regenOutOfCombat: 6 },
   ogre: { id: 'ogre', name: 'Swamp Ogre', title: 'Bogmaw of the Mire', passive: 'Mudskin', passiveBlurb: 'Out of combat regeneration is doubled.', hpMul: 1, speedMul: 1, hookCdMul: 1, regenOutOfCombat: 12 },
-  bot: { id: 'bot', name: 'Butcher-Bot', title: 'Rivet-Ribbed Reclaimer', passive: 'Overclock', passiveBlurb: 'Chain Hook cooldown -8%.', hpMul: 1, speedMul: 1, hookCdMul: 0.92, regenOutOfCombat: 6 },
+  bot: { id: 'bot', name: 'Dredge-Bot', title: 'Rivet-Ribbed Reclaimer', passive: 'Overclock', passiveBlurb: 'Chain Hook cooldown -8%.', hpMul: 1, speedMul: 1, hookCdMul: 0.92, regenOutOfCombat: 6 },
 };
 
 // Rune ids are wire values and never change. Display names and colours are our own nautical set
 // (the review flagged the old Haste / Double Damage / Bounty in red / blue / gold as a Dota copy).
+/** What players call the characters on screen (code keeps the internal name Pudgy). */
+export const UNIT_NOUN = { one: 'Lunker', many: 'Lunkers' } as const;
+
 export const RUNE_NAMES: Record<RuneType, string> = {
   haste: 'Tailwind',
   double: 'Kraken Ink',

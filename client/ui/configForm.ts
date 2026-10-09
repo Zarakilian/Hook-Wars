@@ -51,7 +51,7 @@ export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; on
     );
     const thumb = h('img', { class: 'mc-thumb', alt: '', src: mapThumb(id, 'deep'), draggable: 'false' });
     mapThumbs.set(id, thumb);
-    const b = h('button', { class: 'map-card', type: 'button', role: 'radio', 'aria-label': m.name, title: `${m.name}: ${m.blurb}`, style: `--mood:${moodGradient(m)}` },
+    const b = h('button', { class: 'map-card', type: 'button', role: 'radio', 'aria-label': m.name, title: `${m.name}: ${m.blurb} Mood: ${moodLabel(m)}.`, style: `--mood:${moodGradient(m)}` },
       h('span', { class: 'mc-art' }, thumb, h('span', { class: 'mc-mood', 'aria-hidden': 'true' }), h('span', { class: 'mc-check', 'aria-hidden': 'true' }, icon('check')),
         h('span', { class: 'mc-swatch', title: `Mood: ${moodLabel(m)}` }, ...moodSwatch(m).map((c) => h('span', { class: 'mc-sw', style: `background:${c}` })), h('span', { class: 'mc-sw-label', text: moodLabel(m) }))),
       h('span', { class: 'mc-body' },

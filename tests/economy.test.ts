@@ -1,30 +1,34 @@
-// Economy service: accounts, persistence, store, rewards, marketplace, wallet link and USDC orders.
-// Runs against MockChain and a temp data folder. No network calls.
+// Economy (standard edition: Pearls only): accounts, the economy.db store, the Pearl store, match
+// rewards, the Pearl market and the client economy. Runs on temp data folders. No network calls.
+// Tests named "F<n>:" are the regression tests for review finding n (docs: fix-progress notes).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cosmeticById, DEFAULT_LOADOUT, matchPearls } from '../shared/cosmetics.ts';
+import { UNIT_NOUN } from '../shared/constants.ts';
 import {
-  base58Decode, base58Encode, DAILY_PEARL_CAP, isSolanaAddress, marketFee, MARKET_FEE_BPS, parseEconomyClientMsg, sellerProceeds, SOLO_PEARL_RATE,
+  DAILY_PEARL_CAP, DAILY_PEARL_CAP_PER_IP, ECONOMY_MSG_TYPES, MARKET_FEE_BPS, MARKET_MIN_MATCHES, marketFee, parseEconomyClientMsg, sellerProceeds, SOLO_PEARL_RATE,
   type AccountView, type EconomyClientMsg, type Listing,
 } from '../shared/economy.ts';
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import type { ScoreRow } from '../shared/types.ts';
-import type { EconomyConn, MatchResult } from '../server/economy/api.ts';
-import { MockChain } from '../server/economy/chain.ts';
+import { createNullEconomy, type EconomyConn, type MatchResult, type ServerEconomy } from '../server/economy/api.ts';
 import { loadEconomyConfig } from '../server/economy/config.ts';
-import { joinWireTx, requiredSigners, sha256Hex, splitWireTx } from '../server/economy/crypto.ts';
-import { EconomyService } from '../server/economy/service.ts';
-import { AccountStore, SCHEMA_VERSION } from '../server/economy/store.ts';
+import { sha256Hex } from '../server/economy/crypto.ts';
+import { createEconomyFromConfig } from '../server/economy/index.ts';
+import { EconomyService, MARKET_WATCH_MS, netKey } from '../server/economy/service.ts';
+import { AccountStore, DB_FILE, StoreLockedError, StoreUnreadableError, type AccountRec } from '../server/economy/store.ts';
+import { createEconomy, MARKET_RENEW_MS, SIGN_IN_MS } from '../client/economy/index.ts';
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 const EPIC = 'brawler.lighthouse_helm'; // epic head, 2400 Pearls, tradable for Pearls
 const COMMON = 'brawler.souwester'; // common head, 300 Pearls
-const LIMITED = 'brawler.golden_harpoon'; // limited hook, 9 USDC, supply 500
+const PREMIUM = 'brawler.golden_harpoon'; // premium hook: Steam version only
 const T0 = Date.UTC(2026, 9, 8, 12, 0, 0);
+const DAY = 24 * 3600_000;
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -36,16 +40,15 @@ interface TestConn extends EconomyConn {
 
 function tempDir(t: { after: (fn: () => void) => void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'hookwars-econ-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   return dir;
 }
 
-function makeEconomy(dir: string | null, opts: { chain?: MockChain; perIp?: number } = {}) {
+function makeEconomy(dir: string | null, opts: { perIp?: number } = {}) {
   const clock = { t: T0 };
-  const chain = opts.chain ?? new MockChain({ now: () => clock.t });
   const store = new AccountStore({ dir, debounceMs: 5, log: () => {} });
-  const svc = new EconomyService({ store, chain, domain: 'hookwars.test', network: 'off', now: () => clock.t, log: () => {}, newAccountsPerIpHour: opts.perIp });
-  return { svc, store, chain, clock };
+  const svc = new EconomyService({ store, now: () => clock.t, log: () => {}, newAccountsPerIpHour: opts.perIp });
+  return { svc, store, clock };
 }
 
 let nextConn = 1;
@@ -70,6 +73,10 @@ function last<T extends ServerMsg['t']>(c: TestConn, t: T): Extract<ServerMsg, {
   return undefined;
 }
 
+function count(c: TestConn, t: ServerMsg['t']): number {
+  return c.inbox.filter((m) => m.t === t).length;
+}
+
 function acct(c: TestConn): AccountView {
   const m = last(c, 'account');
   assert.ok(m, 'expected an account message');
@@ -80,8 +87,8 @@ function errors(c: TestConn): string[] {
   return c.inbox.filter((m): m is Extract<ServerMsg, { t: 'econError' }> => m.t === 'econError').map((m) => m.code);
 }
 
-/** Connect and say hello, returning the issued token (if a new account was made). */
-async function hello(svc: EconomyService, c: TestConn, token?: string): Promise<string | undefined> {
+/** Connect and say hello, returning the issued token (if a new token was handed out). */
+async function hello(svc: ServerEconomy, c: TestConn, token?: string): Promise<string | undefined> {
   c.profile = svc.onHello(c, token);
   await tick();
   return last(c, 'account')?.token;
@@ -95,87 +102,87 @@ function row(i: number, over: Partial<ScoreRow> = {}): ScoreRow {
   return { i, k: 3, d: 1, a: 2, hh: 6, ht: 12, bs: 0, dr: 1, sv: 1, dmg: 400, g: 300, ...over };
 }
 
+function rec(svc: EconomyService, c: TestConn): AccountRec {
+  const a = svc.accountById(c.accountId!);
+  assert.ok(a, 'account in memory');
+  return a;
+}
+
 function givePearls(svc: EconomyService, c: TestConn, n: number): void {
-  svc.accountById(c.accountId!)!.pearls += n;
+  rec(svc, c).pearls += n;
 }
 
-function ed25519Wallet(): { address: string; priv: KeyObject; raw: Uint8Array } {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' });
-  const raw = new Uint8Array(spki.subarray(spki.length - 32));
-  return { address: base58Encode(raw), priv: privateKey, raw };
+/** An account old enough, and with enough matches, to trade on the market. */
+function veteran(svc: EconomyService, c: TestConn, now = T0): void {
+  const a = rec(svc, c);
+  a.created = now - 2 * DAY;
+  a.stats.matches = Math.max(a.stats.matches, MARKET_MIN_MATCHES);
 }
 
-async function linkWallet(svc: EconomyService, c: TestConn, w = ed25519Wallet()) {
-  send(svc, c, { t: 'walletChallenge' });
-  const ch = last(c, 'walletChallenge');
-  assert.ok(ch, 'challenge issued');
-  const sig = sign(null, Buffer.from(ch.message, 'utf8'), w.priv);
-  send(svc, c, { t: 'walletLink', address: w.address, signature: base58Encode(new Uint8Array(sig)) });
-  return w;
+/** A fake browser localStorage for the client economy. */
+function fakeStorage(): Map<string, string> {
+  const ls = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => ls.get(k) ?? null,
+    setItem: (k: string, v: string) => void ls.set(k, String(v)),
+    removeItem: (k: string) => void ls.delete(k),
+  };
+  return ls;
 }
 
-/** What a wallet does with solana:signTransaction: sign the message bytes as given, in its own slot. */
-function walletSign(txB64: string, w: { raw: Uint8Array; priv: KeyObject }): string {
-  const wire = splitWireTx(new Uint8Array(Buffer.from(txB64, 'base64')));
-  assert.ok(wire);
-  const signers = requiredSigners(wire.message)!;
-  const at = signers.findIndex((k) => Buffer.from(k).equals(Buffer.from(w.raw)));
-  assert.ok(at > 0, 'the player is a required signer, after the fee payer');
-  wire.signatures[at] = new Uint8Array(sign(null, wire.message, w.priv));
-  return Buffer.from(joinWireTx(wire)).toString('base64');
+function view(id: string, over: Partial<AccountView> = {}): AccountView {
+  return { id, pearls: 0, owned: [], loadouts: { brawler: {}, ogre: {}, bot: {} } as AccountView['loadouts'], stats: { matches: 0, wins: 0, kills: 0, hooksHit: 0 }, ...over };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Encoding
-// ---------------------------------------------------------------------------------------------
-
-test('base58 matches the Bitcoin alphabet vectors and round trips random bytes', () => {
-  const vectors: [string, string][] = [
-    ['61', '2g'], ['626262', 'a3gV'], ['636363', 'aPEr'], ['572e4794', '3EFU7m'], ['10c8511e', 'Rt5zm'], ['00000000000000000000', '1111111111'],
-    ['73696d706c792061206c6f6e6720737472696e67', '2cFupjhnEsSn59qHXstmK2ffpLv2'],
-    ['00eb15231dfceb60925886b67d065299925915aeb172c06647', '1NS17iag9jJgTHD1VXjvLCEnZuQ3rJDE9L'],
-    ['000111d38e5fc9071ffcd20b4a763cc9ae4f252bb4e48fd66a835e252ada93ff480d6dd43dc62a641155a5', '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'],
-  ];
-  for (const [hex, b58] of vectors) {
-    assert.equal(base58Encode(Buffer.from(hex, 'hex')), b58);
-    assert.equal(Buffer.from(base58Decode(b58)!).toString('hex'), hex);
-  }
-  // Solana's System Program is 32 zero bytes
-  assert.deepEqual([...base58Decode('11111111111111111111111111111111')!], new Array(32).fill(0));
-  assert.ok(isSolanaAddress('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'));
-  assert.equal(isSolanaAddress('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5D'), false);
-  for (const bad of ['', '0', 'O', 'I', 'l', 'abc+', '1'.repeat(129)]) assert.equal(base58Decode(bad), null, `rejects ${JSON.stringify(bad).slice(0, 12)}`);
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
-  for (let i = 0; i < 300; i++) {
-    const bytes = new Uint8Array(1 + Math.floor(rnd() * 70)).map(() => (rnd() < 0.1 ? 0 : Math.floor(rnd() * 256)));
-    assert.deepEqual(base58Decode(base58Encode(bytes)), bytes);
-  }
+const LEGACY_ACC = (id: string, over: Record<string, unknown> = {}) => ({
+  id, tokenHash: sha256Hex(id), created: T0, seen: T0, name: 'X', pearls: 100, owned: [], loadouts: {}, wallet: null,
+  stats: { matches: 1, wins: 0, kills: 0, hooksHit: 0 }, day: '', dayPearls: 0, lastPaid: 0, ...over,
 });
+const legacyFile = (accounts: Record<string, unknown>, savedAt: string, listings: Record<string, unknown> = {}) =>
+  JSON.stringify({ v: 1, savedAt, accounts, listings, orders: { ord_x1: { id: 'ord_x1' } }, serials: { [PREMIUM]: 3 } });
 
-test('economy messages are validated before they reach the service', () => {
+// ---------------------------------------------------------------------------------------------
+// Messages and settings
+// ---------------------------------------------------------------------------------------------
+
+test('economy messages: only the Pearl wire format parses, and ids need their server prefix', () => {
+  assert.deepEqual([...ECONOMY_MSG_TYPES].sort(), ['equip', 'market', 'marketBuy', 'marketCancel', 'marketSell', 'storeBuy']);
   assert.equal(parseEconomyClientMsg({ t: 'storeBuy', item: 'nope.item' }), null);
   assert.equal(parseEconomyClientMsg({ t: 'marketSell', instance: 'itm_abcdefgh', price: { cur: 'pearls', amount: 10 } }), null, 'below the minimum price');
   assert.equal(parseEconomyClientMsg({ t: 'marketSell', instance: 'itm_abcdefgh', price: { cur: 'pearls', amount: 99.5 } }), null, 'whole Pearls only');
-  assert.equal(parseEconomyClientMsg({ t: 'usdcSubmit', order: 'ord_abcdefgh', tx: 'not base64!' }), null);
-  assert.equal(parseEconomyClientMsg({ t: 'walletLink', address: 'short', signature: 'x' }), null);
+  assert.equal(parseEconomyClientMsg({ t: 'marketSell', instance: 'itm_abcdefgh', price: { cur: 'usdc', amount: 5 } }), null, 'no USDC prices');
+  for (const t of ['walletChallenge', 'walletLink', 'usdcOrder', 'usdcSubmit']) assert.equal(parseEconomyClientMsg({ t, item: COMMON }), null, `${t} is gone`);
+  for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf', '__defineGetter__', 'abcdefgh']) {
+    assert.equal(parseEconomyClientMsg({ t: 'marketBuy', listing: id }), null, `listing id ${id}`);
+    assert.equal(parseEconomyClientMsg({ t: 'marketSell', instance: id, price: { cur: 'pearls', amount: 500 } }), null, `instance id ${id}`);
+  }
   assert.ok(parseEconomyClientMsg({ t: 'marketSell', instance: 'itm_abcdefgh', price: { cur: 'pearls', amount: 500 } }));
+  assert.ok(parseEconomyClientMsg({ t: 'marketBuy', listing: 'lst_abcdefgh' }));
 });
 
-test('ECONOMY_NETWORK=mainnet is refused and points at the legal checklist', () => {
+test('settings from the Solana build are ignored with one log line', () => {
   const lines: string[] = [];
-  const ec = loadEconomyConfig({ serverName: 'Test' }, { ECONOMY_NETWORK: 'mainnet', NODE_TEST_CONTEXT: '1' }, (s) => lines.push(s));
-  assert.equal(ec.network, 'off');
-  assert.equal(ec.devnet, null);
-  assert.ok(lines.some((l) => /Legal checklist/.test(l)), lines.join('\n'));
-  const dev = loadEconomyConfig({ serverName: 'Test' }, { ECONOMY_NETWORK: 'devnet', NODE_TEST_CONTEXT: '1' }, () => {});
-  assert.equal(dev.devnet, null, 'devnet without its settings stays off');
-  assert.ok(dev.problems.some((p) => /ECONOMY_KEYPAIR_PATH/.test(p)));
+  const ec = loadEconomyConfig({ serverName: 'Test' }, { ECONOMY_NETWORK: 'devnet', USDC_MINT: 'x', NODE_TEST_CONTEXT: '1' }, (s) => lines.push(s));
+  assert.equal(ec.enabled, true);
+  assert.equal(ec.dataDir, null, 'memory only under the test runner');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /ECONOMY_NETWORK, USDC_MINT are not used.*edition\/solana/);
+  assert.deepEqual(loadEconomyConfig({ serverName: 'T' }, { NODE_TEST_CONTEXT: '1' }, () => {}).problems, []);
+});
+
+test('the null economy tells the client why there is no account, once, after hello', async () => {
+  const econ = createNullEconomy();
+  const c = conn();
+  await hello(econ, c);
+  assert.deepEqual(errors(c), ['disabled']);
+  assert.equal(count(c, 'account'), 0);
+  econ.route(c, { t: 'storeBuy', item: COMMON });
+  assert.equal(last(c, 'econError')?.re, 'storeBuy');
+  econ.unwatchMarket(c);
 });
 
 // ---------------------------------------------------------------------------------------------
-// Accounts and persistence
+// Accounts and tokens
 // ---------------------------------------------------------------------------------------------
 
 test('a guest gets an account and a token; the token brings the same account back', async () => {
@@ -189,24 +196,121 @@ test('a guest gets an account and a token; the token brings the same account bac
   assert.equal(await hello(svc, b, token), undefined, 'a known token gets no new token');
   assert.equal(acct(b).id, id);
   const c = conn();
-  const other = await hello(svc, c, 'x'.repeat(43));
-  assert.ok(other && other !== token, 'an unknown token gets a new guest account');
+  const other = await hello(svc, c, 'x'.repeat(30));
+  assert.ok(other && other !== token, 'a token not in the shape this server issues gets a new one');
   assert.notEqual(acct(c).id, id);
   svc.close();
 });
 
-test('new guest accounts are limited per IP address', async () => {
-  const { svc } = makeEconomy(null, { perIp: 2 });
+test('F16: an unknown token in the issued shape is kept: bound to the new account, no new token sent', async (t) => {
+  const dir = tempDir(t);
+  const one = makeEconomy(dir);
+  const token = 'C'.repeat(43);
+  const a = conn();
+  assert.equal(await hello(one.svc, a, token), undefined, 'no replacement token, so the browser keeps its own');
+  assert.ok(a.accountId);
+  const again = conn();
+  await hello(one.svc, again, token);
+  assert.equal(again.accountId, a.accountId, 'the same token finds the same account');
+  givePearls(one.svc, a, 40);
+  one.store.dirtyAccount(a.accountId!);
+  one.svc.close();
+  const two = makeEconomy(dir);
+  const back = conn();
+  assert.equal(await hello(two.svc, back, token), undefined);
+  assert.equal(acct(back).pearls, 40, 'after a restart the token still finds the account');
+  two.svc.close();
+});
+
+test('F16: the browser keeps the previous token when a server sends a different one', () => {
+  const ls = fakeStorage();
+  const e = createEconomy();
+  const key = 'ws://x/ws';
+  e.attachServer(() => {}, key);
+  e.receive({ t: 'account', a: view('acc_1'), token: 'D'.repeat(43) });
+  e.receive({ t: 'account', a: view('acc_1') });
+  assert.equal(e.tokenFor(key), 'D'.repeat(43));
+  e.receive({ t: 'account', a: view('acc_2'), token: 'E'.repeat(43) });
+  assert.equal(e.tokenFor(key), 'E'.repeat(43));
+  const prev = JSON.parse(ls.get('hookwars.tokens.prev.v1') ?? '{}') as Record<string, string[]>;
+  assert.deepEqual(prev[key], ['D'.repeat(43)], 'the old token is kept for recovery');
+  e.detachServer();
+});
+
+test('F21: new guest accounts are limited per internet connection, and a refused player is told why', async () => {
+  const { svc, clock } = makeEconomy(null, { perIp: 2 });
   assert.ok(await hello(svc, conn('10.9.9.9')));
-  assert.ok(await hello(svc, conn('10.9.9.9')));
+  const rebound = conn('10.9.9.9');
+  await hello(svc, rebound, 'F'.repeat(43)); // the second account, bound to its own token
+  assert.ok(rebound.accountId);
+  svc.onDisconnect(rebound); // an empty guest: dropped from memory
+  const back = conn('10.9.9.9');
+  await hello(svc, back, 'F'.repeat(43));
+  assert.ok(back.accountId, 'the same browser coming back within the hour does not count twice');
   const third = conn('10.9.9.9');
   assert.equal(await hello(svc, third), undefined);
   assert.equal(third.accountId, null);
+  const why = last(third, 'econError');
+  assert.equal(why?.code, 'account_limit');
+  assert.equal(why?.re, undefined, 'an account-state message, not an answer to a request');
+  assert.match(why!.message, /Too many new accounts.*Try again in an hour/);
   send(svc, third, { t: 'storeBuy', item: COMMON });
-  assert.deepEqual(errors(third), ['no_account']);
+  assert.equal(errors(third).at(-1), 'no_account');
   assert.ok(await hello(svc, conn('10.9.9.8')), 'another address is not affected');
+  const v6a = conn('2001:db8:5:6::1');
+  await hello(svc, v6a);
+  await hello(svc, conn('2001:db8:5:6::2'));
+  const v6c = conn('2001:db8:5:6:aaaa::3');
+  await hello(svc, v6c);
+  assert.equal(v6c.accountId, null, 'IPv6 addresses in one /64 are one connection');
+  clock.t += 3601_000;
+  assert.ok(await hello(svc, conn('10.9.9.9')), 'an hour later it works again');
   svc.close();
 });
+
+test('F21: the client shows why it has no account instead of "Still signing in" or a Pearl shortfall', (t) => {
+  fakeStorage();
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const e = createEconomy();
+  e.attachServer(() => {}, 'ws://y/ws');
+  assert.equal(e.state().accountError, null, 'signing in');
+  e.receive({ t: 'econError', code: 'account_limit', message: 'Too many new accounts were made from your internet connection.' });
+  assert.match(e.state().accountError ?? '', /Too many new accounts/);
+  e.buyWithPearls(EPIC);
+  assert.match(e.state().error ?? '', /Too many new accounts/);
+  assert.doesNotMatch(e.state().error ?? '', /more Pearls/);
+  e.listForSale('itm_abcdefgh', 500);
+  assert.match(e.state().error ?? '', /Too many new accounts/);
+  // a successful action elsewhere never clears the reason
+  e.receive({ t: 'econError', code: 'pearls', message: 'x', re: 'storeBuy' });
+  assert.match(e.state().accountError ?? '', /Too many new accounts/);
+
+  // a server that never answers: after SIGN_IN_MS the screens stop saying "Signing in..."
+  const quiet = createEconomy();
+  quiet.attachServer(() => {}, 'ws://z/ws');
+  t.mock.timers.tick(SIGN_IN_MS - 1);
+  assert.equal(quiet.state().accountError, null);
+  t.mock.timers.tick(2);
+  assert.match(quiet.state().accountError ?? '', /did not sign you in/);
+  quiet.receive({ t: 'account', a: view('acc_9') });
+  assert.equal(quiet.state().accountError, null, 'an account clears it');
+  // a server that signs in on time never shows it
+  const ok = createEconomy();
+  ok.attachServer(() => {}, 'ws://w/ws');
+  ok.receive({ t: 'account', a: view('acc_8') });
+  t.mock.timers.tick(SIGN_IN_MS * 2);
+  assert.equal(ok.state().accountError, null);
+  // a server without accounts says so
+  const off = createEconomy();
+  off.attachServer(() => {}, 'ws://v/ws');
+  off.receive({ t: 'econError', code: 'disabled', message: 'This server runs without accounts.' });
+  assert.match(off.state().accountError ?? '', /without accounts/);
+  for (const x of [e, quiet, ok, off]) x.detachServer();
+});
+
+// ---------------------------------------------------------------------------------------------
+// The store on disk (economy.db)
+// ---------------------------------------------------------------------------------------------
 
 test('accounts survive a restart, and only a hash of the token is written', async (t) => {
   const dir = tempDir(t);
@@ -215,14 +319,16 @@ test('accounts survive a restart, and only a hash of the token is written', asyn
   const b = conn('10.0.0.2');
   const token = (await hello(one.svc, a))!;
   await hello(one.svc, b);
+  const writes = one.store.writes;
   one.svc.onMatchEnd([{ connId: a.id, won: true, row: row(0) }, { connId: b.id, won: false, row: row(1) }]);
+  assert.equal(one.store.writes, writes + 1, 'match Pearls are committed at once, both players in one transaction');
   const pearls = acct(a).pearls;
   assert.ok(pearls > 0);
   one.svc.close();
-  const disk = readFileSync(join(dir, 'economy.json'), 'utf8');
+  const disk = readFileSync(join(dir, DB_FILE));
   assert.ok(!disk.includes(token), 'the token itself is never stored');
   assert.ok(disk.includes(sha256Hex(token)));
-  assert.equal(JSON.parse(disk).v, SCHEMA_VERSION);
+  assert.ok(existsSync(join(dir, `${DB_FILE}.bak`)), 'one backup per start');
 
   const two = makeEconomy(dir);
   const again = conn();
@@ -233,44 +339,190 @@ test('accounts survive a restart, and only a hash of the token is written', asyn
   two.svc.close();
 });
 
-test('a crash mid-write never loses data: newest complete file wins, torn files are ignored', (t) => {
+test('F10: a second server on a held data folder runs without an economy and hands out no tokens', async (t) => {
   const dir = tempDir(t);
-  const acc = (id: string, pearls: number) => ({
-    id, tokenHash: sha256Hex(id), created: T0, seen: T0, name: 'X', pearls, owned: [], loadouts: {}, wallet: null,
-    stats: { matches: 1, wins: 0, kills: 0, hooksHit: 0 }, day: '', dayPearls: 0, lastPaid: 0,
-  });
-  const file = (pearls: number, savedAt: string) => JSON.stringify({ v: 1, savedAt, accounts: { acc_test0001: acc('acc_test0001', pearls) }, listings: {}, orders: {}, serials: {} });
-  writeFileSync(join(dir, 'economy.json'), file(100, '2026-10-08T10:00:00.000Z'));
-  // fsync done, rename not: a complete newer temp file
-  writeFileSync(join(dir, 'economy.json.tmp-1-aaaaaa'), file(250, '2026-10-08T10:00:05.000Z'));
-  // a torn temp file from a crash during the write itself
-  writeFileSync(join(dir, 'economy.json.tmp-2-bbbbbb'), file(999, '2026-10-08T10:00:09.000Z').slice(0, 60));
-  const s1 = new AccountStore({ dir, log: () => {} });
-  assert.equal(s1.db.accounts.acc_test0001.pearls, 250);
-  s1.close();
-  assert.ok(!readdirSync(dir).some((f) => f.includes('.tmp-')), 'temp files are cleaned up');
+  const first = new AccountStore({ dir, log: () => {} });
+  assert.throws(() => new AccountStore({ dir, log: () => {} }), StoreLockedError);
+  const lines: string[] = [];
+  const econ = createEconomyFromConfig({ enabled: true, dataDir: dir, problems: [] }, { log: (s) => lines.push(s) });
+  assert.ok(!(econ instanceof EconomyService), 'the null economy, not a memory-only service');
+  assert.ok(lines.some((l) => /ERROR: .*economy\.db is in use/.test(l) && /Do not point this server at a new folder/.test(l)), lines.join('\n'));
+  const c = conn();
+  await hello(econ, c, 'A'.repeat(43));
+  assert.equal(count(c, 'account'), 0, 'no account and no token: the browser keeps its saved one');
+  assert.deepEqual(errors(c), ['disabled']);
+  econ.close();
+  first.close();
+  const after = new AccountStore({ dir, log: () => {} });
+  assert.equal(after.persistent, true, 'free again once the first one closed');
+  after.close();
+});
 
-  // a corrupt main file is moved aside untouched and the backup is used
-  writeFileSync(join(dir, 'economy.json'), '{"v":1,"accou');
+test('F10: a server killed outright leaves no lock behind, and what it committed is kept', async (t) => {
+  const dir = tempDir(t);
+  const url = (p: string) => new URL(`../${p}`, import.meta.url).href; // works from any working directory
+  const token = 'K'.repeat(43);
+  const code = `
+    const { AccountStore } = await import(${JSON.stringify(url('server/economy/store.ts'))});
+    const { EconomyService } = await import(${JSON.stringify(url('server/economy/service.ts'))});
+    const { DEFAULT_LOADOUT } = await import(${JSON.stringify(url('shared/cosmetics.ts'))});
+    const store = new AccountStore({ dir: ${JSON.stringify(dir)}, log: () => {} });
+    const svc = new EconomyService({ store, log: () => {} });
+    const c = { id: 1, ip: '10.0.0.1', profile: { name: 'Killed', family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler } }, accountId: null, send() {} };
+    svc.onHello(c, ${JSON.stringify(token)});
+    svc.accountById(c.accountId).pearls = 3000;
+    svc.route(c, { t: 'storeBuy', item: ${JSON.stringify(EPIC)} }); // commits at once
+    process.stdout.write('ready\\n');
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', (d: Buffer) => (err += d.toString()));
+  await new Promise<void>((res, rej) => {
+    child.stdout.once('data', () => res());
+    child.once('exit', (n) => rej(new Error(`child exited ${n}: ${err}`)));
+  });
+  // while it runs, a second server gets no economy
+  assert.throws(() => new AccountStore({ dir, log: () => {} }), StoreLockedError);
+  const exited = new Promise((res) => child.once('exit', res));
+  child.kill(); // TerminateProcess on Windows, SIGTERM elsewhere: no shutdown code runs
+  await exited;
+  const { svc } = makeEconomy(dir);
+  const c = conn();
+  assert.equal(await hello(svc, c, token), undefined);
+  assert.equal(acct(c).pearls, 3000 - cosmeticById(EPIC)!.pearls!, 'the committed purchase survived the kill');
+  assert.ok(acct(c).owned.some((o) => o.item === EPIC));
+  svc.close();
+});
+
+test('F10: a left-over economy.lock naming a live process is ignored (no pid file decides anything)', (t) => {
+  const dir = tempDir(t);
+  writeFileSync(join(dir, 'economy.lock'), JSON.stringify({ pid: process.pid, started: '2026-10-01T00:00:00.000Z' }));
+  const s = new AccountStore({ dir, log: () => {} });
+  assert.equal(s.persistent, true);
+  s.close();
+});
+
+test('F16: data that cannot be read never starts an empty economy, and the file is left alone', async (t) => {
+  const dir = tempDir(t);
+  const broken = '{"v":1,"accounts":{';
+  writeFileSync(join(dir, 'economy.json'), broken);
+  writeFileSync(join(dir, 'economy.json.bak'), legacyFile({ acc_old00001: LEGACY_ACC('acc_old00001') }, '2026-10-01T00:00:00.000Z'));
+  assert.throws(() => new AccountStore({ dir, log: () => {} }), (e: unknown) => e instanceof StoreUnreadableError && /economy\.json\.bak/.test(e.message));
+  const lines: string[] = [];
+  const econ = createEconomyFromConfig({ enabled: true, dataDir: dir, problems: [] }, { log: (s) => lines.push(s) });
+  assert.ok(lines.some((l) => /ERROR: .*could not be read/.test(l)));
+  const c = conn();
+  await hello(econ, c, 'B'.repeat(43));
+  assert.equal(count(c, 'account'), 0, 'no empty account and no new token');
+  econ.close();
+  assert.equal(readFileSync(join(dir, 'economy.json'), 'utf8'), broken, 'the unreadable file stays where it is, unchanged');
+  assert.ok(!readdirSync(dir).some((f) => f.includes('corrupt')), 'nothing was moved aside');
+
+  // a database file that is not a database
+  const dir2 = tempDir(t);
+  writeFileSync(join(dir2, DB_FILE), 'this is not a database, it is a text file '.repeat(200));
+  const before = readFileSync(join(dir2, DB_FILE));
+  assert.throws(() => new AccountStore({ dir: dir2, log: () => {} }), StoreUnreadableError);
+  assert.ok(!(createEconomyFromConfig({ enabled: true, dataDir: dir2, problems: [] }, { log: () => {} }) instanceof EconomyService));
+  assert.ok(readFileSync(join(dir2, DB_FILE)).equals(before), 'the database file was not changed');
+});
+
+test('the old economy.json is imported once: newest complete file wins, no wallets, orders or empty guests', (t) => {
+  const dir = tempDir(t);
+  const accounts = {
+    acc_test0001: LEGACY_ACC('acc_test0001', { pearls: 100, wallet: 'So1anaWa11etAddre55xxxxxxxxxxxxxxxxxxxxxx' }),
+    acc_guest001: LEGACY_ACC('acc_guest001', { pearls: 0, stats: { matches: 0, wins: 0, kills: 0, hooksHit: 0 } }),
+  };
+  writeFileSync(join(dir, 'economy.json'), legacyFile(accounts, '2026-10-08T10:00:00.000Z'));
+  // fsync done, rename not: a complete newer temp file
+  const newer = {
+    ...accounts,
+    acc_test0001: LEGACY_ACC('acc_test0001', {
+      pearls: 250, wallet: 'So1anaWa11etAddre55xxxxxxxxxxxxxxxxxxxxxx',
+      owned: [{ instance: 'itm_epic0001', item: EPIC, listed: 'lst_sale0001' }, { instance: 'itm_prem0001', item: PREMIUM, serial: 3, asset: 'AssetAddre55' }],
+    }),
+  };
+  const listings = {
+    lst_sale0001: { id: 'lst_sale0001', seller: 'acc_test0001', sellerName: 'X', instance: 'itm_epic0001', item: EPIC, price: { cur: 'pearls', amount: 900 }, created: T0 },
+    lst_usdc0001: { id: 'lst_usdc0001', seller: 'acc_test0001', sellerName: 'X', instance: 'itm_prem0001', item: PREMIUM, price: { cur: 'usdc', amount: 9 }, created: T0 },
+  };
+  writeFileSync(join(dir, 'economy.json.tmp-1-aaaaaa'), legacyFile(newer, '2026-10-08T10:00:05.000Z', listings));
+  // a torn temp file from a crash during the write itself
+  writeFileSync(join(dir, 'economy.json.tmp-2-bbbbbb'), legacyFile(newer, '2026-10-08T10:00:09.000Z').slice(0, 60));
+  writeFileSync(join(dir, 'economy.lock'), JSON.stringify({ pid: 999999 }));
+  const s1 = new AccountStore({ dir, log: () => {} });
+  const a = s1.db.accounts.get('acc_test0001')!;
+  assert.equal(a.pearls, 250);
+  assert.equal('wallet' in a, false, 'wallet addresses are not imported');
+  assert.deepEqual(a.owned[1], { instance: 'itm_prem0001', item: PREMIUM }, 'serial and asset dropped');
+  assert.equal(s1.db.accounts.has('acc_guest001'), false, 'empty guests are not imported');
+  assert.deepEqual([...s1.db.listings.keys()], ['lst_sale0001'], 'USDC listings are not imported');
+  s1.close();
+  const files = readdirSync(dir);
+  assert.ok(files.some((f) => /^economy\.json\.imported-/.test(f)) && !files.includes('economy.json'), files.join(', '));
+  assert.ok(!files.includes('economy.lock'), 'the old pid lock is removed');
+  assert.ok(!readFileSync(join(dir, DB_FILE)).includes('So1anaWa11et'), 'no wallet address in the database');
+  // a second start does not import again, even if an economy.json turns up
+  writeFileSync(join(dir, 'economy.json'), legacyFile({ acc_late0001: LEGACY_ACC('acc_late0001') }, '2026-10-09T00:00:00.000Z'));
   const s2 = new AccountStore({ dir, log: () => {} });
-  assert.equal(s2.db.accounts.acc_test0001.pearls, 250, 'restored from economy.json.bak');
-  assert.ok(readdirSync(dir).some((f) => f.startsWith('economy.json.corrupt-')));
+  assert.equal(s2.db.accounts.has('acc_late0001'), false);
+  assert.equal(s2.db.accounts.get('acc_test0001')!.pearls, 250);
   s2.close();
 });
 
-test('a second server on the same data folder runs from memory instead of corrupting it', (t) => {
+test('F11/F19: empty drive-by guests never reach the disk, leave memory with their socket, and keep their token', async (t) => {
   const dir = tempDir(t);
-  const s1 = new AccountStore({ dir, log: () => {} });
-  const s2 = new AccountStore({ dir, log: () => {} });
-  assert.equal(s1.persistent, true);
-  assert.equal(s2.persistent, false);
-  s2.close();
-  s1.close();
-  assert.ok(!existsSync(join(dir, 'economy.lock')));
+  const { svc, store } = makeEconomy(dir);
+  const ids: string[] = [];
+  const tokens: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const c = conn(`10.1.0.${i}`);
+    tokens.push((await hello(svc, c))!);
+    ids.push(c.accountId!);
+    svc.onDisconnect(c);
+  }
+  store.flush();
+  assert.equal(store.rowsWritten, 0, 'nothing was written');
+  for (const id of ids) assert.equal(svc.accountById(id), undefined, 'an empty guest is gone from memory once it left');
+  const back = conn('10.1.0.3');
+  assert.equal(await hello(svc, back, tokens[3]), undefined, 'coming back with its token: no new token');
+  assert.ok(back.accountId);
+  svc.close();
+  assert.ok(!readFileSync(join(dir, DB_FILE)).includes(sha256Hex(tokens[0])), 'no guest row on disk');
+});
+
+test('F11/F19: a save writes only the rows that changed, and nothing when nothing changed', async (t) => {
+  const dir = tempDir(t);
+  const { svc, store } = makeEconomy(dir);
+  const players: TestConn[] = [];
+  for (let i = 0; i < 300; i++) {
+    const c = conn(`10.2.${i >> 8}.${i & 255}`);
+    await hello(svc, c);
+    givePearls(svc, c, 10 + i);
+    store.dirtyAccount(c.accountId!);
+    players.push(c);
+  }
+  store.flush();
+  const me = players[7];
+  givePearls(svc, me, 5000);
+  store.flush();
+  const rows = store.rowsWritten;
+  const writes = store.writes;
+  for (let i = 0; i < 5; i++) send(svc, me, { t: 'equip', family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler } }); // changes nothing
+  svc.sanitize(me, me.profile); // same name, same loadout
+  await hello(svc, conn('10.2.0.7'), undefined); // a fresh guest: not written
+  await new Promise((r) => setTimeout(r, 20));
+  store.flush();
+  assert.equal(store.writes, writes, 'no save for an equip, a profile or a guest that changed nothing on disk');
+  send(svc, me, { t: 'storeBuy', item: EPIC });
+  assert.equal(store.rowsWritten - rows, 1, 'a purchase writes one row, not 300');
+  assert.equal(store.writes, writes + 1, 'and commits at once');
+  svc.close();
 });
 
 // ---------------------------------------------------------------------------------------------
-// Loadouts and the store
+// Loadouts, the store and premium items
 // ---------------------------------------------------------------------------------------------
 
 test('hello, setProfile and equip only wear what the account owns', async () => {
@@ -319,9 +571,37 @@ test('the store charges the catalog price once, and a double click does not char
   assert.equal(acct(a).pearls, 1000 - cosmeticById(COMMON)!.pearls!);
   assert.equal(acct(a).owned.filter((o) => o.item === COMMON).length, 1);
   assert.deepEqual(errors(a), ['pearls', 'owned']);
-  send(svc, a, { t: 'storeBuy', item: LIMITED });
   send(svc, a, { t: 'storeBuy', item: 'brawler.captain_cap' });
-  assert.deepEqual(errors(a).slice(-2), ['not_for_sale', 'not_for_sale'], 'Limited and default items are not sold for Pearls');
+  assert.equal(errors(a).at(-1), 'not_for_sale', 'default items are not sold');
+  svc.close();
+});
+
+test('premium items: never sold, granted, worn, listed or shown as owned in this build', async () => {
+  const { svc } = makeEconomy(null);
+  const a = conn();
+  await hello(svc, a);
+  veteran(svc, a);
+  givePearls(svc, a, 99_999);
+  send(svc, a, { t: 'storeBuy', item: PREMIUM });
+  assert.equal(errors(a).at(-1), 'steam_only');
+  assert.match(last(a, 'econError')!.message, /Steam version/);
+  // a copy left on an imported record from the old Solana build
+  rec(svc, a).owned.push({ instance: 'itm_prem0001', item: PREMIUM });
+  send(svc, a, { t: 'equip', family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler, hands: PREMIUM } });
+  assert.equal(acct(a).loadouts.brawler.hands, DEFAULT_LOADOUT.brawler.hands, 'cannot be worn');
+  assert.ok(!acct(a).owned.some((o) => o.item === PREMIUM), 'not shown as owned');
+  send(svc, a, { t: 'marketSell', instance: 'itm_prem0001', price: { cur: 'pearls', amount: 500 } });
+  assert.equal(errors(a).at(-1), 'not_owned');
+  assert.ok(rec(svc, a).owned.some((o) => o.item === PREMIUM), 'the record keeps it, untouched');
+  // the client agrees
+  fakeStorage();
+  const e = createEconomy();
+  e.attachServer(() => {}, 'ws://p/ws');
+  e.receive({ t: 'account', a: view('acc_p', { owned: [{ instance: 'itm_prem0001', item: PREMIUM }] }) });
+  assert.equal(e.owns(PREMIUM), false);
+  e.buyWithPearls(PREMIUM);
+  assert.match(e.state().error ?? '', /Steam version/);
+  e.detachServer();
   svc.close();
 });
 
@@ -329,7 +609,7 @@ test('the store charges the catalog price once, and a double click does not char
 // Rewards and anti-farm
 // ---------------------------------------------------------------------------------------------
 
-test('match rewards: full rate needs two IP addresses, two tabs are paid once, AFK pays nothing', async () => {
+test('match rewards: full rate needs two connections, two tabs are paid once, AFK pays nothing', async () => {
   const { svc } = makeEconomy(null);
   const a = conn('10.0.0.1');
   const b = conn('10.0.0.2');
@@ -345,7 +625,8 @@ test('match rewards: full rate needs two IP addresses, two tabs are paid once, A
   assert.equal(acct(a).earnedToday, full);
 
   // the same person in two tabs on one token, alone on one IP: paid once, at the solo rate
-  const tokenC = (await hello(svc, conn('10.0.0.3')))!;
+  const first = conn('10.0.0.3');
+  const tokenC = (await hello(svc, first))!;
   const c1 = conn('10.0.0.3');
   const c2 = conn('10.0.0.3');
   await hello(svc, c1, tokenC);
@@ -364,7 +645,24 @@ test('match rewards: full rate needs two IP addresses, two tabs are paid once, A
   assert.equal(acct(d).pearls, Math.round(full * SOLO_PEARL_RATE));
   assert.equal(acct(e).pearls, 0, 'never threw a hook: no Pearls');
   assert.match(last(e, 'reward')!.reason, /no hooks/);
+
+  // two IPv6 addresses in one /64 are one home
+  const f = conn('2001:db8:1:2::10');
+  const g = conn('2001:db8:1:2:8000::11');
+  await hello(svc, f);
+  await hello(svc, g);
+  svc.onMatchEnd([{ connId: f.id, won: true, row: row(0) }, { connId: g.id, won: false, row: row(1) }]);
+  assert.equal(acct(f).pearls, Math.round(full * SOLO_PEARL_RATE));
   svc.close();
+});
+
+test('connection keys: IPv4 as is, IPv4-mapped unwrapped, IPv6 by /64', () => {
+  assert.equal(netKey('10.0.0.1'), '10.0.0.1');
+  assert.equal(netKey('::ffff:10.0.0.1'), '10.0.0.1');
+  assert.equal(netKey('2001:db8::7'), netKey('2001:db8::8'));
+  assert.equal(netKey('2001:DB8:0:0:1:2:3:4'), netKey('2001:db8::9'));
+  assert.notEqual(netKey('2001:db8:0:1::7'), netKey('2001:db8::7'));
+  assert.equal(netKey('fe80::1%eth0'), netKey('fe80::2'));
 });
 
 test('the daily cap stops match Pearls until the next UTC day', async () => {
@@ -378,12 +676,61 @@ test('the daily cap stops match Pearls until the next UTC day', async () => {
   assert.equal(acct(a).pearls, DAILY_PEARL_CAP);
   assert.equal(acct(a).earnedToday, DAILY_PEARL_CAP);
   assert.equal(last(a, 'reward')!.pearls, 0);
-  assert.match(last(a, 'reward')!.reason, /daily limit/);
+  assert.match(last(a, 'reward')!.reason, /daily limit of 2000 reached/);
   assert.equal(acct(a).stats.matches, 15, 'stats still count');
-  clock.t += 24 * 3600_000;
+  clock.t += DAY;
   svc.onMatchEnd([{ connId: a.id, won: true, row: big }, { connId: b.id, won: false, row: row(1) }]);
   assert.equal(acct(a).pearls, DAILY_PEARL_CAP + 200);
   assert.equal(acct(a).earnedToday, 200);
+  svc.close();
+});
+
+test('F20: throwaway accounts on two connections cannot beat the daily cap, and cannot move Pearls through the market', async () => {
+  const { svc, clock } = makeEconomy(null);
+  const main = conn('198.51.100.7');
+  const farms = [conn('198.51.100.7'), conn('2001:db8::7'), conn('2001:db8::8'), conn('198.51.100.7')];
+  const all = [main, ...farms];
+  for (const c of all) await hello(svc, c);
+  veteran(svc, main);
+  givePearls(svc, main, 2400);
+  send(svc, main, { t: 'storeBuy', item: EPIC });
+  const epic = rec(svc, main).owned[0].instance;
+  const start = rec(svc, main).pearls;
+  const big = (i: number) => row(i, { k: 5, hh: 10, ht: 12, sv: 0 });
+  for (let m = 0; m < 24; m++) svc.onMatchEnd(all.map((c, k) => ({ connId: c.id, won: true, row: big(k) })));
+  const byNet = new Map<string, number>();
+  for (const c of all) byNet.set(netKey(c.ip), (byNet.get(netKey(c.ip)) ?? 0) + rec(svc, c).pearls);
+  for (const [k, n] of byNet) assert.ok(n <= DAILY_PEARL_CAP_PER_IP, `${k} earned ${n} Pearls in one day`);
+  assert.ok(farms.some((f) => /internet connection/.test(last(f, 'reward')!.reason)), 'the player is told which limit stopped them');
+  // consolidate: main lists its Epic at a farm's balance, the farm buys it, relists it at 50, main buys it back
+  const tryMove = () => {
+    for (const f of farms) {
+      const price = rec(svc, f).pearls;
+      if (price < 50) continue;
+      send(svc, main, { t: 'marketSell', instance: epic, price: { cur: 'pearls', amount: price } });
+      const l1 = [...svc['store'].db.listings.values()].find((l: Listing) => l.seller === main.accountId);
+      if (!l1) continue;
+      send(svc, f, { t: 'marketBuy', listing: l1.id });
+      const got = rec(svc, f).owned.find((o) => o.item === EPIC);
+      if (!got) {
+        send(svc, main, { t: 'marketCancel', listing: l1.id });
+        continue;
+      }
+      send(svc, f, { t: 'marketSell', instance: got.instance, price: { cur: 'pearls', amount: 50 } });
+      const l2 = [...svc['store'].db.listings.values()].find((l: Listing) => l.seller === f.accountId);
+      if (l2) send(svc, main, { t: 'marketBuy', listing: l2.id });
+    }
+  };
+  tryMove();
+  assert.equal(rec(svc, main).pearls - start <= DAILY_PEARL_CAP, true, `main gained ${rec(svc, main).pearls - start} Pearls in a day`);
+  assert.ok(farms.every((f) => errors(f).includes('too_new')), 'accounts made today cannot buy on the market');
+  assert.match(last(farms[0], 'econError')!.message, /a day old and has played 10 online matches/);
+  // a day later the farms may trade, but the most that can move is what their connections earned
+  clock.t += DAY;
+  for (const f of farms) veteran(svc, f, clock.t);
+  const before = rec(svc, main).pearls;
+  tryMove();
+  assert.ok(rec(svc, main).pearls - before <= 2 * DAILY_PEARL_CAP_PER_IP, 'bounded by the per-connection cap');
   svc.close();
 });
 
@@ -397,6 +744,8 @@ test('market: list, buy with the 5% fee, cancel; a listed item cannot be worn', 
   const buyer = conn('10.0.0.2', { name: 'Buyer' });
   await hello(svc, seller);
   await hello(svc, buyer);
+  veteran(svc, seller);
+  veteran(svc, buyer);
   givePearls(svc, seller, 3000);
   givePearls(svc, buyer, 5000);
   send(svc, seller, { t: 'storeBuy', item: EPIC });
@@ -409,8 +758,6 @@ test('market: list, buy with the 5% fee, cancel; a listed item cannot be worn', 
 
   send(svc, seller, { t: 'marketSell', instance: common, price: { cur: 'pearls', amount: 500 } });
   assert.equal(errors(seller).at(-1), 'not_tradable', 'only Epic items trade for Pearls');
-  send(svc, seller, { t: 'marketSell', instance: inst, price: { cur: 'usdc', amount: 5 } });
-  assert.equal(errors(seller).at(-1), 'usdc_later');
 
   send(svc, seller, { t: 'marketSell', instance: inst, price: { cur: 'pearls', amount: 1000 } });
   const listed = acct(seller).owned.find((o) => o.instance === inst)!;
@@ -455,6 +802,36 @@ test('market: list, buy with the 5% fee, cancel; a listed item cannot be worn', 
   svc.close();
 });
 
+test('a trade is saved as one transaction and survives a restart on both sides', async (t) => {
+  const dir = tempDir(t);
+  const one = makeEconomy(dir);
+  const seller = conn('10.0.0.1');
+  const buyer = conn('10.0.0.2');
+  const ts = (await hello(one.svc, seller))!;
+  const tb = (await hello(one.svc, buyer))!;
+  veteran(one.svc, seller);
+  veteran(one.svc, buyer);
+  givePearls(one.svc, seller, 2400);
+  givePearls(one.svc, buyer, 1000);
+  send(one.svc, seller, { t: 'storeBuy', item: EPIC });
+  send(one.svc, seller, { t: 'marketSell', instance: acct(seller).owned[0].instance, price: { cur: 'pearls', amount: 700 } });
+  const writes = one.store.writes;
+  send(one.svc, buyer, { t: 'market' });
+  send(one.svc, buyer, { t: 'marketBuy', listing: last(buyer, 'market')!.listings[0].id });
+  assert.equal(one.store.writes, writes + 1, 'buyer, seller and listing in one commit');
+  one.svc.close();
+  const two = makeEconomy(dir);
+  const s2 = conn();
+  const b2 = conn();
+  await hello(two.svc, s2, ts);
+  await hello(two.svc, b2, tb);
+  assert.equal(acct(s2).pearls, sellerProceeds(700));
+  assert.equal(acct(s2).owned.length, 0);
+  assert.equal(acct(b2).pearls, 300);
+  assert.ok(acct(b2).owned.some((o) => o.item === EPIC));
+  two.svc.close();
+});
+
 test('the market fee is always at least one Pearl and never more than 5% rounded up', () => {
   for (const p of [50, 51, 99, 100, 1234, 1_000_000]) {
     assert.ok(marketFee(p) >= 1);
@@ -463,208 +840,139 @@ test('the market fee is always at least one Pearl and never more than 5% rounded
   }
 });
 
-// ---------------------------------------------------------------------------------------------
-// Wallet link
-// ---------------------------------------------------------------------------------------------
-
-test('wallet link: a real signature links; bad signatures, replays and expired nonces do not', async () => {
-  const { svc, clock } = makeEconomy(null);
-  const a = conn('10.0.0.1');
-  await hello(svc, a);
-  const w = ed25519Wallet();
-
-  // bad signature: signed by a different key
-  send(svc, a, { t: 'walletChallenge' });
-  const ch1 = last(a, 'walletChallenge')!;
-  assert.match(ch1.message, /hookwars\.test wants you to link/);
-  assert.match(ch1.message, new RegExp(`Account: ${acct(a).id}`));
-  const impostor = ed25519Wallet();
-  send(svc, a, { t: 'walletLink', address: w.address, signature: base58Encode(new Uint8Array(sign(null, Buffer.from(ch1.message), impostor.priv))) });
-  assert.equal(errors(a).at(-1), 'bad_signature');
-  assert.equal(acct(a).wallet, null);
-
-  // the happy path
-  send(svc, a, { t: 'walletChallenge' });
-  const ch2 = last(a, 'walletChallenge')!;
-  assert.notEqual(ch2.message, ch1.message, 'a fresh nonce every time');
-  const good = base58Encode(new Uint8Array(sign(null, Buffer.from(ch2.message, 'utf8'), w.priv)));
-  send(svc, a, { t: 'walletLink', address: w.address, signature: good });
-  assert.equal(acct(a).wallet, w.address);
-
-  // replaying the same signed message on another account fails (the nonce is bound to one account and used up)
-  const b = conn('10.0.0.2');
-  await hello(svc, b);
-  send(svc, b, { t: 'walletLink', address: w.address, signature: good });
-  assert.equal(errors(b).at(-1), 'challenge');
-  send(svc, b, { t: 'walletChallenge' });
-  send(svc, b, { t: 'walletLink', address: w.address, signature: good });
-  assert.equal(errors(b).at(-1), 'bad_signature', 'an old signature does not match a new nonce');
-
-  // one account per wallet
-  send(svc, b, { t: 'walletChallenge' });
-  const ch3 = last(b, 'walletChallenge')!;
-  send(svc, b, { t: 'walletLink', address: w.address, signature: base58Encode(new Uint8Array(sign(null, Buffer.from(ch3.message), w.priv))) });
-  assert.equal(errors(b).at(-1), 'wallet_taken');
-
-  // one wallet per account
-  send(svc, a, { t: 'walletChallenge' });
-  assert.equal(errors(a).at(-1), 'linked');
-
-  // expired challenge
-  const c = conn('10.0.0.3');
+test('F12: marketBuy and marketCancel with prototype names never save or push the market', async (t) => {
+  const dir = tempDir(t);
+  const { svc, store } = makeEconomy(dir);
+  const c = conn();
+  const watcher = conn('10.0.0.2');
   await hello(svc, c);
-  send(svc, c, { t: 'walletChallenge' });
-  const ch4 = last(c, 'walletChallenge')!;
-  clock.t += 5 * 60_000 + 1;
-  const w2 = ed25519Wallet();
-  send(svc, c, { t: 'walletLink', address: w2.address, signature: base58Encode(new Uint8Array(sign(null, Buffer.from(ch4.message), w2.priv))) });
-  assert.equal(errors(c).at(-1), 'challenge');
-  assert.equal(acct(c).wallet, null);
+  await hello(svc, watcher);
+  veteran(svc, c);
+  givePearls(svc, watcher, 5);
+  store.dirtyAccount(watcher.accountId!);
+  store.flush();
+  send(svc, watcher, { t: 'market' });
+  const pushes = count(watcher, 'market');
+  const writes = store.writes;
+  for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf', '__defineGetter__', 'lst_doesnotexist']) {
+    send(svc, c, { t: 'marketBuy', listing: id });
+    send(svc, c, { t: 'marketCancel', listing: id });
+  }
+  svc.flushMarket();
+  await new Promise((r) => setTimeout(r, 20));
+  store.flush();
+  assert.equal(store.writes - writes, 0, 'saves forced by a guest');
+  assert.equal(count(watcher, 'market') - pushes, 0, 'market pushes forced by a guest');
+  assert.ok(errors(c).every((e) => e === 'gone'));
   svc.close();
 });
 
-// ---------------------------------------------------------------------------------------------
-// Limited items for USDC (MockChain)
-// ---------------------------------------------------------------------------------------------
-
-test('USDC order: the wallet signs, the server verifies and mints once; repeats are idempotent', async () => {
-  const { svc, chain } = makeEconomy(null);
-  const a = conn('10.0.0.1');
-  await hello(svc, a);
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  assert.equal(errors(a).at(-1), 'no_wallet');
-  const w = await linkWallet(svc, a);
-
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  send(svc, a, { t: 'usdcOrder', item: LIMITED }); // double click while the first is still being built
-  await svc.idle();
-  const orders = a.inbox.filter((m): m is Extract<ServerMsg, { t: 'usdcOrder' }> => m.t === 'usdcOrder');
-  assert.equal(orders.length, 2);
-  assert.equal(orders[0].order, orders[1].order, 'the same order both times');
-  assert.equal(orders[0].tx, orders[1].tx);
-  assert.equal(orders[0].usdc, cosmeticById(LIMITED)!.usdc);
-  const order = orders[0];
-
-  // the wallet changed the transaction (for example, injected an instruction): refused, nothing charged
-  const tampered = new Uint8Array(Buffer.from(walletSign(order.tx, w), 'base64'));
-  tampered[tampered.length - 1] ^= 1;
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: Buffer.from(tampered).toString('base64') });
-  await svc.idle();
-  assert.equal(errors(a).at(-1), 'tx_modified');
-  // unsigned by the player: refused
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: order.tx });
-  await svc.idle();
-  assert.equal(errors(a).at(-1), 'not_signed');
-  assert.equal(svc.orderById(order.order)!.status, 'open', 'the order can still be signed properly');
-  assert.equal(chain.payments.size, 0);
-
-  const signed = walletSign(order.tx, w);
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: signed });
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: signed }); // double submit
-  await svc.idle();
-  const owned = acct(a).owned.find((o) => o.item === LIMITED);
-  assert.ok(owned, 'the item is in the inventory');
-  assert.equal(owned.serial, 1);
-  assert.ok(owned.asset && isSolanaAddress(owned.asset), 'the NFT twin is recorded');
-  assert.equal(chain.payments.size, 1, 'paid once');
-  assert.equal(chain.mintCount, 1, 'minted once');
-  const minted = [...chain.assets.values()][0];
-  assert.equal(minted.name, 'Hook Wars: Golden Harpoon #1/500');
-  assert.equal(minted.owner, w.address, 'minted to the linked wallet');
-  assert.equal(svc.orderById(order.order)!.status, 'minted');
-
-  // the same order again: no second payment or mint, the account comes back
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: signed });
-  await svc.idle();
-  assert.equal(chain.mintCount, 1);
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  assert.equal(errors(a).at(-1), 'owned');
-  // Limited items do not trade for Pearls (they are NFTs; on-chain trading is a later phase)
-  send(svc, a, { t: 'marketSell', instance: owned.instance, price: { cur: 'pearls', amount: 500 } });
-  assert.equal(errors(a).at(-1), 'usdc_later');
-  svc.close();
-});
-
-test('USDC: a payment the player submitted elsewhere is found on chain when the order expires', async () => {
-  const { svc, chain, clock } = makeEconomy(null);
-  const a = conn('10.0.0.1');
-  await hello(svc, a);
-  const w = await linkWallet(svc, a);
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  await svc.idle();
-  const order = last(a, 'usdcOrder')!;
-  const rec = svc.orderById(order.order)!;
-  // the player sends the signed transaction straight to the network, never telling the server
-  await chain.submitUsdcTransfer({ orderId: rec.id, payer: rec.wallet, cents: rec.cents, message: new Uint8Array(Buffer.from(rec.message, 'base64')), meta: rec.meta }, new Uint8Array(Buffer.from(walletSign(order.tx, w), 'base64')), () => {});
-  clock.t += 3 * 60_000;
-  send(svc, a, { t: 'usdcOrder', item: 'ogre.crystal_tusks' }); // any later order request sweeps old orders
-  await svc.idle();
-  assert.equal(svc.orderById(order.order)!.status, 'minted');
-  assert.ok(acct(a).owned.some((o) => o.item === LIMITED && o.serial === 1));
-  svc.close();
-});
-
-test('USDC: an abandoned order expires and gives its place in the edition back', async () => {
+test('F14: a market subscription ends at once when the match starts, and when it is not renewed', async () => {
   const { svc, clock } = makeEconomy(null);
-  const a = conn('10.0.0.1');
-  const b = conn('10.0.0.2');
-  await hello(svc, a);
-  await hello(svc, b);
-  await linkWallet(svc, a);
-  await linkWallet(svc, b);
-  // one copy left
-  (svc as unknown as { store: AccountStore }).store.db.serials[LIMITED] = cosmeticById(LIMITED)!.supply! - 1;
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  await svc.idle();
-  const first = last(a, 'usdcOrder')!;
-  send(svc, b, { t: 'usdcOrder', item: LIMITED });
-  await svc.idle();
-  assert.equal(errors(b).at(-1), 'sold_out', 'the open order holds the last copy');
-  clock.t += 3 * 60_000;
-  send(svc, b, { t: 'usdcOrder', item: LIMITED }); // sweeps first, then counts again
-  await svc.idle();
-  assert.equal(svc.orderById(first.order)!.status, 'expired');
-  send(svc, b, { t: 'usdcOrder', item: LIMITED });
-  await svc.idle();
-  assert.equal(last(b, 'usdcOrder')?.item, LIMITED, 'the released copy can be bought');
-  svc.close();
-});
-
-test('USDC: a mint that fails is retried and still mints only once', async () => {
-  const chain = new MockChain();
-  const realMint = chain.mintLimited.bind(chain);
-  let fails = 1;
-  chain.mintLimited = async (spec) => {
-    if (fails-- > 0) throw new Error('RPC timeout');
-    return realMint(spec);
+  const seller = conn('10.0.0.1');
+  const idle = conn('10.0.0.2');
+  const player = conn('10.0.0.3');
+  const browsing = conn('10.0.0.4');
+  for (const c of [seller, idle, player, browsing]) await hello(svc, c);
+  veteran(svc, seller);
+  givePearls(svc, seller, 9000);
+  send(svc, seller, { t: 'storeBuy', item: EPIC });
+  const inst = rec(svc, seller).owned[0].instance;
+  const watchers = [idle, player, browsing];
+  const pushed = (fn: () => void) => {
+    const n0 = watchers.map((c) => count(c, 'market'));
+    fn();
+    svc.flushMarket();
+    return watchers.map((c, i) => count(c, 'market') - n0[i]);
   };
-  const { svc } = makeEconomy(null, { chain });
-  const a = conn('10.0.0.1');
-  await hello(svc, a);
-  const w = await linkWallet(svc, a);
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  await svc.idle();
-  const order = last(a, 'usdcOrder')!;
-  send(svc, a, { t: 'usdcSubmit', order: order.order, tx: walletSign(order.tx, w) });
-  await svc.idle();
-  assert.equal(svc.orderById(order.order)!.status, 'paid', 'paid and owned while the mint retries');
-  assert.ok(acct(a).owned.some((o) => o.item === LIMITED && !o.asset));
-  // a restart (or the retry timer) finishes the mint
-  await (svc as unknown as { mint: (o: unknown) => Promise<void> }).mint(svc.orderById(order.order));
-  await (svc as unknown as { mint: (o: unknown) => Promise<void> }).mint(svc.orderById(order.order));
-  assert.equal(svc.orderById(order.order)!.status, 'minted');
-  assert.equal(chain.mintCount, 1);
+  for (const c of watchers) send(svc, c, { t: 'market' });
+  // 1. the player's match starts: the game server calls unwatchMarket, and pushes stop at once
+  svc.unwatchMarket(player);
+  assert.deepEqual(pushed(() => send(svc, seller, { t: 'marketSell', instance: inst, price: { cur: 'pearls', amount: 3000 } })), [1, 0, 1]);
+  // 2. a minute later only the Market screen that kept renewing still gets live updates
+  clock.t += MARKET_WATCH_MS + 1_000;
+  send(svc, browsing, { t: 'market' });
+  const listing = rec(svc, seller).owned[0].listed!;
+  assert.deepEqual(pushed(() => send(svc, seller, { t: 'marketCancel', listing })), [0, 0, 1]);
   svc.close();
 });
 
-test('a server with the chain switched off refuses USDC purchases politely', async () => {
-  const { svc } = makeEconomy(null, { chain: new MockChain({ purchases: false }) });
-  const a = conn('10.0.0.1');
-  await hello(svc, a);
-  await linkWallet(svc, a);
-  send(svc, a, { t: 'usdcOrder', item: LIMITED });
-  assert.equal(errors(a).at(-1), 'network_off');
+test('F14: the client renews the market while the screen is open and stops when it closes', (t) => {
+  fakeStorage();
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const sent: EconomyClientMsg[] = [];
+  const e = createEconomy();
+  e.attachServer((m) => sent.push(m as EconomyClientMsg), 'ws://m/ws');
+  e.receive({ t: 'account', a: view('acc_m') });
+  const stop = e.watchMarket();
+  assert.equal(sent.filter((m) => m.t === 'market').length, 1, 'asks at once');
+  assert.ok(MARKET_RENEW_MS < MARKET_WATCH_MS, 'renews inside the server lease');
+  t.mock.timers.tick(MARKET_RENEW_MS * 3);
+  assert.equal(sent.filter((m) => m.t === 'market').length, 4);
+  stop();
+  t.mock.timers.tick(MARKET_RENEW_MS * 10);
+  assert.equal(sent.filter((m) => m.t === 'market').length, 4, 'nothing after the screen closed');
+  stop();
+  e.detachServer();
+});
+
+test('F20: an account under a day old, or with under 10 matches, cannot buy or sell on the market', async () => {
+  const { svc, clock } = makeEconomy(null);
+  const seller = conn('10.0.0.1');
+  const fresh = conn('10.0.0.2');
+  await hello(svc, seller);
+  await hello(svc, fresh);
+  veteran(svc, seller);
+  givePearls(svc, seller, 2400);
+  givePearls(svc, fresh, 5000);
+  send(svc, seller, { t: 'storeBuy', item: EPIC });
+  send(svc, seller, { t: 'marketSell', instance: rec(svc, seller).owned[0].instance, price: { cur: 'pearls', amount: 100 } });
+  send(svc, fresh, { t: 'market' });
+  const l = last(fresh, 'market')!.listings[0];
+  send(svc, fresh, { t: 'marketBuy', listing: l.id });
+  assert.equal(errors(fresh).at(-1), 'too_new');
+  assert.match(last(fresh, 'econError')!.message, /24 more hours and 10 more online matches/);
+  assert.equal(rec(svc, fresh).pearls, 5000);
+  rec(svc, fresh).stats.matches = 10;
+  clock.t += DAY - 3600_000;
+  send(svc, fresh, { t: 'marketBuy', listing: l.id });
+  assert.match(last(fresh, 'econError')!.message, /needs 1 more hour\./);
+  clock.t += 3600_000;
+  send(svc, fresh, { t: 'marketBuy', listing: l.id });
+  assert.ok(rec(svc, fresh).owned.some((o) => o.item === EPIC), 'open after a day and 10 matches');
+  // selling is held back the same way
+  const newSeller = conn('10.0.0.3');
+  await hello(svc, newSeller);
+  givePearls(svc, newSeller, 2400);
+  send(svc, newSeller, { t: 'storeBuy', item: EPIC });
+  send(svc, newSeller, { t: 'marketSell', instance: rec(svc, newSeller).owned[0].instance, price: { cur: 'pearls', amount: 50 } });
+  assert.equal(errors(newSeller).at(-1), 'too_new');
+  // the client says so before sending
+  fakeStorage();
+  const e = createEconomy();
+  const sent: EconomyClientMsg[] = [];
+  e.attachServer((m) => sent.push(m as EconomyClientMsg), 'ws://n/ws');
+  e.receive({ t: 'account', a: view('acc_n', { created: Date.now(), pearls: 900 }) });
+  e.buyListing('lst_abcdefgh');
+  assert.match(e.state().error ?? '', /a day old/);
+  assert.equal(sent.length, 0);
+  e.detachServer();
   svc.close();
+});
+
+// ---------------------------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------------------------
+
+test('F31: an account saved without a name gets a neutral one, never Pudgy or Butcher', (t) => {
+  const dir = tempDir(t);
+  const { name: _n, ...noName } = LEGACY_ACC('acc_noname01', { pearls: 100 });
+  writeFileSync(join(dir, 'economy.json'), legacyFile({ acc_noname01: noName }, '2026-10-08T00:00:00.000Z'));
+  const { svc } = makeEconomy(dir);
+  const name = svc.accountById('acc_noname01')?.name;
+  svc.close();
+  assert.equal(name, UNIT_NOUN.one);
+  assert.doesNotMatch(String(name), /pudgy|butcher/i);
 });
 
 test('results for unknown connections are ignored', () => {

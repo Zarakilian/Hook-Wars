@@ -1,6 +1,6 @@
 // Main menu: the animated logo, Play (Solo, Online), the hub (Locker, Store, Market, Career),
-// Settings and How to Play, the profile chip, and your Pudgy on its dock post over the live scene.
-import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN } from '../../../shared/constants.ts';
+// Settings and How to Play, the profile chip, and your character on its dock post over the live scene.
+import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN, UNIT_NOUN } from '../../../shared/constants.ts';
 import { cleanName } from '../../../shared/protocol.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
@@ -52,7 +52,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
   const tipTimer = window.setInterval(showTip, 8000);
   const tip = h('div', { class: 'menu-tip' }, h('span', { class: 'tip-tag', text: 'Tip' }), tipText);
 
-  // ---------------------------------------------------------------- right: your Pudgy on its post
+  // ---------------------------------------------------------------- right: your character on its post
   const stage = h('div', { class: 'menu-stage' });
   const glow = h('div', { class: 'ms-glow', 'aria-hidden': 'true' });
   const nameIn = h('input', { class: 'np-name', maxlength: MAX_NAME_LEN, spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Your name', title: 'Click to rename' });
@@ -87,7 +87,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     h('span', { class: 'np-rivet r', 'aria-hidden': 'true' }));
   const look = button('Change Look', () => a.go('locker'), { cls: 'primary', icon: 'locker' });
   const hint = h('div', { class: 'ms-hint', text: 'Drag to spin · click to show off' });
-  const stageWrap = h('section', { class: 'menu-right', 'aria-label': 'Your Pudgy' }, glow, stage, hint, plate, look);
+  const stageWrap = h('section', { class: 'menu-right', 'aria-label': `Your ${UNIT_NOUN.one}` }, glow, stage, hint, plate, look);
 
   const chip = profileChip(ctx);
   const el = h('div', { class: 'scr scr-menu' },

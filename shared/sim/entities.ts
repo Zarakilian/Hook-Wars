@@ -138,6 +138,8 @@ export interface Hook {
   flightT: number;
   dead: boolean;
   bendAcc: number; // whirlpool bend accumulator
+  /** deck tier of the throw (hookTierOf in sim/movement.ts): who it can catch inside a deck footprint */
+  tier: 0 | 1 | 2;
 }
 
 export interface Rune {
@@ -157,6 +159,8 @@ export interface Mine {
   z: number;
   armT: number;
   dead: boolean;
+  /** dropped from under a deck (the dropper's layer); the mine's deck tier comes from this and its position */
+  under?: boolean;
 }
 
 export interface HazardInst {

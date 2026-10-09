@@ -19,11 +19,16 @@ export interface MoveBody {
  * from the bank (or climbs on from deep water or ice, which sit just under the deck). Whoever walks in
  * from a dry bed or a low tide, 1.5 to 3 m below the deck, stays UNDER it, on the bed. The layer holds
  * while the body stays inside the footprint over the channel, and clears anywhere else.
- * (px, pz) is the position before the move. Airborne or dragged bodies (grapple, hook) land on top.
+ * The layer exists only while the channel is dry or wading: once the water is deep or frozen it sits
+ * just under the deck, so everyone inside a footprint is on top (a body under a deck when the water
+ * turns deep climbs straight on instead of drowning out of reach under it).
+ * (px, pz) is the position before the move. Airborne or dragged bodies (grapple, hook) have no layer
+ * in flight; where they land the sim sets it: on top of a deck, except next to a caster (hook) or an
+ * anchor unit (grapple) down in the channel, which puts them on the bed with it.
  */
 export function deckLayer(world: World, river: RiverState, b: MoveBody, px: number, pz: number, airborne = false): void {
   const map = world.map;
-  if (!map.platforms || map.platforms.length === 0 || airborne) {
+  if (!map.platforms || map.platforms.length === 0 || airborne || river.deep || river.frozen) {
     b.under = false;
     return;
   }
@@ -35,8 +40,56 @@ export function deckLayer(world: World, river: RiverState, b: MoveBody, px: numb
   const prevOverChannel = channelDepthAt(map, px, pz, true) > 0;
   const prevOnDeck = !!platformAt(map, px, pz);
   if (prevOnDeck && prevOverChannel) return; // still inside the footprint: keep the layer
-  // entering the footprint: from the open channel goes under it, unless the water is deep or frozen
-  b.under = prevOverChannel && !prevOnDeck && !river.deep && !river.frozen;
+  // entering the footprint: from the open channel goes under it, from the bank goes on top
+  b.under = prevOverChannel && !prevOnDeck;
+}
+
+/**
+ * Deck tiers, for contact between bodies where a deck crosses a dry or wading channel:
+ * 0 = no deck question (bank, island, or anywhere while the water is deep or frozen and sits at deck height),
+ * 1 = standing on a deck over the channel, 2 = down in the channel (under a deck, or out on the open bed).
+ * Tier 1 and tier 2 never touch (the deck is 1.5 to 3 m above the bed); tier 0 touches both, as the flat
+ * sim has always let the bank and the bed touch.
+ */
+export type DeckTier = 0 | 1 | 2;
+
+export function deckTier(world: World, river: RiverState, x: number, z: number, under: boolean | undefined): DeckTier {
+  const map = world.map;
+  if (!map.platforms || map.platforms.length === 0 || river.deep || river.frozen) return 0;
+  if (channelDepthAt(map, x, z, true) <= 0) return 0;
+  return !under && platformAt(map, x, z) ? 1 : 2;
+}
+
+/** True when two tiers can touch: everything except a deck top against the bed below or beside it. */
+export function tiersTouch(a: DeckTier, b: DeckTier): boolean {
+  return a === 0 || b === 0 || a === b;
+}
+
+/** Whether two bodies are on layers that can touch (body-block, wallop, bash, mines, hazards). */
+export function sameLayer(world: World, river: RiverState, a: { x: number; z: number; under?: boolean }, b: { x: number; z: number; under?: boolean }): boolean {
+  return tiersTouch(deckTier(world, river, a.x, a.z, a.under), deckTier(world, river, b.x, b.z, b.under));
+}
+
+/**
+ * Hook tier, fixed at the throw from the thrower's own tier: 0 = thrown from the bank or a deck (flies at
+ * deck height), 1 = thrown from the open bed, 2 = thrown from under a deck.
+ * Only matters for a target standing inside a deck footprint over a dry or wading channel:
+ * a unit under the deck is caught only by a hook thrown from the bed (one at deck height passes over the
+ * deck), and a unit on the deck is not caught by a hook thrown from under that deck (it passes beneath).
+ * Everywhere else hooks catch as they always have.
+ */
+export function hookTierOf(world: World, river: RiverState, owner: { x: number; z: number; under?: boolean }): DeckTier {
+  const t = deckTier(world, river, owner.x, owner.z, owner.under);
+  if (t !== 2) return 0;
+  return owner.under ? 2 : 1;
+}
+
+export function hookCanCatch(world: World, river: RiverState, hookTier: DeckTier, t: { x: number; z: number; under?: boolean }): boolean {
+  const tt = deckTier(world, river, t.x, t.z, t.under);
+  if (tt === 0) return true;
+  if (tt === 1) return hookTier !== 2; // on a deck: not from under it
+  // tier 2: under a deck needs a hook from the bed; out on the open bed anyone catches it
+  return !t.under || hookTier !== 0;
 }
 
 const tmp = { x: 0, z: 0, hit: false };

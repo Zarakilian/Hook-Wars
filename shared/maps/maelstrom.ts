@@ -22,7 +22,8 @@ const islands = [
 ];
 const halfPl: Platform[] = [
   { kind: 'pier', x: -8.2, z: -3.0, w: 4.4, d: 1.7, rot: 0, seed: 1 },
-  { kind: 'pier', x: -6.8, z: 15.6, w: 3.0, d: 1.6, rot: -0.2, seed: 3 },
+  // reaches out over the water (27% of the deck), like the pier pair at z = -3
+  { kind: 'pier', x: -4.6, z: 15.6, w: 3.0, d: 1.6, rot: -0.2, seed: 3 },
 ];
 const platforms: Platform[] = [...halfPl, ...halfPl.map((p) => ({ ...p, x: -p.x, z: -p.z, seed: (p.seed ?? 0) + 1 }))];
 const fountains: MapDef['fountains'] = [{ x: -32, z: 0, r: 6.5 }, { x: 32, z: 0, r: 6.5 }];
@@ -35,7 +36,8 @@ const half: Obstacle[] = [
   { shape: 'circle', kind: 'cratepile', x: -11.4, z: 1.8, r: 1.0, seed: 3 },
   { shape: 'circle', kind: 'reefpost', x: -10.4, z: 9.6, r: 0.5, bouncy: true, seed: 4 },
   { shape: 'circle', kind: 'coralrock', x: -8.6, z: -13.4, r: 1.1, seed: 5 },
-  { shape: 'wall', kind: 'shipwreck', ax: -10.8, az: 14.6, bx: -7.8, bz: 19.8, r: 0.9, h: 3, seed: 9 },
+  // beached on the wet sand right by the water (kept 0.9 m clear of it, like every obstacle)
+  { shape: 'wall', kind: 'shipwreck', ax: -9.1, az: 14.6, bx: -6.1, bz: 19.8, r: 0.9, h: 3, seed: 9 },
   // midfield
   { shape: 'circle', kind: 'palm', x: -17.2, z: 11.8, r: 0.7, seed: 6 },
   { shape: 'circle', kind: 'tikitotem', x: -19.6, z: -2.2, r: 0.75, seed: 7 },
@@ -58,24 +60,25 @@ const beach = (x: number, z: number) => { const c = depth(x, z); return c > -3.2
 const reef = (x: number, z: number) => depth(x, z) > 1 && Math.hypot(x, z) > 5.6 && offDeck(x, z) && !inCircles(islands, x, z, 0.6);
 
 const decor: Decor[] = [
-  ...scatter(partial, { kind: 'grass', count: 150, seed: 71, scale: [0.6, 1.1], accept: (x, z) => onGround(x, z) && Math.abs(x) > 14 }),
-  ...scatter(partial, { kind: 'flower', count: 34, seed: 76, scale: [0.6, 1.0], accept: (x, z) => onGround(x, z) && Math.abs(x) > 15 }),
+  ...scatter(partial, { kind: 'grass', count: 60, seed: 71, scale: [0.6, 1.1], accept: (x, z) => onGround(x, z) && Math.abs(x) > 16 }),
+  ...scatter(partial, { kind: 'flower', count: 14, seed: 76, scale: [0.6, 1.0], accept: (x, z) => onGround(x, z) && Math.abs(x) > 18 }),
   ...scatter(partial, { kind: 'fern', count: 26, seed: 77, scale: [0.7, 1.2], accept: (x, z) => onGround(x, z) && Math.abs(x) > 19 }),
-  ...scatter(partial, { kind: 'shell', count: 50, seed: 72, scale: [0.6, 1.2], accept: beach }),
+  ...scatter(partial, { kind: 'shell', count: 70, seed: 72, scale: [0.6, 1.2], accept: beach }),
+  ...scatter(partial, { kind: 'coralfan', count: 44, seed: 78, scale: [0.6, 1.1], accept: (x, z) => { const c = depth(x, z); return c > -1.9 && c < -0.35 && offDeck(x, z) && clearOf(obstacles, x, z, 0.5) && !inCircles(islands, x, z, 0.4); } }),
   ...scatter(partial, { kind: 'starfish', count: 30, seed: 73, scale: [0.6, 1.2], accept: (x, z) => { const c = depth(x, z); return c > -2 && c < 2 && offDeck(x, z); } }),
   ...scatter(partial, { kind: 'coralfan', count: 46, seed: 74, scale: [0.7, 1.3], accept: reef }),
   ...scatter(partial, { kind: 'seaweed', count: 40, seed: 75, scale: [0.7, 1.3], accept: reef }),
   { kind: 'waterfall', x: 0, z: -D / 2, rot: 0, scale: 1, seed: 1 },
   { kind: 'treasure', x: -5.0, z: 4.0, rot: 0.3, scale: 1, seed: 2 }, // on the sea stack headlands
   { kind: 'treasure', x: 5.0, z: -4.0, rot: 0.3 + Math.PI, scale: 1, seed: 3 },
-  { kind: 'treasure', x: -11.6, z: 17.8, rot: 1.2, scale: 0.9, seed: 4 }, // spilled from the wreck
-  { kind: 'treasure', x: 11.6, z: -17.8, rot: 1.2 + Math.PI, scale: 0.9, seed: 5 },
+  { kind: 'treasure', x: -9.9, z: 17.8, rot: 1.2, scale: 0.9, seed: 4 }, // spilled from the wreck
+  { kind: 'treasure', x: 9.9, z: -17.8, rot: 1.2 + Math.PI, scale: 0.9, seed: 5 },
   { kind: 'lantern', x: -7.0, z: -4.2, rot: 0, scale: 1, seed: 6 },
   { kind: 'lantern', x: 7.0, z: 4.2, rot: Math.PI, scale: 1, seed: 7 },
   { kind: 'rope', x: -9.6, z: -2.1, rot: 0.2, scale: 1, seed: 8 },
   { kind: 'rope', x: 9.6, z: 2.1, rot: 0.2 + Math.PI, scale: 1, seed: 9 },
-  { kind: 'flag', x: -9.4, z: 18.6, rot: 0.6, scale: 1, seed: 10 },
-  { kind: 'flag', x: 9.4, z: -18.6, rot: 0.6 + Math.PI, scale: 1, seed: 11 },
+  { kind: 'flag', x: -7.7, z: 18.6, rot: 0.6, scale: 1, seed: 10 },
+  { kind: 'flag', x: 7.7, z: -18.6, rot: 0.6 + Math.PI, scale: 1, seed: 11 },
   { kind: 'sign', x: -24.8, z: -6.9, rot: Math.PI / 2, scale: 1, seed: 12 },
   { kind: 'sign', x: 24.8, z: 6.9, rot: -Math.PI / 2, scale: 1, seed: 13 },
 ];
@@ -135,10 +138,11 @@ export const maelstrom: MapDef = {
     bloom: 0.4,
   },
   terrain: {
-    grass: [0x74ac46, 0x82b84e, 0x66a03c, 0x8ec258, 0x5e9638],
-    dirt: [0xe2cc96, 0xd6be88, 0xecdaaa],
-    bank: [0xf0dcaa, 0xe6d098, 0xf8e8c0, 0xeed6a0],
-    bed: [0xd2c092, 0xc4b080, 0xdccca0],
+    // golden beach sand (the open ground: the reference's cove is sand and grey rock, not a lawn)
+    grass: [0xd8b676, 0xceaa6a, 0xe2c286, 0xc6a062, 0xe6ca92],
+    dirt: [0xc09a62, 0xb48e58, 0xcaa46c],
+    bank: [0xe0c28a, 0xd6b67e, 0xead09c, 0xdcbc84],
+    bed: [0xd8c690, 0xc8b47e, 0xe2d29e],
     dryBed: [0xe6d6aa, 0xd8c898, 0xf0e2bc, 0xccbc8e],
     cliff: [0x8e8a80, 0x7e7a70, 0x9e9a8e, 0x6e6a62],
     baseHeight: 1.15,

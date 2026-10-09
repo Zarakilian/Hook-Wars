@@ -1,8 +1,11 @@
-// Player-facing helpers for the cosmetic economy: rarity colours and names, prices, the market fee,
-// wallet addresses. One place, so the Locker, Store, Market and Career say the same thing.
+// Player-facing helpers for the cosmetic economy: rarity colours and names, Pearl prices, the market
+// fee and how Premium items read in each build. One place, so the Locker, Store, Market and Career
+// say the same thing. Premium items are sold for real money in the Steam version only; the free
+// browser version shows them as "Available in the Steam version".
 import { COSMETICS, cosmeticById, type CosmeticDef, type CosmeticSlot, type Rarity } from '../../shared/cosmetics.ts';
-import { marketFee as sharedFee, MARKET_FEE_BPS, MAX_LIST_PEARLS, MIN_LIST_PEARLS, sellerProceeds, type AccountView, type ChainNetwork, type OwnedItem, type Price } from '../../shared/economy.ts';
+import { marketFee as sharedFee, MARKET_FEE_BPS, MAX_LIST_PEARLS, MIN_LIST_PEARLS, sellerProceeds, type AccountView, type OwnedItem } from '../../shared/economy.ts';
 import type { FamilyId } from '../../shared/types.ts';
+import { isSteam } from '../platform.ts';
 import type { IconId } from './icons.ts';
 
 export const RARITY_INFO: Record<Rarity, { name: string; color: string; glow: string; order: number }> = {
@@ -10,8 +13,11 @@ export const RARITY_INFO: Record<Rarity, { name: string; color: string; glow: st
   common: { name: 'Common', color: '#7fd99a', glow: 'rgba(127,217,154,0.4)', order: 1 },
   rare: { name: 'Rare', color: '#5cb4ff', glow: 'rgba(92,180,255,0.45)', order: 2 },
   epic: { name: 'Epic', color: '#c27cff', glow: 'rgba(194,124,255,0.5)', order: 3 },
-  limited: { name: 'Limited', color: '#ffb43a', glow: 'rgba(255,180,58,0.55)', order: 4 },
+  premium: { name: 'Premium', color: '#ffb43a', glow: 'rgba(255,180,58,0.55)', order: 4 },
 };
+
+/** What the browser build says instead of a price on a Premium item. */
+export const STEAM_ONLY = 'Available in the Steam version';
 
 export const SLOT_ICON: Record<CosmeticSlot, IconId> = {
   head: 'slotHead',
@@ -26,26 +32,23 @@ export function fmtPearls(n: number): string {
   return Math.round(n).toLocaleString('en-US');
 }
 
-export function fmtUsdc(n: number): string {
-  return `${n.toFixed(2)} USDC`;
+/** A Steam price in US dollars ("US$1.99"). Steam shows each region its own currency. */
+export function fmtUsd(n: number): string {
+  return `US$${n.toFixed(2)}`;
 }
 
-export function fmtPrice(p: Price): string {
-  return p.cur === 'pearls' ? `${fmtPearls(p.amount)} Pearls` : fmtUsdc(p.amount);
+/** Every market price is in Pearls. */
+export function fmtPrice(p: { amount: number }): string {
+  return `${fmtPearls(p.amount)} Pearls`;
 }
 
-/**
- * What the seller receives after the 5% market fee. Pearl sales use the shared rule the server
- * applies (shared/economy.ts: the fee rounds up, at least 1 Pearl). USDC rounds to whole cents.
- */
-export function sellerReceives(p: Price): number {
-  if (p.cur === 'pearls') return sellerProceeds(p.amount);
-  const cents = Math.round(p.amount * 100);
-  return (cents - Math.ceil((cents * MARKET_FEE_BPS) / 10_000)) / 100;
+/** What the seller receives after the 5% market fee (the shared rule the server applies: rounded up, at least 1 Pearl). */
+export function sellerReceives(p: { amount: number }): number {
+  return sellerProceeds(p.amount);
 }
 
-export function marketFee(p: Price): number {
-  return p.cur === 'pearls' ? sharedFee(p.amount) : Math.round((p.amount - sellerReceives(p)) * 100) / 100;
+export function marketFee(p: { amount: number }): number {
+  return sharedFee(p.amount);
 }
 
 /** The fee as a percentage, for labels ("5%"). */
@@ -59,12 +62,18 @@ export function suggestPrice(def: CosmeticDef): number {
   return Math.max(MIN_LIST_PEARLS, Math.min(MAX_LIST_PEARLS, Math.round(base * 0.9)));
 }
 
-export function shortAddr(a: string): string {
-  return a.length > 10 ? `${a.slice(0, 4)}…${a.slice(-4)}` : a;
+/** Can this item be listed on the Pearl market? Epic items only: Premium items trade on the Steam Community Market. */
+export function marketTradable(def: CosmeticDef | undefined): def is CosmeticDef {
+  return !!def && def.tradable && def.rarity !== 'premium';
 }
 
-export function networkLabel(n: ChainNetwork): string {
-  return n === 'devnet' ? 'Devnet' : n === 'mainnet' ? 'Mainnet' : 'Off';
+/**
+ * How a Premium item's price reads: the Steam price in the Steam version, a plain "not here"
+ * line in the browser. buyable is true only where the Steam Item Store sells it.
+ */
+export function premiumOffer(def: CosmeticDef, steam = isSteam()): { text: string; buyable: boolean } {
+  if (steam && def.usd !== undefined) return { text: fmtUsd(def.usd), buyable: true };
+  return { text: STEAM_ONLY, buyable: false };
 }
 
 export function catalogFor(family: FamilyId, slot?: CosmeticSlot): CosmeticDef[] {
@@ -75,14 +84,9 @@ export function byRarity(a: CosmeticDef, b: CosmeticDef): number {
   return RARITY_INFO[a.rarity].order - RARITY_INFO[b.rarity].order || (a.pearls ?? 0) - (b.pearls ?? 0) || a.name.localeCompare(b.name);
 }
 
-/** Owned copies of an item (Limited items carry serials). */
+/** Owned copies of an item. */
 export function copiesOf(account: AccountView | null | undefined, itemId: string): OwnedItem[] {
   return account ? account.owned.filter((o) => o.item === itemId) : [];
-}
-
-export function serialText(o: { serial?: number }, def: CosmeticDef | undefined): string {
-  if (o.serial === undefined) return '';
-  return def?.supply ? `#${o.serial} / ${def.supply}` : `#${o.serial}`;
 }
 
 export function defOf(id: string): CosmeticDef | undefined {
@@ -90,12 +94,14 @@ export function defOf(id: string): CosmeticDef | undefined {
 }
 
 /** Where the item is from, for the detail panels. */
-export function sourceLine(def: CosmeticDef): string {
+export function sourceLine(def: CosmeticDef, steam = isSteam()): string {
   switch (def.rarity) {
     case 'default':
       return 'Part of the starting look. Everyone has it.';
-    case 'limited':
-      return `Limited edition of ${def.supply ?? '?'}. Minted as an NFT on Solana devnet. Tradable.`;
+    case 'premium':
+      return steam
+        ? 'Premium item, sold through the Steam Item Store. Tradable on the Steam Community Market.'
+        : 'Premium item, sold in the Steam version of Hook Wars. It cannot be bought with Pearls.';
     case 'epic':
       return 'Bought with Pearls. Epic items can be traded on the Market.';
     default:

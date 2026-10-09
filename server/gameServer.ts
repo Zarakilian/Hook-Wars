@@ -15,9 +15,88 @@ import { createServerEconomy, type ServerEconomy } from './economy/index.ts';
 import { ECONOMY_MSG_TYPES, type EconomyClientMsg } from '../shared/economy.ts';
 
 const ECONOMY_MSGS = ECONOMY_MSG_TYPES;
-/** Economy messages fan out to disk and possibly the chain: a small bucket of their own. */
+/** Economy messages write to disk and fan out market pushes: a small bucket of their own. */
 const ECON_RATE = 3;
 const ECON_BURST = 12;
+/**
+ * Wrong room codes per IP address (not per socket: strikes reset on reconnect) before joinRoom is
+ * refused from that address for a while. 20 a minute is plenty for typos; guessing one private room
+ * out of 24^5 codes at that rate takes years.
+ */
+export const JOIN_MISS_LIMIT = 20;
+export const JOIN_MISS_WINDOW_MS = 60_000;
+export const JOIN_BLOCK_MS = 60_000;
+const JOIN_MISS_MAX_ENTRIES = 10_000;
+
+/**
+ * The address a per-IP limit counts against: IPv4 as is, IPv6 by its /64 (one household or one
+ * server gets a whole /64, so counting single v6 addresses would be no limit at all).
+ */
+export function ipKey(ip: string): string {
+  const a = ip.split('%')[0].toLowerCase();
+  if (!a.includes(':')) return a;
+  const halves = a.split('::');
+  if (halves.length > 2) return a;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? Math.max(0, 8 - head.length - tail.length) : 0;
+  const groups = [...head, ...new Array<string>(fill).fill('0'), ...tail];
+  return `${groups.slice(0, 4).map((g) => (Number.parseInt(g, 16) || 0).toString(16)).join(':')}::/64`;
+}
+
+/** Failed attempts per key in a fixed window; at the limit the key is blocked for a while. Bounded. */
+export class MissCounter {
+  private readonly limit: number;
+  private readonly windowMs: number;
+  private readonly blockMs: number;
+  private readonly maxEntries: number;
+  private readonly entries = new Map<string, { n: number; since: number; blockedUntil: number }>();
+
+  constructor(limit: number, windowMs: number, blockMs: number, maxEntries = JOIN_MISS_MAX_ENTRIES) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.blockMs = blockMs;
+    this.maxEntries = maxEntries;
+  }
+
+  blocked(key: string, now: number): boolean {
+    const e = this.entries.get(key);
+    return !!e && e.blockedUntil > now;
+  }
+
+  miss(key: string, now: number): void {
+    let e = this.entries.get(key);
+    if (!e) {
+      if (this.entries.size >= this.maxEntries) this.sweep(now);
+      // still full: forget the oldest entries (insertion order) rather than grow without bound
+      for (const k of this.entries.keys()) {
+        if (this.entries.size < this.maxEntries) break;
+        this.entries.delete(k);
+      }
+      e = { n: 0, since: now, blockedUntil: 0 };
+      this.entries.set(key, e);
+    }
+    if (e.blockedUntil > now) return;
+    if (now - e.since > this.windowMs) {
+      e.n = 0;
+      e.since = now;
+    }
+    if (++e.n >= this.limit) {
+      e.blockedUntil = now + this.blockMs;
+      e.n = 0;
+      e.since = e.blockedUntil;
+    }
+  }
+
+  /** Drop entries that neither block nor count any more. */
+  sweep(now: number): void {
+    for (const [k, e] of this.entries) if (e.blockedUntil <= now && now - e.since > this.windowMs) this.entries.delete(k);
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
 
 const MAX_PAYLOAD = 4096;
 const HEARTBEAT_MS = 10_000;
@@ -67,10 +146,15 @@ export class GameServer {
   private readonly perIp = new Map<string, number>();
   private readonly rooms = new Map<string, Room>();
   private readonly roomOwnerIp = new Map<string, string>(); // room code -> creator IP
+  /** wrong room codes per address (ipKey), across reconnects */
+  private readonly joinMisses = new MissCounter(JOIN_MISS_LIMIT, JOIN_MISS_WINDOW_MS, JOIN_BLOCK_MS);
   private nextId = 1;
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private loopImmediate: ReturnType<typeof setImmediate> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
+  /** performance.now() of the last tick-loop run, and the longest gap between runs since the last heartbeat */
+  private lastLoopAt = 0;
+  private maxLoopGap = 0;
   private stopped = false;
   /** deadline of the next tick (performance.now() ms) */
   private nextTick = 0;
@@ -176,7 +260,12 @@ export class GameServer {
       accountId: null,
       econTokens: ECON_BURST,
       econRefill: now,
-      send: (msg: ServerMsg) => this.sendRaw(conn, JSON.stringify(msg), false),
+      send: (msg: ServerMsg) => {
+        // a match is starting on this line: no more market pushes beside the snapshots (the Market
+        // screen subscribes again when it is opened)
+        if (msg.t === 'start') this.unwatchMarket(conn);
+        this.sendRaw(conn, JSON.stringify(msg), false);
+      },
       sendRaw: (data: string, droppable: boolean) => this.sendRaw(conn, data, droppable),
     };
     this.conns.set(id, conn);
@@ -257,6 +346,14 @@ export class GameServer {
     if (c.strikes >= 40) c.ws.close(1008, 'policy violation');
   }
 
+  private unwatchMarket(c: Conn): void {
+    try {
+      this.economy.unwatchMarket?.(c);
+    } catch (err) {
+      console.error('[economy] unwatch', err);
+    }
+  }
+
   private sendRaw(c: Conn, data: string, droppable: boolean): void {
     if (c.ws.readyState !== c.ws.OPEN) return;
     const buffered = c.ws.bufferedAmount;
@@ -274,7 +371,8 @@ export class GameServer {
     const n = (this.perIp.get(c.ip) ?? 1) - 1;
     if (n <= 0) this.perIp.delete(c.ip);
     else this.perIp.set(c.ip, n);
-    if (c.room) c.room.leave(c.id);
+    // dropped, not a Leave: a running match waits (even with nobody left in it) for the rejoin
+    if (c.room) c.room.leave(c.id, true);
     c.room = null;
     try {
       this.economy.onDisconnect(c);
@@ -313,12 +411,15 @@ export class GameServer {
     return r;
   }
 
-  /** Open rooms created from this IP (a room this socket is about to empty does not count). */
-  private roomsOwnedBy(ip: string, leaving: Room | null): number {
+  /**
+   * Open rooms created from this IP (a room this socket's Leave is about to close does not count).
+   * A match held open for a dropped player's rejoin still counts: bot-only rooms are not free.
+   */
+  private roomsOwnedBy(ip: string, c: Conn): number {
     let n = 0;
     for (const [code, owner] of this.roomOwnerIp) {
       if (owner !== ip) continue;
-      if (leaving && leaving.code === code && leaving.members.size === 1) continue;
+      if (c.room && c.room.code === code && c.room.closesWhenLeft(c.id)) continue;
       n++;
     }
     return n;
@@ -326,12 +427,12 @@ export class GameServer {
 
   /** Can this connection create one more room? Sends the reason if not. */
   private canCreate(c: Conn): boolean {
-    if (this.roomsOwnedBy(c.ip, c.room) >= this.cfg.maxRoomsPerIp) {
+    if (this.roomsOwnedBy(c.ip, c) >= this.cfg.maxRoomsPerIp) {
       c.send({ t: 'error', code: 'rooms_per_ip', message: 'You already have the maximum number of rooms open.' });
       return false;
     }
     let size = this.rooms.size;
-    if (c.room && c.room.members.size === 1) size--; // leaving will close it
+    if (c.room && c.room.closesWhenLeft(c.id)) size--; // leaving will close it
     if (size >= this.cfg.maxRooms) {
       c.send({ t: 'error', code: 'rooms_full', message: 'This server has no free rooms right now.' });
       return false;
@@ -388,8 +489,17 @@ export class GameServer {
       }
       case 'joinRoom': {
         const r = this.rooms.get(msg.code);
+        const now = Date.now();
+        const key = ipKey(c.ip);
+        // A guessing address is refused whatever it sends, a correct code included, so a lucky guess
+        // during the block learns nothing. Only a real rejoin token (unguessable) still gets its unit back.
+        if (this.joinMisses.blocked(key, now) && !(r && msg.rejoin && r.canRejoin(msg.rejoin))) {
+          c.send({ t: 'error', code: 'join_limit', message: 'Too many wrong room codes. Wait a minute and try again.' });
+          return;
+        }
         if (!r) {
-          this.strike(c, msg.rejoin ? 1 : 2); // guessing private codes gets you disconnected quickly
+          this.joinMisses.miss(key, now); // counted per address: reconnecting does not reset it
+          this.strike(c, msg.rejoin ? 1 : 2);
           c.send({ t: 'error', code: 'no_room', message: msg.rejoin ? 'That match is over.' : `No room with code ${msg.code}.` });
           return;
         }
@@ -510,6 +620,8 @@ export class GameServer {
     this.loopImmediate = null;
     if (this.stopped) return;
     let now = performance.now();
+    if (now - this.lastLoopAt > this.maxLoopGap) this.maxLoopGap = now - this.lastLoopAt;
+    this.lastLoopAt = now;
     if (this.timerDue > 0) {
       // clamp: a wake that was late because the whole process was descheduled says nothing about the
       // timer, and must not make every later tick spin longer
@@ -555,35 +667,48 @@ export class GameServer {
     this.stopped = false;
     this.nextTick = performance.now() + TICK_MS;
     this.loopTimer = setTimeout(this.loop, 1);
-    this.heartbeat = setInterval(() => {
-      const now = Date.now();
-      for (const c of this.conns.values()) {
-        const helloLate = !c.hello && now - c.connectedAt > HELLO_MS;
-        const idle = now - c.lastMsg > IDLE_MS;
-        if (!c.alive || helloLate || idle) {
-          c.ws.terminate(); // 'close' runs onClose, which frees the slot and the per-IP count
-          continue;
-        }
-        c.alive = false;
-        c.pingSent = now;
-        c.ws.ping();
-        c.strikes = Math.max(0, c.strikes - 10); // strikes decay
+    this.lastLoopAt = performance.now();
+    this.maxLoopGap = 0;
+    this.heartbeat = setInterval(() => this.sweepConnections(), this.cfg.heartbeatMs ?? HEARTBEAT_MS);
+  }
+
+  /** Heartbeat: close dead, silent and hello-less sockets, ping the rest, decay strikes, close idle lobbies. */
+  private sweepConnections(): void {
+    const now = Date.now();
+    // If this process itself was frozen (GC, a slow disk write, the machine descheduling it) for half
+    // the interval or more, the clients' pongs and messages from that time may still be unread: timers
+    // run before the event loop reads sockets, and compressed frames are inflated on the thread pool.
+    // Judge nobody on such a round; a dead socket is caught on the next one.
+    const hb = this.cfg.heartbeatMs ?? HEARTBEAT_MS;
+    const stalled = Math.max(this.maxLoopGap, performance.now() - this.lastLoopAt) > hb / 2;
+    this.maxLoopGap = 0;
+    this.joinMisses.sweep(now);
+    for (const c of this.conns.values()) {
+      const helloLate = !c.hello && now - c.connectedAt > HELLO_MS;
+      const idle = now - c.lastMsg > IDLE_MS;
+      if (!stalled && (!c.alive || helloLate || idle)) {
+        c.ws.terminate(); // 'close' runs onClose, which frees the slot and the per-IP count
+        continue;
       }
-      for (const r of this.rooms.values()) {
-        if (r.phase === 'lobby' && now - r.lastActivity > 30 * 60_000) {
-          for (const id of [...r.members.keys()]) {
-            const c = this.conns.get(id);
-            if (c) {
-              c.room = null;
-              c.send({ t: 'leftRoom' });
-            }
-            r.leave(id);
+      c.alive = false;
+      c.pingSent = now;
+      c.ws.ping();
+      c.strikes = Math.max(0, c.strikes - 10); // strikes decay
+    }
+    for (const r of this.rooms.values()) {
+      if (r.phase === 'lobby' && now - r.lastActivity > 30 * 60_000) {
+        for (const id of [...r.members.keys()]) {
+          const c = this.conns.get(id);
+          if (c) {
+            c.room = null;
+            c.send({ t: 'leftRoom' });
           }
-          this.rooms.delete(r.code);
-          this.roomOwnerIp.delete(r.code);
+          r.leave(id);
         }
+        this.rooms.delete(r.code);
+        this.roomOwnerIp.delete(r.code);
       }
-    }, this.cfg.heartbeatMs ?? HEARTBEAT_MS);
+    }
   }
 
   close(): void {

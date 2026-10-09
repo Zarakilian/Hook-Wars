@@ -9,6 +9,12 @@ import { createStaticHandler } from './static.ts';
 
 const cfg = loadConfig();
 const handler = createStaticHandler(cfg.staticDir);
+// files go out uncompressed for the few seconds this takes (it runs on the thread pool, not the game loop)
+void handler.ready.then((s) => {
+  if (s.files === 0) return;
+  const kb = (n: number) => `${Math.round(n / 1024)} KB`;
+  console.log(`Compressed ${s.files} client files: ${kb(s.rawBytes)} -> ${kb(s.brotliBytes)} brotli, ${kb(s.gzipBytes)} gzip.`);
+});
 const http = createServer(handler);
 http.headersTimeout = 15_000;
 http.requestTimeout = 30_000;

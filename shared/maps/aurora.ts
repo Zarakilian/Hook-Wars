@@ -22,9 +22,10 @@ const islands = [
 ];
 const half: Platform[] = [
   // frozen floe decks and a timber dock frame on each bank: forward hooking spots
-  { kind: 'floe', x: -5.6, z: 4.4, w: 3.0, d: 2.6, rot: 0.25, seed: 1 },
+  // (the floes float about a quarter over the water, clear of the drifting icefloe lanes)
+  { kind: 'floe', x: -5.4, z: 4.4, w: 3.0, d: 2.6, rot: 0.25, seed: 1 },
   { kind: 'dock', x: -6.9, z: -13.6, w: 3.2, d: 1.9, rot: 0, seed: 3 },
-  { kind: 'floe', x: -5.2, z: 20.6, w: 2.6, d: 2.2, rot: -0.3, seed: 5 },
+  { kind: 'floe', x: -4.6, z: 20.6, w: 2.6, d: 2.2, rot: -0.3, seed: 5 },
 ];
 const platforms: Platform[] = [...half, ...half.map((p) => ({ ...p, x: -p.x, z: -p.z, seed: (p.seed ?? 0) + 1 }))];
 const fountains: MapDef['fountains'] = [{ x: -32, z: 0, r: 6.5 }, { x: 32, z: 0, r: 6.5 }];
@@ -104,8 +105,9 @@ export const aurora: MapDef = {
   fountains,
   obstacles,
   movers: [
-    { kind: 'icefloe', r: 0.95, len: 0, lane: -0.6, speed: 1.3, offset: -14, seed: 1 },
-    { kind: 'icefloe', r: 0.95, len: 0, lane: 0.6, speed: -1.3, offset: 14, seed: 2 },
+    // lanes 0.55 of the half width: clear of the bank floes and of the watchtower rock (0.5 hits it)
+    { kind: 'icefloe', r: 0.95, len: 0, lane: -0.55, speed: 1.3, offset: -14, seed: 1 },
+    { kind: 'icefloe', r: 0.95, len: 0, lane: 0.55, speed: -1.3, offset: 14, seed: 2 },
   ],
   runeSpots: withMirroredPoints([{ x: -isleA, z: -9.2 }, { x: 0.8, z: -4.8 }]),
   hazardSlots,
@@ -118,7 +120,7 @@ export const aurora: MapDef = {
     skyTop: 0x070c26,
     skyHorizon: 0x284a78,
     groundAmbient: 0x283058,
-    ambientIntensity: 1.15,
+    ambientIntensity: 1.25,
     fogColor: 0x4a5c8e,
     fogDensity: 0.011,
     weather: 'snow',
@@ -126,15 +128,17 @@ export const aurora: MapDef = {
     waterShallow: 0x2aa6c0,
     waterDeep: 0x08223e,
     waterFoam: 0xeaf6ff,
-    exposure: 1.08,
+    exposure: 1.15,
     saturation: 1.05,
     bloom: 0.75,
   },
   terrain: {
-    grass: [0xe8eef6, 0xdce5f0, 0xf2f6fb, 0xd0dcea, 0xe2eaf4],
-    dirt: [0x6a7486, 0x5b6576, 0x7a8494],
-    bank: [0x96a6ba, 0x8494a8, 0xaabaca, 0x8c9cb0],
-    bed: [0x40536a, 0x34465a, 0x4c6076],
+    // snow caps on the harbour ice (the slabs, leads and shelf ice are painted by the biome), trodden
+    // blue snow on the paths, glassy shelf ice, a dark harbour floor
+    grass: [0xeef3f9, 0xe2eaf4, 0xf8fbfe, 0xd6e2f0, 0xe8eff7],
+    dirt: [0x8a9cb4, 0x7c8ea8, 0x9aaac0],
+    bank: [0x9cc8e2, 0x86b8da, 0xb2d6ec, 0x8cbcdc],
+    bed: [0x2c4a5e, 0x24404f, 0x34566a],
     dryBed: [0x8696a6, 0x788898, 0x98a8b8, 0x6e7e90],
     cliff: [0x8ea2b8, 0x7c90a6, 0xa4b6ca],
     baseHeight: 1.3,

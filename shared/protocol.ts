@@ -305,8 +305,15 @@ export function parseClientMessage(raw: string): ClientMsg | null {
   }
 }
 
+/**
+ * Fun player names for a new profile (the client adds two digits) and for any fallback that needs a
+ * name before the player picked one. Original names only: nothing from another game or brand.
+ */
+export const FUNNY_NAMES: readonly string[] = ['Gutbucket', 'Chumlord', 'Reelmaster', 'Bilgerat', 'Hookwright', 'Mudlark', 'Gristleface', 'Snagtooth'];
+
+/** Placeholder profile for a connection until its hello arrives (and for any record without a name). */
 export function defaultProfile(): Profile {
-  return { name: 'Pudgy', family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler } };
+  return { name: FUNNY_NAMES[0], family: 'brawler', loadout: { ...DEFAULT_LOADOUT.brawler } };
 }
 
 export function defaultConfig(): MatchConfig {

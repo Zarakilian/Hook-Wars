@@ -27,14 +27,10 @@ export interface UiCtx {
   owns(itemId: string): boolean;
   /** Buy with Pearls; plays the purchase sound and toasts when ownership actually lands. */
   buyPearls(itemId: string): void;
-  /** Buy a Limited item with devnet USDC (wallet flow); same feedback as buyPearls. */
-  buyUsdc(itemId: string): void;
   /** Buy a market listing; plays the purchase sound and toasts when the copy lands in the inventory. */
   buyListing(l: Listing): void;
   /** Remember that the player cancelled this listing, so its disappearance is not reported as a sale. */
   noteCancel(listingId: string, instance: string): void;
-  /** Open the wallet panel. */
-  openWallet(): void;
   /** Item thumbnails (3D renders with an SVG fallback). */
   thumbs: ItemThumbs;
 }

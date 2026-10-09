@@ -5,17 +5,65 @@ import { RejoinStore } from './rejoin.ts';
 
 export type ConnStatus = 'connecting' | 'open' | 'closed';
 
-/** Default server address: the same host that served the page. */
-export function defaultServerUrl(): string {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${location.host}/ws`;
+/** The parts of the page's address that pick a default server (window.location in the browser). */
+export interface PageOrigin {
+  protocol: string;
+  host: string;
 }
 
-/** Accepts "host:port", "ws://host:port", "https://host" etc. and returns a ws(s) URL ending in /ws. */
-export function normaliseServerUrl(input: string): string | null {
+function currentPage(): PageOrigin | null {
+  const l = (globalThis as { location?: { protocol: string; host: string } }).location;
+  return l ? { protocol: l.protocol, host: l.host } : null;
+}
+
+/** Set by a build that is not served by the game server (a desktop app): see setDefaultServerUrl. */
+let configuredDefault: string | null = null;
+
+/**
+ * The server an empty address means. A build that is not served by a game server (the desktop app
+ * loads the page from disk) sets it with setDefaultServerUrl: a dedicated server or one on this machine.
+ * Otherwise it is the host that served the page (the browser build). Null when there is neither, and
+ * the player has to type an address.
+ */
+export function defaultServerUrl(page: PageOrigin | null = currentPage()): string | null {
+  if (configuredDefault) return configuredDefault;
+  if (!page || (page.protocol !== 'http:' && page.protocol !== 'https:') || !page.host) return null;
+  const proto = page.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${page.host}/ws`;
+}
+
+/** Point the empty address at a fixed server (null: back to the page's own host). False for a bad address. */
+export function setDefaultServerUrl(url: string | null): boolean {
+  const wanted = url?.trim() ?? '';
+  // without a page to resolve against: a bare host gets wss, localhost and LAN addresses get ws
+  const full = wanted ? normaliseServerUrl(wanted, null) : null;
+  if (wanted && !full) return false;
+  configuredDefault = full;
+  return true;
+}
+
+/** localhost, loopback and private LAN addresses: servers there rarely have a TLS certificate. */
+function isLocalHost(hostPort: string): boolean {
+  const v6 = /^\[([^\]]*)\]/.exec(hostPort);
+  const host = (v6 ? v6[1] : hostPort.replace(/:\d*$/, '')).toLowerCase();
+  return host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.lan') || host === '::1' ||
+    /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+}
+
+/**
+ * Accepts "host:port", "ws://host:port", "https://host" etc. and returns a ws(s) URL ending in /ws
+ * (null when it is not a server address, or when it is empty and there is no default server).
+ * Without a scheme: wss on an https page, ws on an http page; a page that was not served over http
+ * (the desktop app) uses ws for localhost and LAN addresses and wss for everything else.
+ */
+export function normaliseServerUrl(input: string, page: PageOrigin | null = currentPage()): string | null {
   let s = input.trim();
-  if (!s) return defaultServerUrl();
-  if (!/^[a-z]+:\/\//i.test(s)) s = (location.protocol === 'https:' ? 'wss://' : 'ws://') + s;
+  if (!s) return defaultServerUrl(page);
+  if (!/^[a-z]+:\/\//i.test(s)) {
+    const web = page && (page.protocol === 'http:' || page.protocol === 'https:');
+    const secure = web ? page.protocol === 'https:' : !isLocalHost(s.split('/')[0]);
+    s = (secure ? 'wss://' : 'ws://') + s;
+  }
   try {
     const u = new URL(s);
     if (u.protocol === 'http:') u.protocol = 'ws:';
@@ -51,9 +99,11 @@ export class Connection {
   /** Set while an automatic rejoin of a dropped match is in flight (the room code). */
   autoRejoining: string | null = null;
   private ws: WebSocket;
-  private pingTimer: number;
+  private readonly pingTimer: unknown;
   private readonly rejoin: RejoinStore;
   private readonly autoRejoin: boolean;
+  /** close() was called: anything the socket still delivers is ignored, and its close is not a drop */
+  private closing = false;
 
   constructor(url: string, profile: Profile, account: string | null = null, opts: ConnectionOptions = {}) {
     this.url = url;
@@ -66,7 +116,9 @@ export class Connection {
       this.onStatus?.('open');
     });
     this.ws.addEventListener('message', (ev) => {
-      if (typeof ev.data !== 'string') return;
+      // after close() (the player left, or started a solo match over a rejoin in flight) a late 'start'
+      // must not mark the match as ours again, or the next connection would auto-rejoin it
+      if (this.closing || typeof ev.data !== 'string') return;
       let m: ServerMsg;
       try {
         m = JSON.parse(ev.data) as ServerMsg;
@@ -83,16 +135,16 @@ export class Connection {
     });
     this.ws.addEventListener('close', (ev) => {
       this.status = 'closed';
-      window.clearInterval(this.pingTimer);
+      globalThis.clearInterval(this.pingTimer as number);
       // a drop mid-match starts the grace clock; the next connection to this server can take the unit back
-      if (this.inMatch && this.roomCode) this.rejoin.markDropped(this.url, this.roomCode);
+      if (!this.closing && this.inMatch && this.roomCode) this.rejoin.markDropped(this.url, this.roomCode);
       this.inMatch = false;
       this.onStatus?.('closed', ev.reason || (ev.code === 1006 ? 'Could not reach the server.' : `Disconnected (${ev.code}).`));
     });
     this.ws.addEventListener('error', () => {
       // 'close' follows with the details
     });
-    this.pingTimer = window.setInterval(() => this.send({ t: 'ping', c: performance.now() }), 2000);
+    this.pingTimer = globalThis.setInterval(() => this.send({ t: 'ping', c: performance.now() }), 2000);
   }
 
   send(m: ClientMsg): void {
@@ -155,7 +207,8 @@ export class Connection {
   }
 
   close(): void {
-    window.clearInterval(this.pingTimer);
+    this.closing = true;
+    globalThis.clearInterval(this.pingTimer as number);
     // closing on purpose is leaving: keep the token for a manual rejoin by code, but no auto-rejoin
     if (this.inMatch && this.roomCode) this.rejoin.markLeft(this.url, this.roomCode);
     this.inMatch = false;

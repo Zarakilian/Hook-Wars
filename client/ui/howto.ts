@@ -1,5 +1,5 @@
 // How to Play: a tabbed field guide (goal, controls, moves, river, hazards, runes and shop).
-import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS, RUNE_BLURBS, RUNE_COLORS, RUNE_NAMES } from '../../shared/constants.ts';
+import { BAL, HOOK_LEVELS, ITEM_IDS, ITEMS, RUNE_BLURBS, RUNE_COLORS, RUNE_NAMES, UNIT_NOUN } from '../../shared/constants.ts';
 import { MAPS } from '../../shared/maps/index.ts';
 import { HAZARD_INFO } from '../../shared/sim/hazards.ts';
 import { MAP_IDS, type ControlScheme, type HazardKind, type RuneType } from '../../shared/types.ts';
@@ -58,9 +58,9 @@ export function createHowTo(ctx: UiCtx, start: number, close: () => void): { el:
       title: 'The Goal',
       icon: 'fish',
       body: () => h('div', { class: 'ht-page' },
-        h('p', { class: 'ht-lead', text: 'Think of it as fishing for your friends. Your hook is the rod, the river is the danger, and the catch is an enemy Pudgy dragged onto your bank.' }),
+        h('p', { class: 'ht-lead', text: `Think of it as fishing for your friends. Your hook is the rod, the river is the danger, and the catch is an enemy ${UNIT_NOUN.one} dragged onto your bank.` }),
         h('div', { class: 'ht-grid' },
-          card('hook', 'Hook them across', 'Throw your Chain Hook over the river. The first Pudgy it hits is dragged straight back to you.'),
+          card('hook', 'Hook them across', `Throw your Chain Hook over the river. The first ${UNIT_NOUN.one} it hits is dragged straight back to you.`),
           card('melee', 'Wallop the catch', 'Stand next to an enemy and you swing at them automatically. Hooks deal big damage too.'),
           card('trophy', 'First to the target wins', 'Every death scores a point for the other team, drownings and hazards included. A tie at the buzzer goes to overtime.'),
           card('fountain', 'Mind the fountains', 'Your home fountain heals your team. The enemy fountain burns you, so do not get dragged into it.'),

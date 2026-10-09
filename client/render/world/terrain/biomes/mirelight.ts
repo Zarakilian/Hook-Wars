@@ -1,24 +1,42 @@
-// Mirelight Marsh: Muckmire's mossy banks and mud channels, braided. Past the far edge the bayou
+// Mirelight Marsh: a braided bayou of moss mats, wet mud and standing puddles, every shore a strip of
+// black lily-pad mud (the reference's marsh edge), not Muckmire's lawn. Past the far edge the bayou
 // runs on toward the setting sun, widening into misty open water dotted with hummock islands of
 // giant moss-hung cypress, stilt huts and lantern posts. A cypress forest with pools closes in on the
 // sides, and past the near edge the river spills into a cattail and lily-pad marsh.
 import { riverAt } from '../../../../../shared/maps/helpers.ts';
+import { mireMud } from '../../../../../shared/maps/mirelight.ts';
 import type { MapDef } from '../../../../../shared/maps/types.ts';
 import { fbm2, valueNoise2 } from '../../../../../shared/math.ts';
 import type { MatchConfig } from '../../../../../shared/types.ts';
 import type { Quality } from '../../../contracts.ts';
 import { hashVox } from '../../../voxel/voxel.ts';
-import { BaseBiome, pathSegs, sstep } from '../biome.ts';
+import { BaseBiome, LIP, h01, jit, mix, mosaic, pathSegs, pick, shade, smooth01, sstep } from '../biome.ts';
+import type { Cell } from '../field.ts';
 import type { BackdropRule } from '../flora.ts';
 import type { MistDef } from '../mist.ts';
 import { MuckmireBiome } from './muckmire.ts';
+
+/** wet mud patches on the ground */
+const MUD = [0x3c2f20, 0x33281b, 0x463727, 0x2b2318];
+/** black, glossy mud of the shore strip and the puddles */
+const BLACK_MUD = [0x2c2318, 0x34291c, 0x271f15, 0x3a2e20];
+const PAD = [0x4f7a2e, 0x5a8a34, 0x46702a, 0x62923a];
+const PETAL = [0xf6f2ee, 0xfbe8f0, 0xf2d6e4];
+const LITTER = [0x5a4a2a, 0x64532e, 0x4e4224];
+/** width of the lily-pad mud strip along every shore (m): visual only, the sim water starts at c = 0 */
+const SHALLOWS = 3.2;
 
 export class MirelightBiome extends MuckmireBiome {
   override readonly farColor = 0x1c2618;
   readonly lampLight = 1.1;
 
+  private readonly moss: number[];
+  private readonly mud: number[];
+
   constructor(map: MapDef, config: MatchConfig) {
     super(map, config);
+    this.moss = byLum(map.terrain.grass);
+    this.mud = byLum(map.terrain.dirt);
     // worn paths from the plaza to the two dock crossings and round the side-channel end
     this.paths = pathSegs(
       [
@@ -29,6 +47,61 @@ export class MirelightBiome extends MuckmireBiome {
       ],
       0.75,
     );
+  }
+
+  /**
+   * Muckmire's shapes (river cut, plazas, paths, jungle) with Mirelight's own ground on top: moss mats
+   * broken by wet mud and puddles, and a strip of black lily-pad mud along every shore. Heights stay
+   * Muckmire's, apart from the puddles sitting a step lower (always well above the full water line).
+   */
+  override sample(x: number, z: number, ix: number, iz: number, cs: number, out: Cell): void {
+    super.sample(x, z, ix, iz, cs, out);
+    if (cs > 0.5 || this.outside(x, z) > 0 || this.plazaDist(x, z) < 0.05) return;
+    const c = this.channel(x, z);
+    if (c > LIP) return; // the channel wall and bed stay mud (the map's palettes)
+    const wet = c > -SHALLOWS ? smooth01((c + SHALLOWS) / (SHALLOWS + LIP)) : 0;
+    const path = this.pathAmount(x, z);
+    // ground: moss mats with wet mud patches and standing puddles in the low spots
+    const n = mireMud(x, z);
+    let col: number;
+    let rough = 0.95;
+    if (n > 0.58 && wet < 0.5) {
+      if (n > 0.71) {
+        col = shade(jit(pick(BLACK_MUD, ix, iz, 503), ix, iz, 0.05), 0.85);
+        rough = 0.55; // wet but not a mirror: glossy puddles flash white at the far edge of the screen
+        out.h -= 0.0625;
+      } else {
+        col = mosaic(MUD, valueNoise2(x * 0.4, z * 0.4, 504), ix, iz, 505, 0.06, 0.1);
+        rough = 0.4;
+      }
+    } else {
+      col = mosaic(this.moss, valueNoise2(x * 0.08, z * 0.08, 506) * 0.7 + valueNoise2(x * 0.3, z * 0.3, 507) * 0.3, ix, iz, 508, 0.07, 0.12);
+      const r = h01(ix, iz, 509);
+      if (r < 0.05) col = pick(LITTER, ix, iz, 510);
+      else if (r < 0.065) col = shade(pick(MUD, ix, iz, 511), 1.1);
+    }
+    if (path > 0.2 && h01(ix, iz, 512) < (path - 0.2) / 0.5) {
+      // a muddy track, wetter in the middle
+      col = shade(mosaic(this.mud, valueNoise2(x * 0.5, z * 0.5, 513), ix, iz, 514, 0.07, 0.15), 0.85);
+      rough = path > 0.6 ? 0.3 : 0.6;
+    }
+    if (wet > 0) {
+      // the shore strip: wet dark mud, glossier toward the water, lily pads on its last metre
+      const k = Math.min(1, wet * 1.4);
+      const mud = mosaic(BLACK_MUD, valueNoise2(x * 0.35, z * 0.35, 522), ix, iz, 515, 0.05, 0.08);
+      col = mix(col, shade(mud, 1 - wet * 0.25), k);
+      rough = rough + (0.18 - rough) * k;
+      if (wet > 0.62) {
+        const v = this.voronoi(x, z, 1.4);
+        const id = this.cellId;
+        if (v > 0.14 && h01(id & 1023, id >> 10, 516) < 0.3) {
+          col = v > 0.36 && h01(id & 1023, id >> 10, 517) < 0.12 ? shade(pick(PETAL, ix, iz, 518), 0.85) : jit(pick(PAD, id & 255, 0, 519), ix, iz, 0.05);
+          rough = 0.55;
+        }
+      } else if (wet < 0.45 && h01(ix >> 1, iz >> 1, 520) < 0.3 * (1 - wet * 2)) col = mosaic(this.moss, 0.45, ix, iz, 521, 0.06, 0.1); // moss creeping onto the mud
+    }
+    out.top = col;
+    out.rough = rough;
   }
 
   /** Signed distance outside the nearest hummock island in the far waterway (negative inside). */
@@ -144,7 +217,10 @@ export class MirelightBiome extends MuckmireBiome {
       return true;
     };
     const inPlay = (x: number, z: number) => Math.abs(x) < this.halfW - 0.3 && Math.abs(z) < this.halfD - 0.3 && this.plazaDist(x, z) > 0.3 && offDeck(x, z);
+    const still = !this.tidal && !this.dry; // floating flowers only where the water level never changes
     return [
+      { model: 'cattails', spacing: rich ? 2.2 : 3, scale: [0.6, 1.0], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -SHALLOWS + 0.6 && c < -0.3 ? 0.22 : 0; } },
+      ...(still ? [{ model: 'lilyflowers' as const, spacing: rich ? 2.6 : 3.4, scale: [0.7, 1.1] as [number, number], density: (x: number, z: number) => { const c = this.channel(x, z); return inPlay(x, z) && c > 0.5 && c < 2.2 && !this.nearIsland(x, z) ? 0.3 : 0; }, onWater: true }] : []),
       { model: 'pebble', spacing: rich ? 1.1 : 1.6, scale: [0.7, 1.3], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -this.bankW && c < 0.1 ? 0.45 : 0; } },
       { model: 'root', spacing: rich ? 1.4 : 2.2, scale: [0.7, 1.2], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -0.6 && c < 0.15 && !this.nearIsland(x, z) ? 0.6 : 0; }, yaw: (x, z) => this.faceRiver(x, z) },
       { model: 'pebble', spacing: rich ? 1.4 : 2.2, scale: [0.8, 1.5], density: (x, z) => (inPlay(x, z) && this.channel(x, z) > 2 ? (this.dry ? 0.55 : 0.3) : 0), underwater: true },
@@ -168,4 +244,9 @@ export class MirelightBiome extends MuckmireBiome {
     }
     return out;
   }
+}
+
+function byLum(p: readonly number[]): number[] {
+  const l = (c: number) => ((c >> 16) & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + (c & 255) * 0.11;
+  return [...p].sort((a, b) => l(a) - l(b));
 }

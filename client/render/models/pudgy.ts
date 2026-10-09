@@ -1,10 +1,11 @@
-// Pudgy characters: Harbour Brawler, Swamp Ogre, Butcher-Bot.
+// The characters (Lunkers on screen, UNIT_NOUN): Harbour Brawler, Swamp Ogre, Dredge-Bot.
 // Each family is a bare base body (the character sheets) plus one cosmetic per slot
 // (shared/cosmetics.ts). Articulated voxel rigs: separately meshed parts on proper pivots, geometry
 // cached per (family, part, the item ids that part reads, team only where it is team-tinted) and
 // shared across instances, one shared shader, procedural animation. See ./pudgy/ for the pieces:
 //   grid.ts      voxel grid with surface channels, fine (showcase) resolution, meshing
-//   material.ts  one shared shader, per-unit uniforms (glow pulses, hit flash, team rim, sparkle)
+//   material.ts  one shared shader, per-unit uniforms (glow pulses, hit flash, team rim, team glow, sparkle)
+//   teamRing.ts  the unlit team-colour ring on the ground under every unit (game detail)
 //   rig.ts       joint hierarchy, hook grip
 //   anim.ts      procedural animation
 //   puffs.ts     cigar smoke and smokestack steam
@@ -26,6 +27,7 @@ import { makePudgyMaterial, makeUniforms } from './pudgy/material.ts';
 import { buildOgre, ogrePalette } from './pudgy/ogre.ts';
 import { PuffSystem } from './pudgy/puffs.ts';
 import { buildRig } from './pudgy/rig.ts';
+import { createTeamRing, teamRingShown } from './pudgy/teamRing.ts';
 import type { FamilyBuild } from './pudgy/types.ts';
 
 function look(family: FamilyId, loadout: Loadout, team: Team, fine: boolean, quality: PudgyOptions['quality']): Look {
@@ -49,6 +51,12 @@ function familyBuild(family: FamilyId, l: Look): FamilyBuild {
 }
 
 let seedCounter = 1;
+
+/**
+ * Self-lit share of team-coloured voxels (material.ts uTeamGlow). In game it keeps the team hue on
+ * the body under every map's light; the Locker's studio light needs only a touch.
+ */
+export const TEAM_GLOW = { game: 0.45, showcase: 0.08 } as const;
 
 /** Transparent-queue order of the stealth depth pre-pass; the ghost parts draw right after it. */
 const GHOST_DEPTH_ORDER = 10;
@@ -76,7 +84,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   const l = look(o.family, o.loadout, o.team, fine, o.quality);
   const fb = familyBuild(o.family, l);
   const tc = TEAM_COLORS[o.team];
-  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light);
+  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light, fine ? TEAM_GLOW.showcase : TEAM_GLOW.game);
   uniforms.uSparkle.value = fb.premium ? 1 : 0;
   const solid = makePudgyMaterial(uniforms, false);
   let ghost: THREE.MeshStandardMaterial | null = null;
@@ -108,6 +116,11 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   headProbe.position.set(0, (fb.sk.top - fb.sk.neck[1]) * VOX, 0);
   nodes.neck.add(headProbe);
 
+  // team ring on the ground (game detail only: never on the Locker pedestal or in thumbnails)
+  const ring = fine ? null : createTeamRing(o.team, o.isLocal);
+  if (ring) root.add(ring);
+  let ringLive = true;
+
   let puffs: PuffSystem | null = null;
   if (fb.puffs.length && o.quality !== 'low') {
     puffs = new PuffSystem(fb.puffs, fb.sk, (n) => (n === 'neck' ? nodes.neck : n === 'hat' ? nodes.hat : n === 'back' ? nodes.back : nodes.torso));
@@ -126,6 +139,10 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
     update(dt: number, a: PudgyAnimInput): void {
       anim.onFootstep = view.onFootstep;
       anim.update(dt, a, root);
+      if (ring) {
+        ringLive = teamRingShown(a, 1);
+        ring.visible = ringLive && alpha >= 1;
+      }
       if (puffs) {
         const live = a.state !== UnitState.Dead && a.state !== UnitState.Drowning && alpha >= 1 && root.visible;
         puffs.update(dt, anim.exertion, fb.scale, root, live);
@@ -141,6 +158,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
       // the fx hook skin's materials are shared and cached by the fx module: never swap or fade
       // them, just hide the skin while see-through (the puffs too)
       if (held) held.visible = q >= 1;
+      if (ring) ring.visible = ringLive && q >= 1;
       if (q >= 1) {
         for (let i = 0; i < nodes.meshes.length; i++) {
           const m = nodes.meshes[i];
@@ -181,6 +199,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
       held = null;
       puffs?.dispose();
       puffs = null;
+      ring?.removeFromParent();
       solid.dispose();
       ghost?.dispose();
       root.remove(nodes.rig);

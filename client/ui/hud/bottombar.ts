@@ -59,7 +59,10 @@ interface ItemEl {
 }
 
 interface BuffEl {
+  /** the timer ring */
   el: HTMLElement;
+  /** what sits in the row: the ring, or for a hook power-up a column of its name over the ring */
+  root: HTMLElement;
   secs: HTMLElement;
   seen: number;
   maxSeen: number;
@@ -179,7 +182,7 @@ export class BottomBar {
       a.el.classList.remove('flash');
     }
     for (const it of this.items) it.id = '#';
-    for (const b of this.buffs.values()) b.el.remove();
+    for (const b of this.buffs.values()) b.root.remove();
     this.buffs.clear();
   }
 
@@ -309,10 +312,16 @@ export class BottomBar {
         const secs = h('span', { class: 'bf-secs' });
         const node = h('span', { class: `buff ${BUFF_BAD[b.t] ? 'bad' : ''} ${BUFF_POWER[b.t] ? 'power' : ''}`.trim(), title: BUFF_TITLE(b.t) }, icon(BUFF_ICON[b.t]), secs);
         if (isRune(b.t)) node.style.setProperty('--bc', hex(RUNE_COLORS[b.t].main));
-        if (BUFF_POWER[b.t]) node.append(h('span', { class: 'bf-name', text: RUNE_NAMES[b.t as keyof typeof RUNE_NAMES] }));
-        el = { el: node, secs, seen: stamp, maxSeen: b.left };
+        // a hook power-up's name sits in the row's flow above its ring, so the column is as wide as
+        // the name and two or three named power-ups never overlap (the gap does the spacing)
+        let root = node;
+        if (BUFF_POWER[b.t]) {
+          root = h('span', { class: 'buff-col' }, h('span', { class: 'bf-name', text: RUNE_NAMES[b.t as keyof typeof RUNE_NAMES] }), node);
+          if (isRune(b.t)) root.style.setProperty('--bc', hex(RUNE_COLORS[b.t].main));
+        }
+        el = { el: node, root, secs, seen: stamp, maxSeen: b.left };
         this.buffs.set(b.t, el);
-        this.buffsEl.prepend(node);
+        this.buffsEl.prepend(root);
       }
       el.seen = stamp;
       el.maxSeen = Math.max(el.maxSeen, b.left);
@@ -323,7 +332,7 @@ export class BottomBar {
     }
     for (const [k, el] of this.buffs) {
       if (el.seen === stamp) continue;
-      el.el.remove();
+      el.root.remove();
       this.buffs.delete(k);
     }
   }

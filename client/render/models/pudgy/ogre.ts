@@ -5,7 +5,7 @@
 // drapes over the back, muddy toes, vine-wrapped tusk hook. Team colour: a woven sash from the
 // left shoulder to the right hip (drawn over every outfit) and cloth wraps on both forearms.
 import type { PudgyPalette } from '../../contracts.ts';
-import { dropGrid, lumps, part, partMirrored, resOf, ring, teamCloth, type Look, type TeamCols } from './common.ts';
+import { dropGrid, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
 import { buildRes, CH, hashVox, hv, jitter, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
 import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, Skeleton, V3 } from './types.ts';
 
@@ -13,11 +13,13 @@ import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, Skeleton, V3 } 
 // Palette (ref02 / ref09)
 // ---------------------------------------------------------------------------------------------
 
-const SKIN = 0xb2ad84;
-const SKIN_D = 0x8e8c62;
-const SKIN_L = 0xcdc69e;
-const SKIN_G = 0x8f9a5c;
-const MOSS = [0x7f8f2a, 0x97a232, 0x5f6c1f, 0xa9b23e, 0x6f7d26] as const;
+// warm khaki-tan hide (ref09 belly #aa875c, chest #91764b) with olive blotches; the old pale
+// mint-cream set (0xb2ad84...) rendered at almost twice the reference luminance (finding 34)
+const SKIN = 0x8a7650;
+const SKIN_D = 0x5e4e32;
+const SKIN_L = 0xa48f62;
+const SKIN_G = 0x58622a;
+const MOSS = [0x6c7a24, 0x82902c, 0x505c1a, 0x949e36, 0x5e6c20] as const;
 const FUNGUS = 0xd28a4e;
 const FUNGUS_D = 0x8a4a28;
 const DREAD = 0x302b22;
@@ -223,10 +225,12 @@ function buildBody(l: Look): RGrid {
     g.blob(0, 12.5, -1, 9.5, 4.5, 8.5, skin(5));
   });
   // paler belly
-  g.repaint((x, y, z) => z > 6 && y < 24 && y > 10, CH.skin, (x, y, z) => mix(skin(6)(x, y, z), SKIN_L, 0.3), true);
+  g.repaint((x, y, z) => z > 6 && y < 24 && y > 10, CH.skin, (x, y, z) => mix(skin(6)(x, y, z), SKIN_L, 0.18), true);
   warts(g, 0.13, 7);
   // moss on the shoulders, hump and belly sides, fungi in it
-  mossOver(g, (x, y, z) => y > 25 || (y > 14 && Math.abs(x + 0.5) > 8), 0.3, 11);
+  mossOver(g, (x, y, z) => y > 25 || (y > 14 && Math.abs(x + 0.5) > 8), 0.5, 11);
+  // and patches over the belly front (ref09)
+  mossOver(g, (x, y) => y > 11 && y <= 25, 0.2, 15);
   fungi(g, BELLY_C, BELLY_R, 6, 12, (nx, ny, nz) => nz > 0.35 && ny > -0.4);
   fungi(g, CHEST_C, CHEST_R, 5, 13, (nx, ny) => ny > 0.35);
   fungi(g, HUMP_C, HUMP_R, 3, 14, (nx, ny, nz) => ny > 0.2 && nz < 0.3);
@@ -376,7 +380,7 @@ function sash(g: RGrid, t: TeamCols): void {
     g.tube(-11.2, 10, 7, -11.8, 5, 8, 0.85, col);
     g.tube(-10.4, 10, 7, -9.6, 6, 8.6, 0.85, col);
   });
-  g.repaint((x, y) => y < 6.5, CH.cloth, (x, y, z) => shade(t.dark, 1 + hv(x, y, z, 29) * 0.1), true);
+  g.repaint((x, y) => y < 6.5, CH.cloth, teamTone((x, y, z) => shade(t.dark, 1 + hv(x, y, z, 29) * 0.1)), true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -639,7 +643,7 @@ function buildUpperArm(): RGrid {
     g.cyl('y', sx + 0.4, sz + 0.2, 3.7, 19, 26, skin(52));
   });
   warts(g, 0.14, 53);
-  mossOver(g, (x, y) => y > 25.5, 0.45, 54);
+  mossOver(g, (x, y) => y > 22, 0.55, 54);
   fungi(g, [sx, sy - 0.5, sz], [4.6, 3.8, 4.4], 2, 55, (nx, ny) => ny > 0.2 && nx > -0.3);
   return g;
 }
@@ -663,6 +667,8 @@ function buildLowerArm(l: Look, hookHand: boolean): RGrid {
   // claws / nails on the knuckles
   g.repaint((x, y, z) => z >= hz + 4 && y <= hy + 1 && y >= hy, CH.wet, (x, y, z) => shade(NAIL, 0.85 + hv(x, y, z, 69) * 0.15), true);
   if (hookHand) g.repaint((x, y) => y <= hy - 1, CH.skin, shade(SKIN_D, 1.05), true);
+  // moss on the forearms (ref09), under the team wraps
+  mossOver(g, (x, y) => y >= 15 && y <= 21, 0.3, 71);
   // team arm wraps: three bands spiralling up the forearm
   const wrap = teamCloth(l.t, 70);
   g.on(CH.cloth, () => {
@@ -696,7 +702,7 @@ function buildLeg(l: Look): RGrid {
     for (let i = 0; i < 4; i++) g.blob(lx - 2.8 + i * 1.9, 1.2, lz + 7.4 - Math.abs(i - 1.5) * 0.4, 1.05, 1.1, 1.15, skin(84 + i));
   });
   warts(g, 0.12, 88);
-  mossOver(g, (x, y, z) => y > 10 || z < lz - 2, 0.25, 89);
+  mossOver(g, (x, y, z) => y > 10 || z < lz - 2, 0.4, 89);
   // toenails
   g.repaint((x, y, z) => z >= lz + 8 && y >= 1 && y <= 2, CH.wet, (x, y, z) => shade(NAIL, 0.85 + hv(x, y, z, 90) * 0.12), true);
   if (feet === 'mud_toes') {
@@ -888,7 +894,8 @@ export function buildOgre(l: Look): FamilyBuild {
     scale: SCALE,
     hookDangles: false,
     hookMount: { pos: [0, -0.02, 0.06], rot: [1.45, 0, -Math.PI / 2] },
-    hangMount: { pos: [0, -0.03, 0], rot: [Math.PI / 2, 0, 0] },
+    // vine-hung skins (croc jaw, root): the vine starts inside the fist so the head clears the ground
+    hangMount: { pos: [0, 0.05, 0], rot: [Math.PI / 2, 0, 0] },
     gripMount: { pos: [0, -0.02, 0.06], rot: [1.45, 0, -Math.PI / 2] },
     puffs: [],
     corpseLift: 0.62,

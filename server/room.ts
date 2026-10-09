@@ -6,6 +6,10 @@
 // K/D), while a bot drives it in between. Every per-player call (input, buy, sell, upgrade, snapshot)
 // is routed through Member.unit, never through the connection id.
 //
+// A room whose last human DROPPED (socket closed) stays open, its bots playing on, until every such
+// grace window has run out, so the rejoin finds the match; the first player back becomes host. A
+// deliberate Leave by the last member closes the room at once, as does a match ending with nobody in it.
+//
 // Snapshot flow control: once a client acks snapshot ticks (input.a, or 'ack' for spectators), the
 // stream to it is paced by those acks. More than LAG_TICKS (plus its base round trip) unacked and it
 // gets no new frames, only a probe once a second, until its acks catch up; then it resumes with the
@@ -103,8 +107,14 @@ interface Seat {
   unit: number;
   /** connection id driving it, -1 while a bot covers for a dropped owner */
   owner: number;
-  /** last connection that drove it (the same socket may take it back without a token) */
-  lastOwner: number;
+  /**
+   * The connection that left it on purpose (Leave) and is still open: that same socket may take it
+   * back without a token inside the grace window. Compared by object, never by the numeric id,
+   * which is reused after it wraps. null once the socket closed, the seat is reclaimed or expires.
+   */
+  lastClient: RoomClient | null;
+  /** the owner's socket closed (rather than a deliberate Leave): the room waits for them even when empty */
+  dropped: boolean;
   token: string;
   /** Date.now() when the owner left, 0 while owned */
   leftAt: number;
@@ -166,6 +176,8 @@ export class Room {
   private endMsg: MatchEnd | null = null;
   private endTick = -1;
   private sweepAt = 0;
+  /** onEmpty has run: the server has forgotten this room */
+  private closed = false;
 
   constructor(code: string, name: string, isPrivate: boolean, config: MatchConfig, host: RoomClient, onEmpty: (room: Room) => void) {
     this.code = code;
@@ -205,6 +217,8 @@ export class Room {
 
   join(c: RoomClient, rejoin?: string): void {
     this.lastActivity = Date.now();
+    // the first player back into a room everyone dropped out of runs it (start, settings)
+    if (!this.members.has(this.hostId)) this.hostId = c.id;
     const team = this.pickTeam();
     const m: Member = { client: c, team, ready: false, unit: -1, flow: newFlow(), lastInput: 0, started: false, endSent: false };
     this.members.set(c.id, m);
@@ -213,7 +227,13 @@ export class Room {
     this.dirty = true;
   }
 
-  leave(clientId: number): void {
+  /**
+   * A member leaves. dropped = its socket closed (GameServer.onClose) rather than a deliberate Leave:
+   * then the room stays open, with a stand-in bot on the unit, even with nobody left in it, until the
+   * grace window runs out, so the player's auto-rejoin finds the match. A deliberate Leave from a
+   * room nobody else is in (or waiting for) closes it at once.
+   */
+  leave(clientId: number, dropped = false): void {
     const m = this.members.get(clientId);
     if (!m) return;
     this.members.delete(clientId);
@@ -223,7 +243,8 @@ export class Room {
       const seat = this.seats.get(m.unit);
       if (seat && seat.owner === clientId) {
         seat.owner = -1;
-        seat.lastOwner = clientId;
+        seat.lastClient = dropped ? null : m.client;
+        seat.dropped = dropped;
         seat.leftAt = Date.now();
       }
       // A bot covers for the owner, even without bot fill, so the unit (and its progress) is still
@@ -246,11 +267,36 @@ export class Room {
       const next = this.members.keys().next();
       if (!next.done) this.hostId = next.value;
     }
-    if (this.members.size === 0) {
-      this.onEmpty(this);
-      return;
-    }
+    if (this.closeIfEmpty()) return;
     this.dirty = true;
+  }
+
+  /**
+   * A player whose socket dropped can still come back to its unit (the match runs, the grace window
+   * is open). Deliberate leavers do not count: their Leave was the end of it.
+   */
+  private holdingForRejoin(): boolean {
+    const sim = this.sim;
+    if (this.phase !== 'match' || !sim || sim.phase === 'ended') return false;
+    const now = Date.now();
+    for (const s of this.seats.values()) {
+      if (s.owner < 0 && s.dropped && now - s.leftAt <= REJOIN_GRACE_MS && sim.unitById.has(s.unit)) return true;
+    }
+    return false;
+  }
+
+  /** Nobody in the room and nobody to wait for: close it (once). Returns true when the room is closed. */
+  private closeIfEmpty(): boolean {
+    if (this.closed) return true;
+    if (this.members.size > 0 || this.holdingForRejoin()) return false;
+    this.closed = true;
+    this.onEmpty(this);
+    return true;
+  }
+
+  /** Would this member leaving on purpose close the room? (Not while it waits for a dropped player.) */
+  closesWhenLeft(clientId: number): boolean {
+    return this.members.size === 1 && this.members.has(clientId) && !this.holdingForRejoin();
   }
 
   /** Would this token reclaim a unit right now? (A valid token gets in even when the room is full.) */
@@ -272,10 +318,16 @@ export class Room {
     return seat;
   }
 
-  /** Same socket coming back after Leave: its own unit, without a token. */
-  private seatForReturn(clientId: number): Seat | null {
+  /**
+   * The same open socket coming back after a deliberate Leave: its own unit, without a token, inside
+   * the grace window. Anything else (a new socket, even one handed the same reused numeric id) needs the token.
+   */
+  private seatForReturn(c: RoomClient): Seat | null {
+    const sim = this.sim!;
+    const now = Date.now();
     for (const seat of this.seats.values()) {
-      if (seat.owner < 0 && seat.lastOwner === clientId && this.sim!.unitById.has(seat.unit)) return seat;
+      if (seat.owner >= 0 || seat.lastClient !== c || now - seat.leftAt > REJOIN_GRACE_MS) continue;
+      if (sim.unitById.has(seat.unit)) return seat;
     }
     return null;
   }
@@ -303,7 +355,7 @@ export class Room {
     const sim = this.sim!;
     const c = m.client;
     // Coming back to a unit we left (a bot has been driving it): take it back with its progress.
-    const seat = (rejoin ? this.seatForToken(rejoin) : null) ?? this.seatForReturn(c.id);
+    const seat = (rejoin ? this.seatForToken(rejoin) : null) ?? this.seatForReturn(c);
     if (seat) {
       this.reclaim(m, seat);
       return;
@@ -343,7 +395,8 @@ export class Room {
     seat.token = newToken();
     this.tokens.set(seat.token, seat.unit);
     seat.owner = m.client.id;
-    seat.lastOwner = m.client.id;
+    seat.lastClient = null;
+    seat.dropped = false;
     seat.leftAt = 0;
     const u = sim.unitById.get(seat.unit)!;
     u.gold += seat.escrow;
@@ -378,7 +431,7 @@ export class Room {
   private seat(m: Member, unit: number): void {
     m.unit = unit;
     const token = newToken();
-    this.seats.set(unit, { unit, owner: m.client.id, lastOwner: m.client.id, token, leftAt: 0, escrow: 0 });
+    this.seats.set(unit, { unit, owner: m.client.id, lastClient: null, dropped: false, token, leftAt: 0, escrow: 0 });
     this.tokens.set(token, unit);
   }
 
@@ -399,7 +452,10 @@ export class Room {
     return id;
   }
 
-  /** Grace windows that ran out: the token stops working; without bot fill the stand-in bot goes too. */
+  /**
+   * Grace windows that ran out: the token stops working; without bot fill the stand-in bot goes too.
+   * A room nobody is in closes once nobody can come back to it.
+   */
   private sweepSeats(): void {
     const sim = this.sim;
     if (!sim) return;
@@ -408,6 +464,8 @@ export class Room {
     for (const seat of [...this.seats.values()]) {
       if (seat.owner >= 0 || now - seat.leftAt <= REJOIN_GRACE_MS) continue;
       this.tokens.delete(seat.token);
+      seat.lastClient = null;
+      seat.dropped = false;
       const u = sim.unitById.get(seat.unit);
       if (u && seat.escrow > 0) u.gold += seat.escrow; // nobody is coming back: the bot gets the purse
       seat.escrow = 0;
@@ -419,6 +477,7 @@ export class Room {
       }
     }
     if (changed) this.broadcast({ t: 'players', players: this.players });
+    if (this.members.size === 0) this.closeIfEmpty();
   }
 
   setProfile(clientId: number, profile: Profile): void {
@@ -645,6 +704,7 @@ export class Room {
     if (sim.tick % 30 === 0 && Date.now() >= this.sweepAt) {
       this.sweepAt = Date.now() + 1000;
       this.sweepSeats();
+      if (this.closed) return;
     }
     if (sim.phase === 'ended') {
       if (!this.ended) {
@@ -693,6 +753,7 @@ export class Room {
     this.resetMatchState();
     for (const m of this.members.values()) m.ready = false;
     this.lastActivity = Date.now(); // a fresh idle window after every match
+    if (this.closeIfEmpty()) return; // a match that ended with nobody in the room: nothing to go back to
     this.dirty = true;
   }
 

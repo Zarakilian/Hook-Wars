@@ -1,6 +1,6 @@
-// Contract between the game server and the economy service (accounts, inventory, store, market,
-// wallet link, Solana devnet). The economy pass replaces createServerEconomy() in ./index.ts with
-// the real service; the game server only ever talks to this interface.
+// Contract between the game server and the economy service (accounts, inventory, the Pearl store
+// and the Pearl market). The game server only ever talks to this interface; ./index.ts builds the
+// real service (./service.ts) or the null economy below.
 import { DEFAULT_ITEM_IDS, ownedLoadout } from '../../shared/cosmetics.ts';
 import type { EconomyClientMsg } from '../../shared/economy.ts';
 import type { Profile, ServerMsg } from '../../shared/protocol.ts';
@@ -33,19 +33,34 @@ export interface ServerEconomy {
   route(c: EconomyConn, msg: EconomyClientMsg): void;
   /** called once when a server match ends, for Pearl rewards and stats */
   onMatchEnd(results: MatchResult[]): void;
+  /**
+   * Stop pushing market updates to this connection. The game server calls it when the connection's
+   * match starts, so market traffic never shares the line with snapshots.
+   */
+  unwatchMarket(c: EconomyConn): void;
   onDisconnect(c: EconomyConn): void;
   close(): void;
 }
 
-/** Fallback with no accounts: everyone wears default items only, economy messages get a polite error. */
-export function createNullEconomy(): ServerEconomy {
+export const ECONOMY_OFF_MESSAGE = 'This server runs without accounts, the Store or the Market. You can still play with the default sets.';
+
+/**
+ * Fallback with no accounts: everyone wears default items only. Hello gets one econError
+ * ('disabled') so the client shows why instead of "Signing in..."; economy messages get a polite error.
+ */
+export function createNullEconomy(message: string = ECONOMY_OFF_MESSAGE): ServerEconomy {
   const isDefault = (id: string) => DEFAULT_ITEM_IDS.includes(id);
   const clamp = (p: Profile): Profile => ({ ...p, loadout: ownedLoadout(p.loadout, isDefault) });
   return {
-    onHello: (_c, _t) => clamp(_c.profile),
+    onHello: (c, _t) => {
+      // after 'welcome', which the game server sends as soon as this returns
+      queueMicrotask(() => c.send({ t: 'econError', code: 'disabled', message }));
+      return clamp(c.profile);
+    },
     sanitize: (_c, p) => clamp(p),
-    route: (c) => c.send({ t: 'econError', code: 'disabled', message: 'This server has no store or marketplace.' }),
+    route: (c, msg) => c.send({ t: 'econError', code: 'disabled', message, re: msg.t }),
     onMatchEnd: () => {},
+    unwatchMarket: () => {},
     onDisconnect: () => {},
     close: () => {},
   };

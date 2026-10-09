@@ -1,8 +1,8 @@
 // Voxel grid for Pudgy parts. Same VoxelGrid / meshVoxels pipeline as every other model, plus a
 // per-voxel surface channel (skin, cloth, rubber, iron, brass, wet, glow, pulse-glow) and a premium
-// flag (gilded, chrome, pearl, amethyst: shinier and sparkling, used by Limited items).
+// flag (gilded, chrome, pearl, amethyst: shinier and sparkling, used by premium items).
 // Voxel value layout: bits 0-2 channel, bit 3 premium, bits 4-23 colour (the lowest blue nibble is
-// dropped). The greedy mesher never merges faces across channels, and after meshing each quad looks
+// dropped), bit 24 team colour (TEAM_BIT). The greedy mesher never merges faces across channels, and after meshing each quad looks
 // its voxel up again to write a `surf` vertex attribute (roughness, metalness, glow A, glow B).
 // One shared shader reads `surf`, so every part is a single draw call whatever it is made of.
 //
@@ -37,7 +37,8 @@ const SURF: readonly (readonly [number, number, number, number])[] = [
   [0.92, 0, 0, 0],
   [0.62, 0, 0, 0],
   [0.3, 0, 0, 0],
-  [0.42, 0.72, 0, 0],
+  // iron: rough enough that the Locker's bright studio panels do not mirror off forearms as white
+  [0.56, 0.6, 0, 0],
   [0.3, 0.85, 0, 0],
   [0.14, 0, 0, 0],
   [0.5, 0, 1, 0],
@@ -117,8 +118,26 @@ function pick(c: Paint, x: number, y: number, z: number): number {
   return typeof c === 'function' ? c(x, y, z) : c;
 }
 
-const KEEP = 0xf; // channel + premium bits
+/**
+ * Bit 24: a team-coloured voxel (team cloth, paint and trims; paints made with teamTone). meshPart
+ * flags it in `surf` (metalness + 2) and the shader adds a small self-lit team term, so the team
+ * hue survives tinted map light (Mirelight's sunset, Lanternwharf's moonlight).
+ */
+export const TEAM_BIT = 1 << 24;
+const KEEP = 0xf | TEAM_BIT; // channel, premium and team bits
 const RGB = 0xfffff0;
+
+type TeamTagged = ColorFn & { team?: true };
+
+/** Mark a paint as team colour: every voxel it paints carries TEAM_BIT. Returns the same function. */
+export function teamTone(fn: ColorFn): ColorFn {
+  (fn as TeamTagged).team = true;
+  return fn;
+}
+
+function teamBitOf(c: Paint): number {
+  return typeof c === 'function' && (c as TeamTagged).team ? TEAM_BIT : 0;
+}
 
 /**
  * Grid painted in skeleton unit coordinates: (0,0,0) is the ground under the character's centre,
@@ -170,7 +189,7 @@ export class RGrid extends VoxelGrid {
       ctx(this.res, fi, fj, fk);
       col = c(CX, CY, CZ);
     } else col = c;
-    this.data[i] = col < 0 ? -1 : this.code(col);
+    this.data[i] = col < 0 ? -1 : this.code(col) | teamBitOf(c);
   }
 
   /** Paint one fine voxel (absolute fine coordinates). */
@@ -315,6 +334,7 @@ export class RGrid extends VoxelGrid {
     const fp = this.oy * r;
     const fq = this.oz * r;
     const touched: number[] = [];
+    const tb = teamBitOf(color);
     for (let k = 0; k < this.nz; k++)
       for (let j = 0; j < this.ny; j++)
         for (let i = 0; i < this.nx; i++) {
@@ -324,7 +344,7 @@ export class RGrid extends VoxelGrid {
           if (!test(CX, CY, CZ)) continue;
           if (onlySurface && !this.surfF(i + fo, j + fp, k + fq)) continue;
           ctx(r, i + fo, j + fp, k + fq);
-          touched.push(li, (pick(color, CX, CY, CZ) & RGB) | (this.prem << 3) | ch);
+          touched.push(li, (pick(color, CX, CY, CZ) & RGB) | (this.prem << 3) | ch | tb);
         }
     for (let n = 0; n < touched.length; n += 2) this.data[touched[n]] = touched[n + 1];
   }
@@ -576,10 +596,12 @@ export function meshPart(g: RGrid, joint: readonly [number, number, number], aoS
     const vz = Math.floor((cz - nrm.getZ(q) * size * 0.5) * inv + pivot[2] + 1e-4);
     const c = g.get(vx, vy, vz);
     const s = c < 0 ? SURF[0] : (c & 8 ? SURF_PREMIUM : SURF)[c & 7];
+    // team voxels: metalness + 2 flags the self-lit team term (decoded in material.ts)
+    const team = c >= 0 && (c & TEAM_BIT) !== 0 ? 2 : 0;
     for (let k = 0; k < 4; k++) {
       const o = (q + k) * 4;
       surf[o] = s[0];
-      surf[o + 1] = s[1];
+      surf[o + 1] = s[1] + team;
       surf[o + 2] = s[2];
       surf[o + 3] = s[3];
     }

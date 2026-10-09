@@ -3,7 +3,7 @@
 import type { CosmeticDef } from '../../shared/cosmetics.ts';
 import type { UiCtx } from './ctx.ts';
 import { h } from './dom.ts';
-import { fmtPearls, RARITY_INFO, SLOT_ICON } from './econ.ts';
+import { fmtPearls, premiumOffer, RARITY_INFO, SLOT_ICON } from './econ.ts';
 import { icon } from './icons.ts';
 import { clickSound } from './widgets.ts';
 
@@ -34,10 +34,10 @@ export interface CardState {
   equipped?: boolean;
   selected?: boolean;
   trying?: boolean;
-  /** extra line under the name (serial, seller...) */
+  /** extra line under the name (seller, listing state...) */
   note?: string;
-  /** override the price area */
-  price?: { cur: 'pearls' | 'usdc'; amount: number } | null;
+  /** override the price area (always Pearls) */
+  price?: { amount: number } | null;
 }
 
 export interface ItemCard {
@@ -58,7 +58,6 @@ export function itemCard(ctx: UiCtx, def: CosmeticDef, onClick: () => void, o: {
       h('span', { class: 'ic-name', text: def.name }),
       note,
       status));
-  if (def.rarity === 'limited') el.append(h('span', { class: 'ic-limited' }, icon('sparkle'), h('span', { text: `Limited · ${def.supply ?? '?'}` })));
   el.addEventListener('click', () => {
     clickSound();
     onClick();
@@ -72,7 +71,7 @@ export function itemCard(ctx: UiCtx, def: CosmeticDef, onClick: () => void, o: {
     el,
     def,
     set(st: CardState) {
-      const key = `${st.owned}|${st.equipped}|${st.selected}|${st.trying}|${st.note}|${st.price?.cur}${st.price?.amount}`;
+      const key = `${st.owned}|${st.equipped}|${st.selected}|${st.trying}|${st.note}|${st.price === undefined ? 'u' : st.price?.amount}`;
       if (key === lastKey) return;
       lastKey = key;
       el.classList.toggle('owned', st.owned);
@@ -88,13 +87,15 @@ export function itemCard(ctx: UiCtx, def: CosmeticDef, onClick: () => void, o: {
       else if (!st.owned) flag.append(icon('padlock'));
       flag.className = `ic-flag ${st.equipped ? 'on' : !st.owned ? 'lock' : ''}`;
       status.replaceChildren();
-      const price = st.price === undefined ? (st.owned ? null : def.usdc !== undefined ? { cur: 'usdc' as const, amount: def.usdc } : def.pearls !== undefined ? { cur: 'pearls' as const, amount: def.pearls } : null) : st.price;
+      const price = st.price === undefined ? (st.owned || def.pearls === undefined ? null : { amount: def.pearls }) : st.price;
       if (st.equipped) status.append(h('span', { class: 'ic-eq', text: 'Equipped' }));
-      else if (price) {
-        status.append(icon(price.cur === 'usdc' ? 'usdc' : 'pearl', 'ic-cur'), h('span', { class: 'ic-price', text: price.cur === 'usdc' ? price.amount.toFixed(2) : fmtPearls(price.amount) }));
-        if (price.cur === 'usdc') status.append(h('span', { class: 'ic-cur-name', text: 'USDC' }));
-      }
+      else if (price) status.append(icon('pearl', 'ic-cur'), h('span', { class: 'ic-price', text: fmtPearls(price.amount) }));
       else if (st.owned) status.append(h('span', { class: 'ic-own', text: def.rarity === 'default' ? 'Starter' : 'Owned' }));
+      else if (def.rarity === 'premium' && st.price === undefined) {
+        // Premium: the Steam price in the Steam version, "Available in the Steam version" in the browser
+        const offer = premiumOffer(def);
+        status.append(h('span', { class: offer.buyable ? 'ic-price ic-steam-price' : 'ic-steam', text: offer.text }));
+      }
     },
   };
 }

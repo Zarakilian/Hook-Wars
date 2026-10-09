@@ -446,19 +446,6 @@ const ICONS = {
     flat('M24 18 A9 9 0 0 1 31 11 A12 12 0 0 0 24 22Z', 'rgba(255,255,255,0.95)'),
     flat('M36 30 A12 12 0 0 0 43 21 A10 10 0 0 1 36 28Z', 'rgba(170,140,200,0.5)'),
   ],
-  wallet: [
-    rect(6, 16, 50, 38, 6, '#7a4a2a'),
-    path('M10 16 L44 6 L48 16', '#a8743e', 2.6),
-    rect(38, 28, 22, 14, 4, '#5a3420', 2.6),
-    circ(46, 35, 3.4, BRASS, 2),
-    flat('M10 20 H52 V24 H10Z', 'rgba(255,255,255,0.15)'),
-  ],
-  usdc: [
-    circ(32, 32, 26, '#3a7bd5'),
-    circ(32, 32, 19, '#5b9cf0', 2.4),
-    ['text', { x: 32, y: 42, 'text-anchor': 'middle', 'font-family': 'Lilita One, sans-serif', 'font-size': 27, fill: '#ffffff', stroke: OL, 'stroke-width': 2, 'paint-order': 'stroke' }],
-    hl('M16 24 A18 18 0 0 1 26 13', 3, 0.7),
-  ],
   locker: [
     path('M6 28 H58 V56 H6 Z', '#6a4428'),
     path('M6 28 C 6 12 58 12 58 28 Z', '#8a5a34'),
@@ -536,7 +523,7 @@ const ICONS = {
 
 export type IconId = keyof typeof ICONS;
 
-const TEXT: Partial<Record<IconId, string>> = { coin: 'G', usdc: '$' };
+const TEXT: Partial<Record<IconId, string>> = { coin: 'G' };
 
 const cache = new Map<string, SVGSVGElement>();
 

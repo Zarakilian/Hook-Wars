@@ -15,7 +15,7 @@ export interface Settings {
   shake: number; // 0..1 camera shake strength
   showFps: boolean;
   showRange: boolean; // hook range ring
-  serverUrl: string; // last online server ('' = this site)
+  serverUrl: string; // last online server as typed ('' = the default server: in the browser, the host that served the page)
   soloConfig: MatchConfig;
   soloTeam: 0 | 1;
 }

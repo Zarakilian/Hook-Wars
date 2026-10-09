@@ -1,14 +1,14 @@
 // Item thumbnails for the Locker, Store and Market: the item worn on its family's bare base, framed
-// on its slot, rendered by one small offscreen WebGLRenderer and cached as data URLs for the page.
-// Progressive: every card shows an SVG slot glyph first; the render replaces it when ready. If the
-// character model does not change for an item (not modelled yet), the glyph stays, so a thumbnail
-// never shows the wrong thing. Work is time-sliced (one item per frame) and only runs while a
-// screen holds the renderer.
+// on the item's own meshes, rendered by one small offscreen WebGLRenderer and cached as data URLs for
+// the page. Progressive: every card shows an SVG slot glyph first; the render replaces it when ready.
+// If the character model does not change for an item (not modelled yet), the glyph stays, so a
+// thumbnail never shows the wrong thing. Finding the item is thumbFrame.ts (geometry identity, so it
+// does not depend on the pose) and every build uses one animator seed, so a thumbnail is the same in
+// every session. Work is time-sliced and only runs while a screen holds the renderer.
 import * as THREE from 'three';
-import { cosmeticById, DEFAULT_LOADOUT, itemsFor, type CosmeticDef, type CosmeticSlot, type Loadout } from '../../shared/cosmetics.ts';
-import { UnitState, type FamilyId } from '../../shared/types.ts';
+import { cosmeticById, type CosmeticSlot } from '../../shared/cosmetics.ts';
 import type { PudgyView } from '../render/contracts.ts';
-import { createPudgy } from '../render/models/pudgy.ts';
+import { ItemLocator } from './thumbFrame.ts';
 
 const SIZE = 192;
 
@@ -28,11 +28,8 @@ export class ItemThumbs {
   private readonly cache = new Map<string, string | null>();
   private readonly waiting = new Map<string, Cb[]>();
   private readonly order: string[] = [];
-  private readonly baseSig = new Map<string, string>();
-  /** one bare view per family kept alive while thumbnailing, so the shared base parts stay cached */
-  private readonly keep = new Map<FamilyId, PudgyView>();
-  /** signature of the family's default item in each slot, keyed `${family}.${slot}` */
-  private readonly defaultSig = new Map<string, string>();
+  /** reference views per family (kept alive while thumbnailing, so shared part geometry stays cached) */
+  private readonly locator = new ItemLocator();
   private renderer: THREE.WebGLRenderer | null = null;
   private scene: THREE.Scene | null = null;
   private camera: THREE.PerspectiveCamera | null = null;
@@ -136,87 +133,9 @@ export class ItemThumbs {
    * on every screen change gets WebGL blocked for the page. */
   private disposeGl(): void {
     if (this.holders > 0) return;
-    for (const v of this.keep.values()) v.dispose();
-    this.keep.clear();
+    this.locator.dispose();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
-  }
-
-  private build(family: FamilyId, loadout: Loadout): PudgyView {
-    if (!this.keep.has(family)) this.keep.set(family, createPudgy({ family, loadout: {}, team: 0, name: 'keep', isLocal: false, quality: 'high', detail: 'showcase' }));
-    const v = createPudgy({ family, loadout, team: 0, name: 'thumb', isLocal: false, quality: 'high', detail: 'showcase' });
-    v.update(1 / 60, { state: UnitState.Alive, speed: 0, hpFrac: 1, flags: 0, hookOut: false, stateTime: 0.5, time: 0.5 });
-    v.root.updateMatrixWorld(true);
-    return v;
-  }
-
-  /** Geometry fingerprint: vertex count plus the rounded bounding box. */
-  private signature(root: THREE.Object3D): string {
-    let verts = 0;
-    root.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.isMesh && m.visible && m.geometry) verts += m.geometry.getAttribute('position')?.count ?? 0;
-    });
-    const b = new THREE.Box3().setFromObject(root);
-    const sz = b.getSize(new THREE.Vector3());
-    return `${verts}|${sz.x.toFixed(2)}|${sz.y.toFixed(2)}|${sz.z.toFixed(2)}`;
-  }
-
-  /** World-space key per visible mesh: vertex count plus its rounded world box. */
-  private meshKeys(root: THREE.Object3D): Map<string, THREE.Box3> {
-    const out = new Map<string, THREE.Box3>();
-    root.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh || !m.visible || !m.geometry) return;
-      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
-      const b = m.geometry.boundingBox!.clone().applyMatrix4(m.matrixWorld);
-      const n = m.geometry.getAttribute('position')?.count ?? 0;
-      const r = (v: number) => v.toFixed(2);
-      let k = `${n}|${r(b.min.x)},${r(b.min.y)},${r(b.min.z)}|${r(b.max.x)},${r(b.max.y)},${r(b.max.z)}`;
-      while (out.has(k)) k += '+';
-      out.set(k, b);
-    });
-    return out;
-  }
-
-  private readonly baseKeys = new Map<string, Set<string>>();
-
-  /**
-   * What an item is compared against. Usually the bare base. The hands slot is never bare (an empty slot
-   * still shows the family's default hook, so held and flying hooks match), so a hook is compared
-   * against the same family wearing a different hook.
-   */
-  private baseLoadout(def: CosmeticDef): Loadout {
-    if (def.slot !== 'hands') return {};
-    const other = itemsFor(def.family, 'hands').find((c) => c.id !== def.id);
-    return other ? { hands: other.id } : {};
-  }
-
-  /** Box around the meshes that differ from the base in the same pose, or null if none do. */
-  private itemBox(family: FamilyId, yaw: number, root: THREE.Object3D, baseLo: Loadout = {}): THREE.Box3 | null {
-    const ck = `${family}|${yaw.toFixed(3)}|${baseLo.hands ?? ''}`;
-    let base = this.baseKeys.get(ck);
-    if (!base) {
-      const b = this.build(family, baseLo);
-      b.root.rotation.y = yaw;
-      b.root.updateMatrixWorld(true);
-      base = new Set(this.meshKeys(b.root).keys());
-      b.dispose();
-      this.baseKeys.set(ck, base);
-    }
-    const box = new THREE.Box3();
-    let any = false;
-    for (const [k, b] of this.meshKeys(root)) {
-      if (base.has(k)) continue;
-      box.union(b);
-      any = true;
-    }
-    if (!any || box.isEmpty()) return null;
-    // a change that spans most of the body (a re-meshed torso) is no help for framing
-    const full = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
-    const sz = box.getSize(new THREE.Vector3());
-    if (sz.y > full.y * 0.85 && sz.x > full.x * 0.85) return null;
-    return box;
   }
 
   private renderItem(id: string): string | null {
@@ -224,53 +143,24 @@ export class ItemThumbs {
     if (!def || !this.ensureGl() || !this.renderer || !this.scene || !this.camera) return null;
     let view: PudgyView | null = null;
     try {
-      // the base of this family (bare, or another hook for hands), once, to detect items the model does not draw yet
-      const baseLo = this.baseLoadout(def);
-      const bk = `${def.family}|${baseLo.hands ?? ''}`;
-      let base = this.baseSig.get(bk);
-      if (base === undefined) {
-        const b = this.build(def.family, baseLo);
-        base = this.signature(b.root);
-        b.dispose();
-        this.baseSig.set(bk, base);
-      }
-      view = this.build(def.family, { [def.slot]: id });
-      const sig = this.signature(view.root);
-      if (sig === base) return null;
-      // an item the model does not draw yet may fall back to the family's default piece: keep the glyph
-      const dflt = DEFAULT_LOADOUT[def.family][def.slot];
-      if (dflt && dflt !== id) {
-        const k = `${def.family}.${def.slot}`;
-        let ds = this.defaultSig.get(k);
-        if (ds === undefined) {
-          const d = this.build(def.family, { [def.slot]: dflt });
-          ds = this.signature(d.root);
-          d.dispose();
-          this.defaultSig.set(k, ds);
-        }
-        if (sig === ds) return null;
-      }
       const f = FRAME[def.slot];
-      view.root.rotation.y = f.yaw;
-      view.root.updateMatrixWorld(true);
+      // the item worn on its base, and the meshes that are the item's own (null: not modelled yet)
+      const shot = this.locator.locate(def, f.yaw);
+      if (!shot) return null;
+      view = shot.view;
       const cam = this.camera;
-      // frame on the item itself: the meshes this view has that the bare base (same pose) does not
-      const itemBox = this.itemBox(def.family, f.yaw, view.root, baseLo);
       let centre: THREE.Vector3;
       let region: number;
-      if (itemBox) {
-        const sz = itemBox.getSize(new THREE.Vector3());
-        centre = itemBox.getCenter(new THREE.Vector3());
+      if (shot.box) {
+        const sz = shot.box.getSize(new THREE.Vector3());
+        centre = shot.box.getCenter(new THREE.Vector3());
         region = Math.max(0.42, Math.max(sz.x, sz.y, sz.z) * 1.22);
       } else {
+        // a change that spans most of the body (a re-meshed torso): frame the slot
         const box = new THREE.Box3().setFromObject(view.root);
         const size = box.getSize(new THREE.Vector3());
         const H = Math.max(1.2, size.y);
         centre = new THREE.Vector3(0, box.min.y + H * f.y, 0);
-        if (def.slot === 'hands') {
-          const hand = view.getHandWorld(new THREE.Vector3());
-          centre.set(hand.x * 0.6, hand.y, hand.z * 0.6);
-        }
         region = H * f.s;
       }
       const dist = (region / 2) / Math.tan((cam.fov * Math.PI) / 360) * 1.12;

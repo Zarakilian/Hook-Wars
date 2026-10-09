@@ -1,7 +1,7 @@
 // Menus, lobby, economy screens and HUD. The app owns state and calls render(state); screens are
 // built once when entered and then updated in place, so typing, focus and hover survive frequent
-// re-renders. The cosmetic economy (optional) is watched here once, so a purchase, a sale or a newly
-// linked wallet gets its sound and toast whichever screen is open.
+// re-renders. The cosmetic economy (optional) is watched here once, so a purchase or a sale gets its
+// sound and toast whichever screen is open.
 import { COSMETIC_SLOTS, cosmeticById, ownedLoadout, cleanLoadout, DEFAULT_ITEM_IDS, type Loadout } from '../../shared/cosmetics.ts';
 import type { EconomyClient, EconomyState } from '../economy/types.ts';
 import type { ScreenView, UiCtx } from './ctx.ts';
@@ -20,7 +20,6 @@ import { buildOnline } from './screens/online.ts';
 import { buildSettings } from './screens/settings.ts';
 import { buildSolo } from './screens/solo.ts';
 import { buildStore } from './screens/store.ts';
-import { openWallet } from './shell.ts';
 import { ItemThumbs } from './thumbs.ts';
 import type { AppActions, AppState, Screen, UI } from './types.ts';
 import './v2.css';
@@ -132,7 +131,7 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
         showToast(`${cosmeticById(want.item)?.name ?? 'Item'} bought from the Market. Equip it in the Locker.`, 'good');
       }
     }
-    // Store purchases (Pearls or devnet USDC): the item is owned now
+    // Store purchases: the item is owned now
     for (const id of [...pending]) {
       if (!owns(id)) continue;
       pending.delete(id);
@@ -140,10 +139,6 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
       showToast(`${cosmeticById(id)?.name ?? 'Item'} is yours! Equip it in the Locker.`, 'good');
     }
     const sameAccount = !!prev?.account && !!e.account && prev.account.id === e.account.id;
-    if (sameAccount && !prev.account!.wallet && e.account!.wallet) {
-      actions.uiSound('walletLinked');
-      showToast('Wallet linked', 'good');
-    }
     if (sameAccount) {
       const now = new Set(e.account!.owned.map((o) => o.instance));
       for (const o of prev.account!.owned) {
@@ -207,14 +202,6 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
       pending.add(itemId);
       economy.buyWithPearls(itemId);
     },
-    buyUsdc(itemId: string) {
-      if (!economy) return;
-      pending.add(itemId);
-      economy.buyWithUsdc(itemId).catch((err: unknown) => {
-        pending.delete(itemId);
-        showToast(err instanceof Error ? err.message : 'The purchase did not go through.', 'error');
-      });
-    },
     buyListing(l) {
       if (!economy) return;
       const count = economy.state().account?.owned.filter((o) => o.item === l.item).length ?? 0;
@@ -224,7 +211,6 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
     noteCancel(_listing: string, instance: string) {
       cancelled.add(instance);
     },
-    openWallet: () => openWallet(ctx),
     thumbs,
   };
 

@@ -2,7 +2,7 @@
 import type * as THREE from 'three';
 import type { Quality } from '../../contracts.ts';
 import type { Loadout, Team } from '../../../../shared/types.ts';
-import { atRes, CH, hashVox, hv, meshPart, mix, P, RGrid, shade, type ColorFn, type Paint, type Test } from './grid.ts';
+import { atRes, CH, hashVox, hv, meshPart, mix, P, RGrid, shade, teamTone, type ColorFn, type Paint, type Test } from './grid.ts';
 import type { PartDef, V3 } from './types.ts';
 
 /** Build context handed to every part builder. */
@@ -95,22 +95,22 @@ export interface TeamCols {
 
 /** Glossy team colour with highlights toward the top and per-voxel jitter. */
 export function teamPaint(t: TeamCols, seed: number, y0: number, y1: number): ColorFn {
-  return (x, y, z) => {
+  return teamTone((x, y, z) => {
     const h = hv(x, y, z, seed);
     const k = Math.max(0, Math.min(1, (y - y0) / Math.max(1, y1 - y0)));
     const base = h > 0.93 ? t.light : h < 0.06 ? t.dark : t.main;
     return shade(base, 0.9 + k * 0.16 + (h - 0.5) * 0.06);
-  };
+  });
 }
 
 /** Woven team cloth (neckerchiefs, sashes, wraps): a subtle twill. */
 export function teamCloth(t: TeamCols, seed: number): ColorFn {
-  return (x, y, z) => {
+  return teamTone((x, y, z) => {
     const h = hv(x, y, z, seed);
     const tw = (x + y + z + 300) % 3 === 0;
     const base = h > 0.95 ? t.light : tw ? shade(t.main, 0.88) : t.main;
     return shade(base, 0.94 + h * 0.1);
-  };
+  });
 }
 
 /** Water drop (sweat) or spark, centred on its joint. */
@@ -199,4 +199,4 @@ export function grime(base: ColorFn, dirt: number, amount: number, seed: number,
   };
 }
 
-export { mix, shade, hashVox, hv };
+export { mix, shade, hashVox, hv, teamTone };

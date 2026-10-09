@@ -4,7 +4,7 @@
 // rope hook. Team colour: a rolled neckerchief with a back flap (head grid, survives every hat)
 // and wristbands on both forearms. Never blood: the apron carries rust, grime and paint.
 import type { PudgyPalette } from '../../contracts.ts';
-import { dropGrid, knit, lumps, part, partMirrored, resOf, ring, teamCloth, type Look, type TeamCols } from './common.ts';
+import { dropGrid, knit, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
 import { buildRes, CH, hashVox, hv, jitter, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
 import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, Skeleton, V3 } from './types.ts';
 
@@ -218,7 +218,7 @@ function neckerchief(g: RGrid, t: TeamCols): void {
     g.blob(5.9, 22.8, 8.9, 1.1, 1.8, 0.9, nk);
     g.blob(4.6, 22.4, 9.2, 0.9, 1.6, 0.9, nk);
   });
-  g.repaint((x, y, z) => y <= 20 && z < -5, CH.cloth, (x, y, z) => shade(t.dark, 1 + hv(x, y, z, 31) * 0.1), true);
+  g.repaint((x, y, z) => y <= 20 && z < -5, CH.cloth, teamTone((x, y, z) => shade(t.dark, 1 + hv(x, y, z, 31) * 0.1)), true);
 }
 
 function buildOutfit(l: Look): RGrid {
@@ -730,7 +730,7 @@ function buildLowerArm(l: Look, hookHand: boolean): RGrid {
   if (hookHand) g.repaint((x, y) => y <= hy, CH.skin, shade(SKIN, 0.9), true);
   // wristband (team) just above the fist
   g.on(CH.cloth, () => g.cyl('y', ex + 0.2, ez + 1, 3.75, 10, 12, teamCloth(l.t, 85), 3.6));
-  g.repaint((x, y) => y === 12, CH.cloth, (x, y, z) => shade(l.t.light, 0.95 + hv(x, y, z, 86) * 0.08), true);
+  g.repaint((x, y) => y === 12, CH.cloth, teamTone((x, y, z) => shade(l.t.light, 0.95 + hv(x, y, z, 86) * 0.08)), true);
   if (!hookHand) anchorTattoo(g, Math.floor(ex + 4), 12, Math.floor(ez + 0.5));
   return g;
 }

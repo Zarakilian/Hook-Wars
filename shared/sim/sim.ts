@@ -14,8 +14,10 @@ import {
 } from '../types.ts';
 import { World } from '../world.ts';
 import type { HazardInst, Hook, Mine, Rune, Unit } from './entities.ts';
-import { buildHazards, updateHazards } from './hazards.ts';
-import { blockWater, deckLayer, stepMove } from './movement.ts';
+import { buildHazards, hazardTouches, updateHazards } from './hazards.ts';
+import { blockWater, deckLayer, deckTier, hookCanCatch, hookTierOf, stepMove, tiersTouch, type DeckTier } from './movement.ts';
+import { platformAt } from '../maps/helpers.ts';
+import type { Whirlpool } from '../maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt } from './river.ts';
 import { updateRunes } from './runes.ts';
 import { updateBots } from './bots.ts';
@@ -37,7 +39,7 @@ const MAX_HOLD_DEBT = 30;
  * (hidden tab, dropped client frames), so later jitter spares must not be skipped for them.
  */
 const DEBT_FORGIVE_TICKS = 4;
-/** Queued inputs per human before the oldest pair is merged (a 0.6 s burst fits without merging). */
+/** Queued inputs per human before the oldest movement-only input is dropped (a 0.6 s burst fits whole). */
 const MAX_QUEUE = 20;
 const tmpPos = { x: 0, z: 0, hit: false };
 
@@ -153,10 +155,17 @@ export class GameSim {
   setController(id: number, isBot: boolean, name?: string): void {
     const u = this.unitById.get(id);
     if (!u) return;
+    const wasBot = u.isBot;
     u.isBot = isBot;
     u.brain = null;
     u.queue.length = 0;
     u.input.b = 0;
+    if (wasBot && !isBot) {
+      // a human takes over from the stand-in bot: do not keep walking on the bot's last movement
+      u.input.mx = 0;
+      u.input.mz = 0;
+      u.idleTicks = STALE_INPUT_TICKS + 1;
+    }
     if (name) u.name = name;
   }
 
@@ -164,9 +173,15 @@ export class GameSim {
     const u = this.unitById.get(id);
     if (!u || u.isBot) return;
     if (u.queue.length >= MAX_QUEUE) {
-      // Client is flooding or lagging badly: merge the oldest pair so presses are never lost.
-      const a = u.queue.shift()!;
-      u.queue[0].b |= a.b;
+      // Client is flooding or lagging badly (a burst after an uplink stall). Drop the oldest movement-only
+      // input: a press keeps its own tick and its own aim. Only a queue made entirely of presses merges
+      // the oldest pair, so a press is still never lost.
+      const k = u.queue.findIndex((q) => q.b === 0);
+      if (k >= 0) u.queue.splice(k, 1);
+      else {
+        const a = u.queue.shift()!;
+        u.queue[0].b |= a.b;
+      }
     }
     u.queue.push(input);
   }
@@ -310,7 +325,11 @@ export class GameSim {
     if (!u) return;
     u.queue.length = 0;
     u.ack = 0;
-    u.idleTicks = 0;
+    // The new controller starts standing still: never replay the previous controller's (or the stand-in
+    // bot's) last movement while the new client loads, and never count those ticks as input debt.
+    u.idleTicks = STALE_INPUT_TICKS + 1;
+    u.input.mx = 0;
+    u.input.mz = 0;
     u.input.b = 0;
     this.inq.delete(u);
   }
@@ -467,7 +486,12 @@ export class GameSim {
       const own = this.mines.filter((m) => m.owner === u.id && !m.dead);
       if (own.length >= BAL.maxMines) own[0].dead = true;
       const back = u.face + Math.PI;
-      this.mines.push({ id: this.nextId++, owner: u.id, team: u.team, x: u.x + Math.sin(back) * 0.6, z: u.z + Math.cos(back) * 0.6, armT: BAL.mineArmTime, dead: false });
+      this.mines.push({
+        id: this.nextId++, owner: u.id, team: u.team, x: u.x + Math.sin(back) * 0.6, z: u.z + Math.cos(back) * 0.6, armT: BAL.mineArmTime, dead: false,
+        // dropped down in the channel (under a deck, or out on the bed beside one): it lies on the bed, even
+        // where it rolls in under a deck; dropped on a deck or the bank it lies on top
+        under: this.tierOf(u) === 2,
+      });
     } else if (slot.id === 'pie') {
       if (u.hp >= u.maxHp) return;
       u.pieT = BAL.pieTime;
@@ -590,6 +614,7 @@ export class GameSim {
     for (const hz of this.hazards) {
       if (!this.hazardActive(hz)) continue;
       if (dist2(u.x, u.z, hz.x, hz.z) > (hz.r + UNIT_RADIUS * 0.5) ** 2) continue;
+      if (!hazardTouches(this, hz, u)) continue; // thorns on a bridge do not slow the bed under it
       if (hz.kind === 'thorns') m = Math.min(m, 0.7);
       else if (hz.kind === 'quicksand') m = Math.min(m, 0.45);
       else if (hz.kind === 'jellyfish') m = Math.min(m, 0.75);
@@ -600,6 +625,28 @@ export class GameSim {
   hazardActive(hz: HazardInst): boolean {
     if (!hz.channel) return true;
     return !this.river.deep;
+  }
+
+  private wpLevel = NaN;
+  private wpFrozen = false;
+  private wpActive: Whirlpool | undefined = undefined;
+
+  /**
+   * The whirlpool as it bends hooks right now, or undefined when there is none to see: it needs water deep
+   * enough to show it. Same rule as the water renderer (client/render/world/water.ts): none when dry or
+   * frozen, and full strength only from level 0.95, fading out below 0.55. Bots trace hooks with this too.
+   */
+  activeWhirlpool(): Whirlpool | undefined {
+    const wp = this.map.whirlpool;
+    if (!wp) return undefined;
+    const level = this.river.level;
+    const frozen = this.river.frozen;
+    if (level === this.wpLevel && frozen === this.wpFrozen) return this.wpActive;
+    this.wpLevel = level;
+    this.wpFrozen = frozen;
+    const k = frozen || this.config.riverMode === 'dry' ? 0 : smoothstep(0.55, 0.95, level);
+    this.wpActive = k <= 0 ? undefined : k >= 1 ? wp : { ...wp, strength: wp.strength * k };
+    return this.wpActive;
   }
 
   private updateKnock(u: Unit, dt: number): void {
@@ -634,7 +681,7 @@ export class GameSim {
       u.meleeT -= dt;
       if (u.meleeT <= 0) {
         const t = this.unitById.get(u.meleeTarget);
-        if (t && this.isHittable(t) && dist(u.x, u.z, t.x, t.z) <= BAL.meleeRange + 0.6) {
+        if (t && this.isHittable(t) && dist(u.x, u.z, t.x, t.z) <= BAL.meleeRange + 0.6 && this.sameLayer(u, t)) {
           const dmg = BAL.meleeDamage * (u.double > 0 ? 2 : 1);
           this.emit({ e: 'melee', u: u.id, tg: t.id, dmg });
           this.damage(t, dmg, u.id, 'melee');
@@ -651,7 +698,7 @@ export class GameSim {
       if (e.state === UnitState.Hooked || e.state === UnitState.Grappling) continue;
       if (!this.visibleTo(e, u.team)) continue;
       const d2v = dist2(u.x, u.z, e.x, e.z);
-      if (d2v < bd) {
+      if (d2v < bd && this.sameLayer(u, e)) {
         bd = d2v;
         best = e;
       }
@@ -673,12 +720,24 @@ export class GameSim {
     if (free) {
       if (inWaterZone && this.river.deep) {
         if (u.state !== UnitState.Drowning) {
-          // drownT is NOT reset here: a unit knocked about while drowning keeps its clock
-          this.interrupt(u);
+          // drownT is NOT reset here: a unit knocked about while drowning keeps its clock.
+          // The grapple is the way out of the water and works while drowning, so the splash must not cancel
+          // one that is winding up, buffered or already flying (its cooldown was paid at the press).
+          const windGrapple = u.castKind === 'grapple';
+          const bufGrapple = u.buffered && u.buffered.kind === 'grapple' ? u.buffered : null;
+          this.interruptCastOnly(u);
+          if (u.activeHook >= 0) {
+            const h = this.hookById(u.activeHook);
+            if (h) this.breakHook(h);
+            u.activeHook = -1;
+          }
           u.state = UnitState.Drowning;
           u.stateT = 0;
           this.emit({ e: 'drownStart', u: u.id, x: q2(u.x), z: q2(u.z) });
           this.emit({ e: 'splash', u: u.id, x: q2(u.x), z: q2(u.z), s: 1 });
+          // launch only now: spawnHook can latch at once (grappleLatch sets Grappling) and must win over Drowning
+          if (windGrapple) this.launch(u, 'grapple');
+          else if (bufGrapple) u.buffered = bufGrapple; // tryCast retries it next tick: charges the cooldown, no wind-up
         } else {
           if (this.phase !== 'ended') u.drownT += dt;
           if (u.drownT >= BAL.drownTime) {
@@ -717,6 +776,7 @@ export class GameSim {
         const d2v = dx * dx + dz * dz;
         const min = UNIT_RADIUS * 2;
         if (d2v >= min * min || d2v < 1e-8) continue;
+        if (!this.sameLayer(a, b)) continue; // on a bridge and on the bed below it: no body-block
         const d = Math.sqrt(d2v);
         const push = (min - d) * 0.5;
         const nx = dx / d;
@@ -739,6 +799,19 @@ export class GameSim {
     this.world.resolveCircle(nx, nz, UNIT_RADIUS, tmpPos);
     u.x = tmpPos.x;
     u.z = tmpPos.z;
+  }
+
+  /** Deck tier of a unit (see deckTier in sim/movement.ts). */
+  tierOf(u: Unit): DeckTier {
+    return deckTier(this.world, this.river, u.x, u.z, u.under);
+  }
+
+  /**
+   * Whether two units are on deck layers that touch: a unit on a bridge or dock and one on the dry or
+   * wading bed below or beside it never body-block, wallop, bash or set off each other's mines.
+   */
+  sameLayer(a: Unit, b: Unit): boolean {
+    return tiersTouch(this.tierOf(a), this.tierOf(b));
   }
 
   private isSolid(u: Unit): boolean {
@@ -801,6 +874,7 @@ export class GameSim {
       flightT: 0,
       dead: false,
       bendAcc: 0,
+      tier: hookTierOf(this.world, this.river, u),
     };
     this.hooks.push(h);
     if (isHook) {
@@ -840,7 +914,7 @@ export class GameSim {
 
   private hookOut(h: Hook, owner: Unit, dt: number): void {
     let remaining = h.speed * dt;
-    const wp = this.map.whirlpool;
+    const wp = this.activeWhirlpool();
     while (remaining > 1e-6 && h.phase === HookPhase.Out && !h.dead) {
       const step = Math.min(remaining, HOOK_SUBSTEP);
       remaining -= step;
@@ -872,7 +946,8 @@ export class GameSim {
         if (u.id === h.owner || u.state === UnitState.Dead || u.spawnProt > 0) continue;
         if (h.kind === HookKind.Hook && u.hookedBy === h.id) continue;
         const t = sweepCircle(h.x, h.z, nx, nz, u.x, u.z, h.r + UNIT_RADIUS);
-        if (t >= 0 && t < bestT) {
+        // inside a deck footprint the hook passes over (or under) a unit on the other layer
+        if (t >= 0 && t < bestT && hookCanCatch(this.world, this.river, h.tier, u)) {
           bestT = t;
           hitUnit = u;
         }
@@ -1102,6 +1177,12 @@ export class GameSim {
         const p = this.deliveryPoint(owner, t);
         t.x = p.x;
         t.z = p.z;
+        // a dragged body lands on the caster's layer: on top of a deck when the caster is on a deck or the
+        // bank, down on the bed (under the deck) when the caster is down in the channel, under a deck or
+        // out on the open bed beside one (an `under` flag alone cannot tell the open bed from a deck)
+        t.under = this.tierOf(owner) === 2 && !!platformAt(this.map, t.x, t.z);
+        t.tickX = t.x;
+        t.tickZ = t.z;
         t.hookedBy = -1;
         t.y = 0;
         if (t.state === UnitState.Dead) this.emit({ e: 'corpse', v: t.id, x: q2(t.x), z: q2(t.z) });
@@ -1135,6 +1216,10 @@ export class GameSim {
     }
     const base = Math.atan2(ax / l, az / l);
     const ownerDry = this.world.channelFor(owner.x, owner.z, owner.under) <= 0;
+    // A caster on a bridge or dock over a dry or wading channel keeps its catch on the deck (or the bank):
+    // a spot just past the deck edge is the bed 1.5 to 3 m below, out of reach of a wallop or a bash.
+    // The spot's layer follows the rule finishHook applies (bed level only for a caster in the channel).
+    const ownerTier = this.tierOf(owner);
     for (let i = 0; i < 12; i++) {
       const sign = i % 2 === 0 ? 1 : -1;
       const a = base + sign * Math.ceil(i / 2) * (Math.PI / 6);
@@ -1143,6 +1228,7 @@ export class GameSim {
       this.world.resolveCircle(px, pz, UNIT_RADIUS, tmpPos);
       if (Math.abs(tmpPos.x - px) + Math.abs(tmpPos.z - pz) > 0.3) continue;
       if (this.river.deep && ownerDry && this.world.channel(px, pz) > -0.1) continue;
+      if (ownerTier === 1 && !tiersTouch(1, deckTier(this.world, this.river, px, pz, false))) continue;
       return { x: px, z: pz };
     }
     this.world.resolveCircle(owner.x + Math.sin(base) * 0.4, owner.z + Math.cos(base) * 0.4, UNIT_RADIUS, tmpPos);
@@ -1164,12 +1250,33 @@ export class GameSim {
     h.flightT += dt;
     const step = BAL.grapplePull * dt;
     const travel = Math.min(step, Math.max(0, d - stop));
-    if (d - stop <= step || h.flightT >= BAL.grappleMaxFlight) {
+    const arrived = d - stop <= step;
+    if (arrived || h.flightT >= BAL.grappleMaxFlight) {
       owner.x += (dx / d) * travel;
       owner.z += (dz / d) * travel;
+      const anchor = h.anchorUnit >= 0 ? this.unitById.get(h.anchorUnit) : undefined;
       this.world.resolveCircle(owner.x, owner.z, UNIT_RADIUS, tmpPos);
       owner.x = tmpPos.x;
       owner.z = tmpPos.z;
+      if (arrived && this.river.deep && this.world.channelFor(h.x, h.z, anchor?.under) <= 0) {
+        // A rescue to an anchor on land (a quay bollard, a lamp, a watchtower, an ally on the bank) stops
+        // short of it, which can leave the swimmer just inside the water: step it up onto the dry side.
+        // Only a shallow overshoot (at most the stand-off distance) is corrected, never a long teleport.
+        for (let pass = 0; pass < 2; pass++) {
+          const c = this.world.channel(owner.x, owner.z);
+          if (c <= 0 || c > stop + 0.05) break;
+          const r = blockWater(this.world, owner.x, owner.z);
+          this.world.resolveCircle(r.x, r.z, UNIT_RADIUS, tmpPos);
+          owner.x = tmpPos.x;
+          owner.z = tmpPos.z;
+        }
+      }
+      // Airborne bodies land on top of a deck, unless the anchor is a unit down in the channel (under a deck
+      // or out on the open bed beside one): then the grappler lands down there with it. An obstacle anchor:
+      // on top. Count the landing spot as where this tick started, so deckLayer keeps that layer.
+      owner.under = !!anchor && this.tierOf(anchor) === 2 && !!platformAt(this.map, owner.x, owner.z);
+      owner.tickX = owner.x;
+      owner.tickZ = owner.z;
       owner.y = 0;
       owner.state = UnitState.Alive;
       owner.stateT = 0;
@@ -1198,6 +1305,9 @@ export class GameSim {
         if (owner.state === UnitState.Grappling) {
           owner.state = UnitState.Alive;
           owner.y = 0;
+          owner.under = false; // dropped out of the air: on top of a deck (deckLayer keeps it from here)
+          owner.tickX = owner.x;
+          owner.tickZ = owner.z;
         }
       }
     }
@@ -1211,6 +1321,9 @@ export class GameSim {
         t.x = tmpPos.x;
         t.z = tmpPos.z;
         t.y = 0;
+        t.under = false; // dropped from the chain: on top of a deck (deckLayer keeps it from here)
+        t.tickX = t.x;
+        t.tickZ = t.z;
         if (t.state === UnitState.Dead) this.emit({ e: 'corpse', v: t.id, x: q2(t.x), z: q2(t.z) });
         else t.state = UnitState.Alive; // postMove decides if they now drown
       }
@@ -1271,6 +1384,7 @@ export class GameSim {
       const d = Math.sqrt(tx * tx + tz * tz);
       if (d > BAL.bashRange + UNIT_RADIUS) continue;
       if (d > 1.2 && (tx * dx + tz * dz) / d < cosHalf) continue;
+      if (!this.sameLayer(u, t)) continue; // a bash on a deck never reaches the bed below it
       hits.push(t.id);
       const kx = dx * 0.6 + (d > 1e-3 ? (tx / d) * 0.4 : 0);
       const kz = dz * 0.6 + (d > 1e-3 ? (tz / d) * 0.4 : 0);
@@ -1584,9 +1698,12 @@ export class GameSim {
         continue;
       }
       let trig = false;
+      let mt: DeckTier | null = null; // the mine's deck tier, computed only when someone is close
       for (const u of this.units) {
         if (u.team === m.team || !this.isHittable(u) || u.state === UnitState.Hooked || u.state === UnitState.Grappling) continue;
         if (dist2(u.x, u.z, m.x, m.z) < BAL.mineRadius * BAL.mineRadius) {
+          mt ??= deckTier(this.world, this.river, m.x, m.z, m.under);
+          if (!tiersTouch(mt, this.tierOf(u))) continue; // a mine on the bed is not set off from the bridge above
           trig = true;
           break;
         }
@@ -1599,6 +1716,8 @@ export class GameSim {
         if (u.team === m.team || !this.isHittable(u)) continue;
         const d = dist(u.x, u.z, m.x, m.z);
         if (d > r) continue;
+        mt ??= deckTier(this.world, this.river, m.x, m.z, m.under);
+        if (!tiersTouch(mt, this.tierOf(u))) continue;
         this.damage(u, BAL.mineDamage, m.owner, 'mine');
         if (u.state !== UnitState.Dead) this.knock(u, u.x - m.x || 0.01, u.z - m.z, BAL.mineKnock, 0.4, 1.4);
       }
@@ -1765,4 +1884,9 @@ export class GameSim {
 
 function q3m(v: number): number {
   return Math.round(v * 1000) / 1000;
+}
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
 }
