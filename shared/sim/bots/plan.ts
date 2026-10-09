@@ -11,6 +11,7 @@ import type { BotContext } from './context.ts';
 import { bankOf, bankPoint, sideOf, type P2 } from './geom.ts';
 import { hookLineClear, standable } from './mapinfo.ts';
 import { compAt, edgeDist, holdSpot, inComp, nearestDry, NAV_LAND } from './nav.ts';
+import { bankBefore } from './roles.ts';
 import { Mode, type Brain } from './types.ts';
 
 const MAXF = 8;
@@ -26,14 +27,19 @@ const cand: P2 = { x: 0, z: 0 };
 const esc: P2 = { x: 0, z: 0 };
 const ZOFF = [0, -3, 3, -6, 6];
 
-/** Lane (z) for a unit: teammates spread evenly along the bank by id order. */
+/**
+ * Lane (z) for a unit: teammates spread evenly along the bank in the order their spawn points stand
+ * (bankOrder), team 1's lanes mirroring team 0's like the maps. By id order, team 1 (whose spawn list is
+ * team 0's point mirror) crossed its whole fountain to the opposite lanes and piled up on the way out.
+ */
 export function laneOf(ctx: BotContext, u: Unit, halfD: number): number {
   const m = ctx.members[u.team];
-  let rank = 0;
-  for (const o of m) if (o.id < u.id) rank++;
   const n = Math.max(1, m.length);
+  if (n === 1) return 0;
+  let rank = 0;
+  for (const o of m) if (o !== u && bankBefore(ctx.sim, o, u)) rank++;
   const L = Math.min(15, halfD - 6);
-  return n === 1 ? 0 : -L + (rank + 0.5) * ((2 * L) / n);
+  return (u.team === 0 ? 1 : -1) * (-L + (rank + 0.5) * ((2 * L) / n));
 }
 
 function inHazard(sim: GameSim, x: number, z: number, pad: number): boolean {

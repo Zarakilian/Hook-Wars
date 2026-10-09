@@ -19,7 +19,7 @@ import { navReset, newWaypoints } from './navigate.ts';
 const CAST_BITS = Btn.Hook | Btn.Grapple | Btn.Bash;
 
 export function createBrain(sim: GameSim, u: Unit): Brain {
-  const role = assignRole(sim.units, u);
+  const role = assignRole(sim, u);
   const roleDef = ROLES[role];
   const tune = tuningFor(u.botDifficulty);
   const seed = Math.floor(hash01(sim.seed, u.id, 0x5eed) * 4294967296) >>> 0;

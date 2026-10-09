@@ -1,12 +1,13 @@
-// Headless simulation tests: soak every map x river mode x hazard mode with 10 bots,
-// plus targeted mechanics checks. Run: npm test
+// Headless simulation tests: soak every map x river mode x hazard mode with 10 bots, a 6v6 pass on
+// every map x river mode with 12, plus targeted mechanics checks. Run: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GameSim } from '../shared/sim/sim.ts';
-import { DEFAULT_CONFIG, TICK_RATE, UNIT_RADIUS } from '../shared/constants.ts';
+import { DEFAULT_CONFIG, MAX_TEAM_SIZE, TICK_RATE, UNIT_RADIUS } from '../shared/constants.ts';
 import { MAP_IDS, RIVER_MODES, HAZARD_MODES, UnitState, Btn, type MatchConfig, type PlayerInfo, type Team } from '../shared/types.ts';
 import { getMap } from '../shared/maps/index.ts';
 
+/** n bots, alternating teams (so n = 2 x team size). */
 function bots(n: number): PlayerInfo[] {
   const out: PlayerInfo[] = [];
   for (let i = 0; i < n; i++) {
@@ -55,6 +56,53 @@ test('soak: every map x river mode x hazard mode runs 3 minutes of 5v5 bots', ()
       }
     }
   }
+});
+
+// 6v6 is the largest match. One hazard mode per map x river mode keeps this pass to about a fifth of
+// the 5v5 soak; the mode steps along with the map, so every river mode meets every hazard mode at 6v6.
+test('soak: every map x river mode runs 3 minutes of 6v6 bots (hazard modes rotate): both teams hook enemies and the match scores', (t) => {
+  const teamSize = MAX_TEAM_SIZE;
+  let biggest = 0;
+  let minKills = Infinity;
+  let minHits = Infinity;
+  let minScore = Infinity;
+  for (const [mi, mapId] of MAP_IDS.entries()) {
+    for (const [ri, riverMode] of RIVER_MODES.entries()) {
+      const hazards = HAZARD_MODES[(mi * RIVER_MODES.length + ri) % HAZARD_MODES.length];
+      const config: MatchConfig = { ...DEFAULT_CONFIG, mapId, riverMode, hazards, teamSize, killsToWin: 999, timeLimitSec: 900 };
+      const sim = new GameSim(config, bots(teamSize * 2), 6600 + mi * 10 + ri);
+      assert.equal(sim.units.filter((u) => u.team === 0).length, teamSize);
+      assert.equal(sim.units.filter((u) => u.team === 1).length, teamSize);
+      let kills = 0;
+      // hooks that caught an enemy, per team (a pull on an ally, a save or a slip, does not count)
+      const hooksHit = [0, 0];
+      for (let i = 0; i < TICK_RATE * 180; i++) {
+        sim.step();
+        for (const e of sim.events) {
+          if (e.e === 'kill') kills++;
+          if (e.e === 'hookHit' && !e.ally) hooksHit[sim.unitById.get(e.u)?.team ?? 0]++;
+        }
+        if (i % 300 === 0) {
+          for (const u of sim.units) {
+            assert.ok(finite(u.x) && finite(u.z) && finite(u.hp), `${mapId}/${riverMode}/${hazards} 6v6 non-finite unit ${u.id}`);
+            assert.ok(Math.abs(u.x) <= sim.map.w / 2 && Math.abs(u.z) <= sim.map.d / 2, `${mapId}/${riverMode} 6v6 unit ${u.id} out of bounds`);
+          }
+          // a full scoreboard frame is the biggest a snapshot gets
+          const len = JSON.stringify(sim.snapshotFor(1, true)).length;
+          biggest = Math.max(biggest, len);
+          assert.ok(len < 20000, `6v6 snapshot too large (${len} bytes)`);
+        }
+      }
+      // both teams land hooks on enemies (fewest seen 23 in a run); the match scores. A team scoring
+      // nothing can happen: bots() gives team 0 easy and hard bots against normal and brutal ones.
+      for (const team of [0, 1] as const) assert.ok(hooksHit[team] > 0, `${mapId}/${riverMode}/${hazards}: 6v6 team ${team} never hooked an enemy`);
+      assert.ok(kills > 0, `${mapId}/${riverMode}/${hazards}: no kills in 3 minutes of 6v6`);
+      minKills = Math.min(minKills, kills);
+      minHits = Math.min(minHits, ...hooksHit);
+      minScore = Math.min(minScore, ...sim.score);
+    }
+  }
+  t.diagnostic(`6v6: fewest kills in a run ${minKills}, fewest enemy hooks landed by one team ${minHits}, lowest team score ${minScore}, largest snapshot ${biggest} bytes of JSON`);
 });
 
 test('spawns and fountains are on land and clear of obstacles on every map', () => {

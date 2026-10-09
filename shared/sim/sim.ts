@@ -1625,9 +1625,23 @@ export class GameSim {
     this.emit({ e: 'respawn', u: u.id, x: q2(u.x), z: q2(u.z) });
   }
 
+  /**
+   * Spawn point `index` of a team. Every map has MAX_TEAM_SIZE points a side, and addPlayer gives
+   * each unit of a team its own index, so two Lunkers of a team never share a point. Should a
+   * team ever outnumber its points (a debug match past MAX_TEAM_SIZE), round k of the list goes
+   * between neighbouring points, at 1/2, then 1/4, 3/4, 1/8 ... of the way: never onto a taken spot.
+   */
   spawnPoint(team: Team, index: number): { x: number; z: number } {
     const list = this.map.spawns[team];
-    return list[index % list.length];
+    const n = list.length;
+    const i = index % n;
+    let k = Math.floor(index / n);
+    if (k === 0) return list[i];
+    let t = 0;
+    for (let f = 0.5; k > 0; k >>= 1, f *= 0.5) if (k & 1) t += f;
+    const a = list[i];
+    const b = list[(i + 1) % n];
+    return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
   }
 
   giveGold(u: Unit, amt: number): void {

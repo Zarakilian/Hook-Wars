@@ -575,7 +575,7 @@ export class GameServer {
         this.leaveRoom(c);
         let best: Room | null = null;
         for (const r of this.rooms.values()) {
-          if (r.isPrivate || r.isFull()) continue;
+          if (r.isPrivate || r.isFull() || r.config.teamSize !== DEFAULT_CONFIG.teamSize) continue;
           if (!best || r.members.size > best.members.size) best = r;
         }
         if (!best) {

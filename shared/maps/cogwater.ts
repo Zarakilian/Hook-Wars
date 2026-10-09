@@ -78,8 +78,8 @@ export const cogwater: MapDef = {
   tide: { style: 'locks', lowSec: 28, risingSec: 7, highSec: 30, fallingSec: 7 },
   special: 'steamvent',
   spawns: [
-    [{ x: -30, z: -6 }, { x: -30, z: -3 }, { x: -30, z: 0 }, { x: -30, z: 3 }, { x: -30, z: 6 }],
-    [{ x: 30, z: 6 }, { x: 30, z: 3 }, { x: 30, z: 0 }, { x: 30, z: -3 }, { x: 30, z: -6 }],
+    [{ x: -30, z: -6 }, { x: -30, z: -3 }, { x: -30, z: 0 }, { x: -30, z: 3 }, { x: -30, z: 6 }, { x: -27, z: 0 }],
+    [{ x: 30, z: 6 }, { x: 30, z: 3 }, { x: 30, z: 0 }, { x: 30, z: -3 }, { x: 30, z: -6 }, { x: 27, z: 0 }],
   ],
   fountains,
   obstacles,

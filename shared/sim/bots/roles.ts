@@ -3,6 +3,7 @@
 import { BOT_TUNING, TICK_RATE } from '../../constants.ts';
 import type { BotDifficulty } from '../../types.ts';
 import type { Unit } from '../entities.ts';
+import type { GameSim } from '../sim.ts';
 import type { BotRole, RoleDef, Tuning } from './types.ts';
 
 export const ROLES: Record<BotRole, RoleDef> = {
@@ -71,17 +72,35 @@ export const ROLES: Record<BotRole, RoleDef> = {
   },
 };
 
-const ROLE_ORDER: readonly BotRole[] = ['harpooner', 'bruiser', 'lifeguard', 'harpooner', 'bruiser'];
+/** A full 6-bot squad is two of each role; 5v5 keeps its 2 Harpooners, 2 Bruisers and 1 Lifeguard. */
+const ROLE_ORDER: readonly BotRole[] = ['harpooner', 'bruiser', 'lifeguard', 'harpooner', 'bruiser', 'lifeguard'];
 
 /**
- * Role for a bot: rank it among its team's bots by spawn slot. A lone bot is always the generalist
- * Harpooner; bigger squads get a Bruiser and a Lifeguard next.
+ * Where a unit's spawn point stands along its own bank: z for team 0, mirrored for team 1 (whose spawn
+ * list is team 0's point mirror). Lanes and roles both go in this order, so team 1 plays team 0's
+ * game mirrored, and nobody walks across a teammate's path from the fountain to the river.
  */
-export function assignRole(units: readonly Unit[], u: Unit): BotRole {
+export function bankOrder(sim: GameSim, u: Unit): number {
+  return (u.team === 0 ? 1 : -1) * sim.spawnPoint(u.team, u.spawnIndex).z;
+}
+
+/** a comes before b along their bank (spawn points level in z, the 6th and the middle one, go by slot) */
+export function bankBefore(sim: GameSim, a: Unit, b: Unit): boolean {
+  const ka = bankOrder(sim, a);
+  const kb = bankOrder(sim, b);
+  return ka < kb || (ka === kb && (a.spawnIndex < b.spawnIndex || (a.spawnIndex === b.spawnIndex && a.id < b.id)));
+}
+
+/**
+ * Role for a bot: rank it among its team's bots along the bank (the lane order). A lone bot is always
+ * the generalist Harpooner; bigger squads get a Bruiser and a Lifeguard next, so the roles alternate
+ * along the bank. Up to 5v5 this is the spawn slot order; the 6th spawn stands mid-bank.
+ */
+export function assignRole(sim: GameSim, u: Unit): BotRole {
   let rank = 0;
-  for (const o of units) {
+  for (const o of sim.units) {
     if (o === u || !o.isBot || o.team !== u.team) continue;
-    if (o.spawnIndex < u.spawnIndex || (o.spawnIndex === u.spawnIndex && o.id < u.id)) rank++;
+    if (bankBefore(sim, o, u)) rank++;
   }
   return ROLE_ORDER[rank % ROLE_ORDER.length];
 }

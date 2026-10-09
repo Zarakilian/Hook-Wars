@@ -8,7 +8,8 @@ import type { Unit } from '../shared/sim/entities.ts';
 import { botInfo, botProfile, resetBotProfile, setBotProfiling } from '../shared/sim/bots.ts';
 import { compAt, edgeDist, findPath, holdSpot, NAV_LAND, navStatic, newNavPath } from '../shared/sim/bots/nav.ts';
 import { hookLineClear, mapInfo, standable } from '../shared/sim/bots/mapinfo.ts';
-import { DEFAULT_CONFIG, TICK_RATE } from '../shared/constants.ts';
+import { Mode } from '../shared/sim/bots/types.ts';
+import { DEFAULT_CONFIG, MAX_TEAM_SIZE, TICK_RATE } from '../shared/constants.ts';
 import { getMap } from '../shared/maps/index.ts';
 import {
   MAP_IDS, UnitState, type BotDifficulty, type FamilyId, type HazardMode, type MapId, type MatchConfig, type PlayerInfo, type RiverMode, type Team,
@@ -274,38 +275,195 @@ test('roles are assigned per team and every bot plays its part', () => {
   }
 });
 
-test('ten bots cost well under a millisecond per tick, pathfinding included', (t) => {
-  // mirelight (side channels and docks) and maelstrom (a lagoon, tides) make the bots path the most
-  const cases: [MapId, RiverMode][] = [['coralcove', 'tidal'], ['cogwater', 'deep'], ['mirelight', 'deep'], ['maelstrom', 'tidal']];
-  // Wall-clock timing: a busy machine (parallel test runs, builds) inflates it. The work is
-  // deterministic, so the cheapest of up to three identical runs is the honest figure.
-  let best = Infinity;
-  let worst = 0;
-  let paths = 0;
-  const tries: string[] = [];
-  for (let attempt = 0; attempt < 3 && best >= 0.5; attempt++) {
-    setBotProfiling(true);
-    resetBotProfile();
-    paths = 0;
-    let stepMs = 0;
-    for (const [gi, [mapId, riverMode]] of cases.entries()) {
-      const sim = new GameSim(config(mapId, riverMode, 'mixed'), team5(5, (_t, s) => (['easy', 'normal', 'hard', 'brutal', 'brutal'] as const)[s]), 300 + gi);
-      const t0 = performance.now();
-      run(sim, 120);
-      stepMs += performance.now() - t0;
-      for (const u of sim.units) paths += botInfo(u)!.stats.paths;
-    }
-    setBotProfiling(false);
-    const p = botProfile();
-    const avg = p.totalMs / Math.max(1, p.ticks);
-    tries.push(`${(avg * 1000).toFixed(0)} us (${((100 * p.totalMs) / stepMs).toFixed(0)}% of the whole tick)`);
-    if (avg < best) {
-      best = avg;
-      worst = p.maxMs;
+test('6v6: a full squad is two Harpooners, two Bruisers and two Lifeguards, and every bot plays its part', () => {
+  const size = MAX_TEAM_SIZE;
+  const sim = new GameSim({ ...config('cogwater', 'dry'), teamSize: size }, team5(size, () => 'hard'), 11);
+  run(sim, 60);
+  for (const team of [0, 1] as const) {
+    const roles = sim.units.filter((u) => u.team === team).map((u) => botInfo(u)!.role);
+    assert.equal(roles.length, size);
+    for (const r of ['harpooner', 'bruiser', 'lifeguard'] as const) assert.equal(roles.filter((x) => x === r).length, 2, roles.join(','));
+  }
+  for (const u of sim.units) {
+    assert.ok(u.stats.ht > 0, `bot ${u.id} never threw`);
+    const spent = u.up.damage + u.up.range + u.up.speed + u.up.width + u.items.filter((s) => s).length;
+    assert.ok(spent > 0, `bot ${u.id} never shopped`);
+  }
+});
+
+test('6v6: six bots a side spread along their bank on every map (no clumping on a spot, no blocking at the edge)', (t) => {
+  const size = MAX_TEAM_SIZE;
+  const diffs = ['normal', 'hard', 'easy', 'brutal', 'normal', 'hard'] as const;
+  let pairs = 0;
+  let clumped = 0;
+  let edgeTouch = 0;
+  let nnSum = 0;
+  let nnN = 0;
+  let spanSum = 0;
+  let spanN = 0;
+  const worst: string[] = [];
+  for (const [mi, mapId] of MAP_IDS.entries()) {
+    for (const [ri, riverMode] of (['deep', 'dry'] as const).entries()) {
+      const sim = new GameSim({ ...config(mapId, riverMode, 'mixed'), teamSize: size }, team5(size, (_t, s) => diffs[s]), 500 + mi * 10 + ri);
+      const ns = navStatic(sim.map);
+      let p = 0;
+      let c = 0;
+      let e = 0;
+      for (let i = 0; i < TICK_RATE * 64; i++) {
+        sim.step();
+        if (i < TICK_RATE * 6 || i % 10 !== 0) continue; // after the countdown and the walk to the bank
+        for (const team of [0, 1] as const) {
+          // holders: alive bots holding their bank (pushing, retreating and rune runs are meant to bunch up)
+          const hold = sim.units.filter((u) => u.team === team && u.state === UnitState.Alive && botInfo(u)!.mode === Mode.Hold);
+          const goals = hold.map((u) => botInfo(u)!);
+          for (let a = 0; a < hold.length; a++) {
+            let nn = Infinity;
+            for (let b = 0; b < hold.length; b++) {
+              if (a === b) continue;
+              const d = Math.hypot(goals[a].goalX - goals[b].goalX, goals[a].goalZ - goals[b].goalZ);
+              nn = Math.min(nn, d);
+              if (b < a) continue;
+              p++;
+              if (d < 2) c++;
+              // two bodies pressed together (radius 0.75 each) right at the water's edge: one blocks the other's throw
+              if (Math.hypot(hold[a].x - hold[b].x, hold[a].z - hold[b].z) < 1.6) {
+                const ea = edgeDist(ns, team, hold[a].x, hold[a].z);
+                const eb = edgeDist(ns, team, hold[b].x, hold[b].z);
+                if (ea >= 0 && ea < 3.5 && eb >= 0 && eb < 3.5) e++;
+              }
+            }
+            if (Number.isFinite(nn)) {
+              nnSum += nn;
+              nnN++;
+            }
+          }
+          if (hold.length >= size - 1) {
+            const zs = goals.map((g) => g.goalZ);
+            spanSum += Math.max(...zs) - Math.min(...zs);
+            spanN++;
+          }
+        }
+      }
+      pairs += p;
+      clumped += c;
+      edgeTouch += e;
+      if (p > 0 && (c + e) / p > 0.01) worst.push(`${mapId}/${riverMode} ${((100 * c) / p).toFixed(1)}% / ${((100 * e) / p).toFixed(1)}%`);
     }
   }
-  t.diagnostic(`updateBots for 10 bots: ${(best * 1000).toFixed(1)} us per tick on average (runs: ${tries.join(', ')}), worst tick ${worst.toFixed(2)} ms (the first run includes the one-off nav grid build), ${paths} A* searches per run`);
-  assert.ok(best < 0.5, `bots cost ${best.toFixed(3)} ms per tick`);
+  const nn = nnSum / nnN;
+  const span = spanSum / spanN;
+  t.diagnostic(`6v6 holders: ${pairs} pairs sampled, goals under 2 m apart ${((100 * clumped) / pairs).toFixed(2)}%, bodies touching at the bank edge ${((100 * edgeTouch) / pairs).toFixed(2)}%, nearest teammate's spot ${nn.toFixed(1)} m on average, squad spread along the bank ${span.toFixed(1)} m`);
+  assert.ok(pairs > 20000, `only ${pairs} holder pairs sampled`);
+  assert.ok(clumped / pairs < 0.01, `holders picked the same spot ${((100 * clumped) / pairs).toFixed(2)}% of the time`);
+  assert.ok(edgeTouch / pairs < 0.01, `holders pressed together at the edge ${((100 * edgeTouch) / pairs).toFixed(2)}% of the time`);
+  assert.deepEqual(worst, [], 'maps where holders bunch up');
+  assert.ok(nn > 5, `a holder's nearest teammate stands only ${nn.toFixed(1)} m away on average`);
+  assert.ok(span > 18, `the squad covers only ${span.toFixed(1)} m of its bank`);
+});
+
+test('lanes and roles follow the spawn points along the bank, team 1 the mirror of team 0, at every team size on every map', () => {
+  for (const [mi, mapId] of MAP_IDS.entries()) {
+    for (let size = 1; size <= MAX_TEAM_SIZE; size++) {
+      const sim = new GameSim({ ...config(mapId, 'deep'), teamSize: size }, team5(size, () => 'normal'), 900 + mi);
+      run(sim, 1.2); // every bot has planned at least once
+      const lane = (team: Team, slot: number): number => {
+        const u = sim.units.find((x) => x.team === team && x.spawnIndex === slot)!;
+        return (u.brain as { laneZ: number }).laneZ;
+      };
+      const seen = new Set<string>();
+      for (let i = 0; i < size; i++) {
+        // the fairness rule of the maps: team 1's slot i does what team 0's slot i does, mirrored
+        assert.ok(Math.abs(lane(1, i) + lane(0, i)) < 1e-9, `${mapId} ${size}v${size} slot ${i}: lanes ${lane(0, i)} / ${lane(1, i)} not mirrored`);
+        seen.add(lane(0, i).toFixed(6));
+        for (let j = 0; j < size; j++) {
+          // nobody walks across a teammate's path: a spawn point further along z gets a lane further along z
+          for (const team of [0, 1] as const) {
+            const zi = sim.map.spawns[team][i].z;
+            const zj = sim.map.spawns[team][j].z;
+            if (zi < zj) assert.ok(lane(team, i) < lane(team, j), `${mapId} ${size}v${size} team ${team}: slot ${i} (z ${zi}) has lane ${lane(team, i)}, slot ${j} (z ${zj}) lane ${lane(team, j)}`);
+          }
+        }
+      }
+      assert.equal(seen.size, size, `${mapId} ${size}v${size}: two bots share a lane`);
+      // roles go in the same order, so they alternate along the bank (the 6th spawn stands mid-bank)
+      for (const team of [0, 1] as const) {
+        const side = team === 0 ? 1 : -1;
+        const along = sim.units.filter((u) => u.team === team).sort((a, b) => side * ((a.brain as { laneZ: number }).laneZ - (b.brain as { laneZ: number }).laneZ));
+        const want = (['harpooner', 'bruiser', 'lifeguard', 'harpooner', 'bruiser', 'lifeguard'] as const).slice(0, size);
+        assert.deepEqual(along.map((u) => botInfo(u)!.role), want, `${mapId} ${size}v${size} team ${team}: roles along the bank`);
+      }
+    }
+  }
+});
+
+test('walking out of the fountain at the start, neither team piles up (5v5 and 6v6, every map x river mode)', (t) => {
+  const rows: string[] = [];
+  for (const size of [5, MAX_TEAM_SIZE]) {
+    const touch = [0, 0];
+    let held = 0;
+    for (const [mi, mapId] of MAP_IDS.entries()) {
+      for (const [ri, riverMode] of (['deep', 'dry', 'tidal'] as const).entries()) {
+        const sim = new GameSim({ ...config(mapId, riverMode), teamSize: size }, team5(size, (_t, s) => (s % 2 ? 'hard' : 'normal')), 4200 + mi * 10 + ri);
+        const slow = new Map<number, number>();
+        const prev = new Map(sim.units.map((u) => [u.id, { x: u.x, z: u.z }]));
+        run(sim, 4, () => {
+          for (const u of sim.units) {
+            const p = prev.get(u.id)!;
+            const v = Math.hypot(u.x - p.x, u.z - p.z) * TICK_RATE;
+            prev.set(u.id, { x: u.x, z: u.z });
+            // wants to walk but barely moves for half a second: held up by somebody
+            const n = Math.hypot(u.input.mx, u.input.mz) > 0.5 && v < 1.5 ? (slow.get(u.id) ?? 0) + 1 : 0;
+            slow.set(u.id, n);
+            if (n === TICK_RATE / 2) held++;
+            for (const o of sim.units) if (o.team === u.team && o.id > u.id && Math.hypot(o.x - u.x, o.z - u.z) < 1.55) touch[u.team]++;
+          }
+        });
+      }
+    }
+    rows.push(`${size}v${size}: teammates touching ${touch[0]} / ${touch[1]} ticks (team 0 / team 1), held up ${held}`);
+    // before lanes followed the spawn points, team 1 crossed its own fountain: 3088 (5v5) and 3580 (6v6) ticks, and a 4-bot jam at 6v6
+    assert.equal(held, 0, `${size}v${size}: ${held} bots held up walking out`);
+    for (const team of [0, 1] as const) assert.ok(touch[team] < 1500, `${size}v${size} team ${team}: teammates touching ${touch[team]} ticks walking out`);
+  }
+  t.diagnostic(rows.join('; '));
+});
+
+test('ten bots (5v5) and twelve bots (6v6) cost well under a millisecond per tick, pathfinding included', (t) => {
+  // mirelight (side channels and docks) and maelstrom (a lagoon, tides) make the bots path the most
+  const cases: [MapId, RiverMode][] = [['coralcove', 'tidal'], ['cogwater', 'deep'], ['mirelight', 'deep'], ['maelstrom', 'tidal']];
+  const diffs = ['easy', 'normal', 'hard', 'brutal', 'brutal', 'hard'] as const;
+  // all the bots of a tick together: 0.5 ms for ten, and the same per bot for twelve
+  for (const [size, limit] of [[5, 0.5], [MAX_TEAM_SIZE, 0.6]] as const) {
+    // Wall-clock timing: a busy machine (parallel test runs, builds) inflates it. The work is
+    // deterministic, so the cheapest of up to three identical runs is the honest figure.
+    let best = Infinity;
+    let worst = 0;
+    let paths = 0;
+    const tries: string[] = [];
+    for (let attempt = 0; attempt < 3 && best >= limit; attempt++) {
+      setBotProfiling(true);
+      resetBotProfile();
+      paths = 0;
+      let stepMs = 0;
+      for (const [gi, [mapId, riverMode]] of cases.entries()) {
+        const sim = new GameSim({ ...config(mapId, riverMode, 'mixed'), teamSize: size }, team5(size, (_t, s) => diffs[s]), 300 + gi);
+        const t0 = performance.now();
+        run(sim, 120);
+        stepMs += performance.now() - t0;
+        for (const u of sim.units) paths += botInfo(u)!.stats.paths;
+      }
+      setBotProfiling(false);
+      const p = botProfile();
+      const avg = p.totalMs / Math.max(1, p.ticks);
+      tries.push(`${(avg * 1000).toFixed(0)} us (${((100 * p.totalMs) / stepMs).toFixed(0)}% of the whole tick)`);
+      if (avg < best) {
+        best = avg;
+        worst = p.maxMs;
+      }
+    }
+    t.diagnostic(`updateBots for ${size * 2} bots: ${(best * 1000).toFixed(1)} us per tick on average (runs: ${tries.join(', ')}), worst tick ${worst.toFixed(2)} ms (the first run includes the one-off nav grid build), ${paths} A* searches per run`);
+    assert.ok(best < limit, `${size * 2} bots cost ${best.toFixed(3)} ms per tick`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -357,6 +515,28 @@ test('navigation: from spawn, every bot reaches the edge of its own main river o
     });
     const worst = reached.size > 0 ? Math.max(...reached.values()) : NaN;
     rows.push(`${mapId} ${reached.size}/${sim.units.length} by ${worst.toFixed(1)} s`);
+    assert.equal(reached.size, sim.units.length, `${mapId}: only ${reached.size} of ${sim.units.length} bots reached their bank edge`);
+  }
+  t.diagnostic(rows.join(', '));
+});
+
+test('navigation: at 6v6, every bot (the sixth spawn included) reaches the edge of its own main river on every map', (t) => {
+  const size = MAX_TEAM_SIZE;
+  const rows: string[] = [];
+  for (const [gi, mapId] of MAP_IDS.entries()) {
+    const sim = new GameSim({ ...config(mapId, 'deep'), teamSize: size }, team5(size, (_t, s) => (['normal', 'hard', 'easy', 'brutal', 'normal', 'hard'] as const)[s]), 600 + gi);
+    const ns = navStatic(sim.map);
+    const reached = new Map<number, number>();
+    run(sim, 4 + 16, () => {
+      for (const u of sim.units) {
+        if (reached.has(u.id) || u.state !== UnitState.Alive) continue;
+        const e = edgeDist(ns, u.team, u.x, u.z);
+        if (e >= 0 && e < 6 && sim.world.channel(u.x, u.z) <= 0) reached.set(u.id, sim.time - 4);
+      }
+    });
+    const worst = reached.size > 0 ? Math.max(...reached.values()) : NaN;
+    rows.push(`${mapId} ${reached.size}/${sim.units.length} by ${worst.toFixed(1)} s`);
+    assert.equal(sim.units.length, size * 2);
     assert.equal(reached.size, sim.units.length, `${mapId}: only ${reached.size} of ${sim.units.length} bots reached their bank edge`);
   }
   t.diagnostic(rows.join(', '));

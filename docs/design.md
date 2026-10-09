@@ -5,7 +5,7 @@
 **Done when:** You can say which file owns a feature and which contract it must keep.
 **Last verified:** 2026-10-08
 
-Hook Wars is a voxel hook-brawler. Two teams of up to 5 Lunkers stand on either side of a river and drag each other across it with chain hooks. It is inspired by the classic "Pudge Wars" custom game, but every character, name and asset is original.
+Hook Wars is a voxel hook-brawler. Two teams of up to 6 Lunkers (5v5 is the default and the Quick Play size) stand on either side of a river and drag each other across it with chain hooks. It is inspired by the classic "Pudge Wars" custom game, but every character, name and asset is original.
 
 **Editions.** This tree is the standard edition: no crypto of any kind. It ships as a free browser build (cosmetics earned with Pearls) and as a paid Steam build (US$4.99 Early Access; premium cosmetics sold through Steam's Item Store and traded on the Steam Community Market). Steam does not allow games that issue or exchange crypto or NFTs, so the Solana edition lives only on branch `edition/solana`. Code identifiers keep the old internal name `Pudgy`; players only ever see "Lunker".
 
@@ -18,7 +18,7 @@ Think of it as fishing for your friends. Your hook is the rod, the river is the 
 | Rule | Value |
 |---|---|
 | Teams | Red Tide (team 0, west, -X) and Blue Gill (team 1, east, +X) |
-| Team size | 1 to 5, empty slots filled with bots (Easy, Normal, Hard, Brutal) |
+| Team size | 1 to 6 (default 5), empty slots filled with bots (Easy, Normal, Hard, Brutal). The setup form suggests a kills-to-win per size (`suggestedKills`: 5, 10, 15, 20, 30, 35 for 1v1 to 6v6) unless you pick one. Quick Play is always 5v5 |
 | Win | First to `killsToWin` (5 to 50, default 30), or most kills when `timeLimitSec` ends. A tie goes to overtime: next kill wins |
 | Scoring | Every death scores a point for the other team, including drownings and hazard deaths |
 | Respawn | 5 s, +0.35 s per death, max 10 s, then 2 s of spawn protection |

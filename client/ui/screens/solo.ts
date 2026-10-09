@@ -1,4 +1,4 @@
-// Solo setup: quick presets (Practice, Skirmish, Full Crew), the full match form with a card per
+// Solo setup: quick presets (Practice, Skirmish, Full Crew, Mayhem), the full match form with a card per
 // map, your team, and a big Start button. Presets only change the match config.
 import { getMap } from '../../../shared/maps/index.ts';
 import type { MatchConfig, Team } from '../../../shared/types.ts';
@@ -24,6 +24,7 @@ const PRESETS: Preset[] = [
   { id: 'practice', name: 'Practice', line: '1v1 vs an Easy bot, 30 min, no hazards', icon: 'target', patch: { teamSize: 1, botDifficulty: 'easy', timeLimitSec: 1800, killsToWin: 50, hazards: 'none' } },
   { id: 'skirmish', name: 'Skirmish', line: '3v3 vs Normal bots, first to 15', icon: 'hook', patch: { teamSize: 3, botDifficulty: 'normal', timeLimitSec: 600, killsToWin: 15 } },
   { id: 'crew', name: 'Full Crew', line: '5v5 vs Hard bots, first to 30', icon: 'people', patch: { teamSize: 5, botDifficulty: 'hard', timeLimitSec: 900, killsToWin: 30 } },
+  { id: 'mayhem', name: 'Mayhem', line: '6v6 vs Hard bots, first to 35', icon: 'people', patch: { teamSize: 6, botDifficulty: 'hard', timeLimitSec: 900, killsToWin: 35 } },
 ];
 
 function matches(cfg: MatchConfig, p: Preset): boolean {

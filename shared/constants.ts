@@ -11,7 +11,8 @@ export const SNAPSHOT_RATE = 30;
 /** Scoreboard rows are attached every N ticks. */
 export const SCOREBOARD_EVERY = 15;
 
-export const MAX_TEAM_SIZE = 5;
+/** Lunkers per side, at most (every map has this many spawn points a team). 5v5 stays the default. */
+export const MAX_TEAM_SIZE = 6;
 export const MAX_NAME_LEN = 16;
 export const MAX_CHAT_LEN = 120;
 
@@ -25,6 +26,23 @@ export const DEFAULT_CONFIG: MatchConfig = {
   botFill: true,
   botDifficulty: 'normal',
 };
+
+/**
+ * Kills to win suggested for 1v1 .. 6v6 (index = team size - 1), so a match lasts about as long as the
+ * 5v5 default of 30. Bigger teams score faster, though not in proportion (more targets, more crowding).
+ * Measured on full 15-minute bot matches (every map x river mode x 2 to 4 seeds, no hazards) as the
+ * median minutes until the leading team reaches K, Normal / Hard bots. 5v5 to 30: 6.9 / 8.3 min.
+ * The K that lasts as long: 6v6 33.0 / 32.6 (to 35: 7.4 / 8.7 min), 4v4 20.1 / 21.2, 3v3 15.4 / 14.3,
+ * 2v2 12.6 / 9.8; their mean, rounded to the nearest 5. A 1v1 of Normal bots takes 13 min to reach 5
+ * (half hit the 15-minute limit first), so it gets the minimum, 5.
+ */
+const SUGGESTED_KILLS: readonly number[] = [5, 10, 15, 20, 30, 35];
+
+/** Suggested kills to win for a team size: 30 at 5v5, 35 at 6v6. Always inside the allowed 5..50. */
+export function suggestedKills(teamSize: number): number {
+  const n = Number.isFinite(teamSize) ? Math.max(1, Math.min(MAX_TEAM_SIZE, Math.round(teamSize))) : DEFAULT_CONFIG.teamSize;
+  return SUGGESTED_KILLS[Math.min(n, SUGGESTED_KILLS.length) - 1];
+}
 
 export const UNIT_RADIUS = 0.75;
 export const COUNTDOWN_SEC = 4;

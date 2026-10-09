@@ -32,7 +32,7 @@ export interface MatchConfig {
   hazards: HazardMode;
   killsToWin: number; // 5..50
   timeLimitSec: number; // 180..1800
-  teamSize: number; // 1..5 slots per side
+  teamSize: number; // 1..MAX_TEAM_SIZE (6) slots per side; 5 is the default
   botFill: boolean; // fill empty slots with bots
   botDifficulty: BotDifficulty;
 }

@@ -257,7 +257,7 @@ export interface MapDef {
   islands: Circle[]; // ground islands inside the channel
   tide?: TideDef; // present = map supports the Tidal river mode
   special: HazardKind; // the map's own special hazard
-  spawns: [Vec2[], Vec2[]]; // 5 per team
+  spawns: [Vec2[], Vec2[]]; // MAX_TEAM_SIZE (6) per team, point-mirrored
   fountains: [Circle, Circle];
   obstacles: Obstacle[];
   movers: MoverDef[];
