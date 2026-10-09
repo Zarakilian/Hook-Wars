@@ -32,8 +32,8 @@ export interface WeatherOptions {
   seed?: number;
   /**
    * Cinematic mode (client/render/cinematic.ts): dimmer rain, and rain and snow that catch the pooled
-   * lantern light (LANTERN_UNIFORMS). Absent or false: no HW_CINE define and no extra uniforms, so the
-   * cinematic blocks are preprocessed away and the programs are the normal ones.
+   * lantern light (LANTERN_UNIFORMS). Absent or false: the normal shader sources, byte for byte, and no
+   * extra uniforms (same programs, same pixels, same cost).
    */
   cinematic?: boolean;
 }
@@ -82,10 +82,6 @@ ${COMMON_UNIFORMS}
 uniform vec2 uWind;
 attribute vec4 aSeed;
 varying float vAlpha;
-#ifdef HW_CINE
-${LANTERN_GLSL}
-varying vec3 vLit;
-#endif
 ${WRAP_GLSL}
 void main() {
   vec3 b = aSeed.xyz * uBox;
@@ -105,29 +101,18 @@ void main() {
   float size = mix(0.06, 0.17, aSeed.w * aSeed.w);
   gl_PointSize = max(size * uPixelScale / dist, 1.0);
   gl_Position = projectionMatrix * mv;
-#ifdef HW_CINE
-  vLit = hwLanternLight(p);
-#endif
 }
 `;
 
 const SNOW_FRAG = /* glsl */ `
 uniform vec3 uColor;
 varying float vAlpha;
-#ifdef HW_CINE
-varying vec3 vLit;
-#endif
 void main() {
   vec2 c = gl_PointCoord * 2.0 - 1.0;
   float d = dot(c, c);
   if (d > 1.0) discard;
   float a = (1.0 - d) * (1.0 - d) * vAlpha;
-#ifdef HW_CINE
-  // flakes near a lantern sparkle warm
-  gl_FragColor = vec4((uColor + vLit * 0.1) * (0.85 + 0.3 * (1.0 - d)), a);
-#else
   gl_FragColor = vec4(uColor * (0.85 + 0.3 * (1.0 - d)), a);
-#endif
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -142,10 +127,6 @@ uniform vec2 uViewport;
 attribute vec4 aSeed;
 varying float vAlpha;
 varying float vAlong;
-#ifdef HW_CINE
-${LANTERN_GLSL}
-varying vec3 vLit;
-#endif
 ${WRAP_GLSL}
 void main() {
   vec3 b = aSeed.xyz * uBox;
@@ -169,9 +150,6 @@ void main() {
   float dist = c.w;
   vAlong = position.y;
   vAlpha = hwEdge(head) * smoothstep(0.0, 0.6, hy) * smoothstep(3.0, 9.0, dist);
-#ifdef HW_CINE
-  vLit = hwLanternLight(mix(tail, head, position.y));
-#endif
 }
 `;
 
@@ -179,19 +157,9 @@ const RAIN_FRAG = /* glsl */ `
 uniform vec3 uColor;
 varying float vAlpha;
 varying float vAlong;
-#ifdef HW_CINE
-varying vec3 vLit;
-#endif
 void main() {
   float a = vAlpha * smoothstep(0.0, 0.85, vAlong) * 0.3;
-#ifdef HW_CINE
-  // thin and dim in the dark, bright warm streaks where the rain falls through lantern light
-  vec3 lit = vLit * 0.12;
-  float glow = clamp(dot(lit, vec3(0.2126, 0.7152, 0.0722)) * 1.5, 0.0, 1.0);
-  gl_FragColor = vec4(uColor + lit, a * (0.5 + 1.3 * glow));
-#else
   gl_FragColor = vec4(uColor, a);
-#endif
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -334,6 +302,58 @@ interface Layer {
   zOffset: number;
 }
 
+/**
+ * Cinematic variants of the snow and rain shaders (lantern-lit flakes and streaks), built from the normal
+ * sources by inserting code at fixed anchors, and only when cinematic mode builds a weather system. With
+ * cinematic off nothing here runs and the GLSL is the normal one byte for byte. A missing anchor throws:
+ * when a normal weather shader changes, its cinematic variant has to follow.
+ */
+function cineShader(src: string, edits: { at: string; add?: string; put?: string }[]): string {
+  let s = src;
+  for (const e of edits) {
+    const i = s.indexOf(e.at);
+    if (i < 0) throw new Error('[weather] cinematic shader anchor missing: ' + e.at.trim());
+    s = s.slice(0, i) + (e.put ?? e.at + (e.add ?? '')) + s.slice(i + e.at.length);
+  }
+  return s;
+}
+
+/** the shared lantern pool uniforms (filled by the engine every frame while cinematic is on) */
+function lanternUniforms(): Record<string, THREE.IUniform> {
+  return { hwLanternPos: LANTERN_UNIFORMS.hwLanternPos, hwLanternCol: LANTERN_UNIFORMS.hwLanternCol, hwLanternCount: LANTERN_UNIFORMS.hwLanternCount };
+}
+
+function cineSnow(): { vert: string; frag: string } {
+  return {
+    vert: cineShader(SNOW_VERT, [
+      { at: 'varying float vAlpha;\n', add: `${LANTERN_GLSL}\nvarying vec3 vLit;\n` },
+      { at: '  gl_Position = projectionMatrix * mv;\n', add: '  vLit = hwLanternLight(p);\n' },
+    ]),
+    frag: cineShader(SNOW_FRAG, [
+      { at: 'varying float vAlpha;\n', add: 'varying vec3 vLit;\n' },
+      // flakes near a lantern sparkle warm
+      { at: '  gl_FragColor = vec4(uColor * (0.85 + 0.3 * (1.0 - d)), a);\n', put: '  gl_FragColor = vec4((uColor + vLit * 0.1) * (0.85 + 0.3 * (1.0 - d)), a);\n' },
+    ]),
+  };
+}
+
+function cineRain(): { vert: string; frag: string } {
+  return {
+    vert: cineShader(RAIN_VERT, [
+      { at: 'varying float vAlong;\n', add: `${LANTERN_GLSL}\nvarying vec3 vLit;\n` },
+      { at: '  vAlpha = hwEdge(head) * smoothstep(0.0, 0.6, hy) * smoothstep(3.0, 9.0, dist);\n', add: '  vLit = hwLanternLight(mix(tail, head, position.y));\n' },
+    ]),
+    frag: cineShader(RAIN_FRAG, [
+      { at: 'varying float vAlong;\n', add: 'varying vec3 vLit;\n' },
+      // thin and dim in the dark, bright warm streaks where the rain falls through lantern light
+      {
+        at: '  gl_FragColor = vec4(uColor, a);\n',
+        put: '  vec3 lit = vLit * 0.12;\n  float glow = clamp(dot(lit, vec3(0.2126, 0.7152, 0.0722)) * 1.5, 0.0, 1.0);\n  gl_FragColor = vec4(uColor + lit, a * (0.5 + 1.3 * glow));\n',
+      },
+    ]),
+  };
+}
+
 export class WeatherSystem {
   readonly group = new THREE.Group();
   readonly kind: Weather;
@@ -352,11 +372,12 @@ export class WeatherSystem {
     const base = o.groundY;
     this.cine = o.cinematic === true;
     if (o.kind === 'snow') {
-      this.addPoints(WEATHER_COUNTS.snow[q], seed, SNOW_VERT, SNOW_FRAG, new THREE.Vector3(80, 22, 60), base, 0, {
+      const cs = this.cine ? cineSnow() : null;
+      this.addPoints(WEATHER_COUNTS.snow[q], seed, cs ? cs.vert : SNOW_VERT, cs ? cs.frag : SNOW_FRAG, new THREE.Vector3(80, 22, 60), base, 0, {
         uColor: { value: o.tint.clone() },
         uWind: { value: new THREE.Vector2(0.55, 0.25) },
+        ...(cs ? lanternUniforms() : {}),
       }, THREE.NormalBlending, o.overlayLayer);
-      if (this.cine) this.cinematize(this.layers[this.layers.length - 1].material);
     } else if (o.kind === 'rain') {
       this.addRain(WEATHER_COUNTS.rain[q], seed, new THREE.Vector3(76, 20, 58), base, o.tint, o.overlayLayer);
       if (o.groundMask) {
@@ -401,14 +422,6 @@ export class WeatherSystem {
     });
   }
 
-  /** cinematic only: compile the lantern-lit variant (HW_CINE) and share the lantern pool uniforms */
-  private cinematize(m: THREE.ShaderMaterial): void {
-    m.defines = { ...m.defines, HW_CINE: '' };
-    m.uniforms.hwLanternPos = LANTERN_UNIFORMS.hwLanternPos;
-    m.uniforms.hwLanternCol = LANTERN_UNIFORMS.hwLanternCol;
-    m.uniforms.hwLanternCount = LANTERN_UNIFORMS.hwLanternCount;
-  }
-
   private addPoints(count: number, seed: number, vert: string, frag: string, box: THREE.Vector3, base: number, zOffset: number, extra: Record<string, THREE.IUniform>, blending: THREE.Blending, layer: number): void {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('aSeed', seedAttribute(count, seed));
@@ -431,19 +444,17 @@ export class WeatherSystem {
     const seeds = seedAttribute(count, seed);
     geometry.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seeds.array as Float32Array, 4));
     geometry.instanceCount = count;
-    const material = this.makeMaterial(RAIN_VERT, RAIN_FRAG, box, base, {
-      uColor: { value: tint.clone() },
+    const cr = this.cine ? cineRain() : null;
+    const material = this.makeMaterial(cr ? cr.vert : RAIN_VERT, cr ? cr.frag : RAIN_FRAG, box, base, {
+      // cinematic: dimmer streaks away from the lanterns (the lit ones carry the rain in the references)
+      uColor: { value: cr ? tint.clone().multiplyScalar(0.7) : tint.clone() },
       uVel: { value: new THREE.Vector3(2.4, -17, 1.6) },
       uLen: { value: 1.05 },
       uWidth: { value: 1.3 },
       uViewport: this.sharedViewport,
+      ...(cr ? lanternUniforms() : {}),
     }, THREE.NormalBlending);
     material.side = THREE.DoubleSide; // the streak quad's winding flips with the screen direction
-    if (this.cine) {
-      this.cinematize(material);
-      // dimmer streaks away from the lanterns: the lit ones carry the rain in the references
-      (material.uniforms.uColor.value as THREE.Color).multiplyScalar(0.7);
-    }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     mesh.renderOrder = 21;

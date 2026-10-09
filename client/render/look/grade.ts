@@ -189,8 +189,9 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
           black: 0.012,
           vibrance: 0.18,
           warmSat: 0.3,
-          exposure: 1.12,
-          vignette: 0.16,
+          // dusk, not night: a little brighter and a lighter vignette than night so both banks stay readable
+          exposure: 1.18,
+          vignette: 0.1,
           lift: v3(0.006, 0.0, 0.01),
         }
       : {
@@ -214,10 +215,11 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
 
   // mist: low and thick at dusk (Mirelight), rain haze at night, a thin sea haze by day
   // the mist in shadow takes the fog colour cooled by the sky; the sun adds the warm where it reaches
-  const ambient = low ? fog.clone().lerp(new THREE.Color(a.skyTop), 0.35).multiplyScalar(0.8) : fog.clone().lerp(sky, 0.3).multiplyScalar(night ? 0.7 : 1.1);
+  const ambient = low ? fog.clone().lerp(new THREE.Color(a.skyTop), 0.35).multiplyScalar(0.95) : fog.clone().lerp(sky, 0.3).multiplyScalar(night ? 0.7 : 1.1);
   const rs = riverSamples(map);
   const mist: CineMist = {
-    density: night ? (rain ? 0.08 : snow ? 0.045 : 0.06) : low ? 0.05 : 0.03,
+    // dusk: the marsh mist banks of the reference (ref04) are the strongest of all maps
+    density: night ? (rain ? 0.08 : snow ? 0.045 : 0.06) : low ? 0.075 : 0.03,
     falloff: night ? 1.4 : low ? 1.35 : 1.1,
     base: gy - 0.5,
     top: gy + 7,
@@ -230,7 +232,7 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
     river: rs.pts,
     riverZ0: rs.z0,
     riverDz: rs.dz,
-    bankMist: night ? 0.55 : low ? 0.4 : 0.6,
+    bankMist: night ? 0.55 : low ? 0.5 : 0.6,
   };
 
   const rimColor = night
@@ -252,6 +254,6 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
     lanterns: night ? 1.3 : low ? 0.9 : 0.45,
     lightBudget: night ? 10 : low ? 8 : 4,
     fogScale: 0.85,
-    ambient: night ? 0.72 : low ? 1 : 0.95,
+    ambient: night ? 0.72 : low ? 1.08 : 0.95,
   };
 }
