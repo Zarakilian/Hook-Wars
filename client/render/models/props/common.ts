@@ -2,7 +2,9 @@
 // noise and shape helpers, the PropModel type and instancing helpers.
 // Every material here is created by this module. voxel.ts's cached materials are never touched.
 import * as THREE from 'three';
+import { cinematicEnabled, onCinematicChange } from '../../cinematic.ts';
 import type { Quality } from '../../contracts.ts';
+import { applyVoxelLook } from '../../look/voxelLook.ts';
 import { hashVox, mix, shade } from '../../voxel/voxel.ts';
 import { meshPGrid, PGrid } from './mesher.ts';
 
@@ -136,8 +138,86 @@ export function moodVariant(m: THREE.Material, mood: 'night' | 'dusk' | null): T
   if (!mood) return m;
   const o = m.userData.opts as MatOpts | undefined;
   if (!o || o.rim || o.tag) return m;
-  return pmat({ ...o, rim: mood === 'night' ? 0.42 : 0.22, rimColor: mood === 'night' ? 0x7f9fe8 : 0xffb070 });
+  const v = pmat({ ...o, rim: mood === 'night' ? 0.42 : 0.22, rimColor: mood === 'night' ? 0x7f9fe8 : 0xffb070 });
+  // the night / dusk variant sits on the same voxel geometry as its source
+  if (m.userData.hwVox) adoptVoxelLook(v);
+  return v;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Epic (cinematic) voxel look: per-voxel bevels, seams and glints (client/render/look/voxelLook.ts)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every prop bucket mixes models with different voxel sizes: each geometry carries its own (hwVoxelSize).
+ * Bevels tilt half as far as the default and glint less: with the full tilt every cube edge of a night prop
+ * caught the cool sky as a pale-blue grid line, where the references show warm wood with dark gaps between
+ * the boards (slightly deeper seams, narrower bevel). Uniform-only options: no extra program variant.
+ */
+const VOX_LOOK = { voxelSize: 'attribute', fallbackSize: 0.05, seam: 0.4, bevel: 0.14, tilt: 0.3, glint: 0.35 } as const;
+/**
+ * Register a prop material for the Epic voxel look. While cinematic is off this only records the material
+ * (same program, same pixels). Transparent and vertex-animated materials are left out: the look floors the
+ * displaced vertex positions, so seams would crawl on swaying leaves, flags, floating and bobbing parts.
+ */
+export function adoptVoxelLook(m: THREE.Material): void {
+  if (m.userData.hwVox) return;
+  const o = m.userData.opts as MatOpts | undefined;
+  if (!o || !(m as THREE.MeshStandardMaterial).isMeshStandardMaterial || m.transparent) return;
+  if (o.sway || o.wobble || o.float || o.kelp || o.boat || o.cloth) return;
+  m.userData.hwVox = true;
+  applyVoxelLook(m, VOX_LOOK);
+}
+
+/** Give a voxel geometry its per-vertex voxel size (Epic only; userData.hwV is set by toModel). */
+export function ensureVoxelSize(geo: THREE.BufferGeometry, fallback = 0.05): void {
+  if (geo.getAttribute('hwVoxelSize')) return;
+  const n = geo.getAttribute('position').count;
+  geo.setAttribute('hwVoxelSize', new THREE.Float32BufferAttribute(new Float32Array(n).fill((geo.userData.hwV as number | undefined) ?? fallback), 1));
+}
+
+/**
+ * A voxel size so small (0.1 mm) that every pixel spans hundreds of voxels: the look's seams, bevels and
+ * glints all fade to exactly nothing, so geometry carrying it renders as it does without the look.
+ */
+const NEUTRAL_VOXEL = 1e-4;
+
+/** Give geometry built while cinematic was off a neutral hwVoxelSize (see trackOffGeometry). */
+export function neutralVoxelSize(geo: THREE.BufferGeometry): void {
+  if (geo.getAttribute('hwVoxelSize')) return;
+  const n = geo.getAttribute('position').count;
+  geo.setAttribute('hwVoxelSize', new THREE.Float32BufferAttribute(new Float32Array(n).fill(NEUTRAL_VOXEL), 1));
+}
+
+// Epic switched on mid-match (the Steam settings screen opens from the in-match menu): the props on screen
+// were built with it off, so their geometry has no hwVoxelSize. The attribute-mode look would then read the
+// context's generic attribute value at that location, which another program's default (1.0 for a missing
+// colour) can leave behind: 1 m seams across the props. The attribute cannot be added at draw time (in an
+// onBeforeRender hook it is not uploaded yet, and three.js caches the vertex array without it for good), so
+// every geometry built while cinematic is off and drawn with a registered material is tracked here and gets
+// the neutral size at the switch, before the next frame uploads it. Props built before the switch keep their
+// normal look until the next match (the foundation's rule for runtime toggles). With cinematic off nothing is
+// added, and the attribute stays unused by the normal programs after a later switch back.
+const offGeos = new Set<WeakRef<THREE.BufferGeometry>>();
+let offSweep = 4096;
+
+/** Track geometry built while cinematic is off that draws with a registered prop material. */
+export function trackOffGeometry(geo: THREE.BufferGeometry): void {
+  offGeos.add(new WeakRef(geo));
+  if (offGeos.size > offSweep) {
+    for (const r of offGeos) if (!r.deref()) offGeos.delete(r);
+    offSweep = Math.max(4096, offGeos.size * 2);
+  }
+}
+
+onCinematicChange((on) => {
+  if (!on) return;
+  for (const r of offGeos) {
+    const g = r.deref();
+    if (!g) offGeos.delete(r);
+    else neutralVoxelSize(g);
+  }
+});
 
 export function moodOf(atmo: { timeOfDay: string }): 'night' | 'dusk' | null {
   return atmo.timeOfDay === 'night' ? 'night' : atmo.timeOfDay === 'dusk' ? 'dusk' : null;
@@ -365,10 +445,45 @@ export interface PropHalo {
   size: number;
   opacity: number;
 }
+/** A real lantern in a model: where its flame is, for the Epic lantern lights (engine.setLanternSources). */
+export interface PropLamp {
+  /** local position in metres (model space): the centre of the glass */
+  pos: [number, number, number];
+  /** sRGB hex */
+  color: number;
+  /** peak intensity (candela) */
+  intensity: number;
+  /** cut-off distance (m) */
+  range: number;
+}
 export interface PropModel {
   parts: PropPart[];
   /** additive glow sprites placed with each instance */
   halos?: PropHalo[];
+  /** lamp flames placed with each instance (Epic lantern lights; nothing renders them directly) */
+  lamps?: PropLamp[];
+}
+
+/** Light per lamp kind: sRGB colour, candela, range (the same scale as look/lanterns.ts). */
+export const LAMP_KIND = {
+  lamppost: [0xffb468, 13, 7],
+  gaslamp: [0xffac5a, 10.5, 6.5],
+  lanternpost: [0xffa64e, 9.5, 6],
+  stilthut: [0xffa04a, 9, 6],
+  watchtower: [0xffbe6a, 12, 7],
+  crane: [0xffb060, 10.5, 6.5],
+  bridgepier: [0xffb468, 7.5, 5.5],
+  lantern: [0xffae5c, 7.5, 5.5],
+  string: [0xffb862, 9, 6.5],
+  small: [0xffb060, 6, 4.5],
+  /** the green glass of the older swamp maps' decor lanterns */
+  marshlight: [0xc8f080, 6, 5],
+} as const satisfies Record<string, readonly [number, number, number]>;
+
+/** A lamp at voxel centre `c` of a grid meshed with `pivot` and voxel size V. */
+export function lampAt(c: [number, number, number], pivot: [number, number, number], V: number, kind: keyof typeof LAMP_KIND): PropLamp {
+  const [color, intensity, range] = LAMP_KIND[kind];
+  return { pos: [(c[0] - pivot[0]) * V, (c[1] - pivot[1]) * V, (c[2] - pivot[2]) * V], color, intensity, range };
 }
 
 /** Channel ids used by every builder. */
@@ -383,6 +498,33 @@ export const CH = {
   extra: 7,
 } as const;
 
+/** Epic set dressing pass over a builder's grid before it is meshed (may add materials for new channels). */
+export type GridHook = (g: PGrid, size: number, mats: Partial<Record<number, THREE.Material>>) => void;
+let gridHook: GridHook | null = null;
+
+/** Run a builder with a dressing pass on every grid it meshes (Epic only: nothing sets a hook otherwise). */
+export function withGridHook<T>(hook: GridHook | null, fn: () => T): T {
+  const prev = gridHook;
+  gridHook = hook;
+  try {
+    return fn();
+  } finally {
+    gridHook = prev;
+  }
+}
+
+/**
+ * Epic: keep the voxel lattice robust for the voxel look. It floors (position / size + 0.25) per vertex, which
+ * is exact when the pivot sits on a whole or half voxel; a pivot at about a quarter voxel would put the vertex
+ * lattice next to a floor step, so it moves to the whole voxel (under 2 cm).
+ */
+function latticePivot(p: [number, number, number]): [number, number, number] {
+  return p.map((v) => {
+    const f = v - Math.floor(v);
+    return f > 0.1 && f < 0.4 ? Math.floor(v) : v;
+  }) as [number, number, number];
+}
+
 /** Mesh a PGrid and pair each channel with a material. Channels without a material use `base`. */
 export function toModel(
   g: PGrid,
@@ -390,13 +532,23 @@ export function toModel(
   mats: Partial<Record<number, THREE.Material>>,
   o: { pivot?: [number, number, number]; shadow?: boolean; noShadowCh?: number[]; ao?: number } = {},
 ): PropModel {
-  const geos = meshPGrid(g, { size, pivot: o.pivot, aoStrength: o.ao });
+  const epic = cinematicEnabled();
+  if (gridHook) {
+    mats = { ...mats };
+    gridHook(g, size, mats);
+  }
+  const geos = meshPGrid(g, { size, pivot: epic && o.pivot ? latticePivot(o.pivot) : o.pivot, aoStrength: o.ao });
   const parts: PropPart[] = [];
   const baseMat = mats[0] ?? pmat();
   for (let c = 0; c < geos.length; c++) {
     const geo = geos[c];
     if (!geo) continue;
+    // the voxel size travels with the geometry: Epic buckets mix 0.04 .. 0.12 m models
+    geo.userData.hwV = size;
+    if (epic) ensureVoxelSize(geo);
+    else trackOffGeometry(geo);
     const mat = mats[c] ?? baseMat;
+    adoptVoxelLook(mat);
     parts.push({ geo, mat, ch: c, shadow: (o.shadow ?? true) && !(o.noShadowCh ?? [CH.glow, CH.glow2]).includes(c) });
   }
   return { parts };
@@ -611,9 +763,10 @@ export function curve(g: PGrid, a: [number, number, number], b: [number, number,
   }
 }
 
-/** Geometry cache shared across matches (bounded by map content). */
+/** Geometry cache shared across matches (bounded by map content). Epic models (dressing, voxel sizes) are kept apart. */
 const modelCache = new Map<string, PropModel>();
 export function cachedModel(key: string, build: () => PropModel): PropModel {
+  if (cinematicEnabled()) key += '|E';
   let m = modelCache.get(key);
   if (!m) {
     m = build();

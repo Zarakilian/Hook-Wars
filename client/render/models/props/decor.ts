@@ -6,11 +6,12 @@ import type { Decor, DecorKind, MapDef } from '../../../../shared/maps/types.ts'
 import { riverAt } from '../../../../shared/maps/helpers.ts';
 import { bedY, groundY, type HeightFn, type Quality } from '../../contracts.ts';
 import {
-  autoClock, blob, blotch, cachedModel, CH, h3, halo, instanceModel, mix, moodOf, PGrid, pmat, propsQuality, PROP_TIME, qLevel, rngFor, seg, shade, taper,
+  autoClock, blob, blotch, cachedModel, CH, h3, halo, instanceModel, lampAt, mix, moodOf, PGrid, pmat, propsQuality, PROP_TIME, qLevel, rngFor, seg, shade, taper,
   toModel, trs, vn3, WATER_LEVEL, type PropModel,
 } from './common.ts';
 import { iceMat } from './rocks.ts';
 import { StaticBatch, tickMesh } from './batch.ts';
+import { dressingOn, extraDecor } from './dressing.ts';
 import { banner, cargonet, cattail, chainhang, coralfan, flag, icicles, lanternString, mistMesh, ropeBridges, rowboat, towardWater, treasure } from './decor2.ts';
 
 const VARIANTS: Record<DecorKind, number> = {
@@ -448,6 +449,12 @@ function sign(v: number): PropModel {
   return toModel(g, V, { [CH.base]: pmat({ rough: 0.85 }) }, { pivot: [14.5, 0, 5.5], shadow: true });
 }
 
+/**
+ * Maps whose decor lanterns burn warm. The reference maps (Lantern Wharf, Mirelight, Aurora, Maelstrom) all
+ * show warm lantern light; only the older swamp-style maps keep the green marsh-light glass.
+ */
+const WARM_LANTERNS = new Set(['cogwater', 'frostfang', 'lanternwharf', 'mirelight', 'aurora', 'maelstrom']);
+
 function lantern(_v: number, map: MapDef): PropModel {
   const V = 0.05;
   const g = new PGrid(24, 44, 24);
@@ -484,14 +491,16 @@ function lantern(_v: number, map: MapDef): PropModel {
     g.box(lx - 3, ly - 1, cz - 3, lx + 3, ly - 1, cz + 3, iron);
     for (const sx of [-3, 3]) for (const sz of [-3, 3]) g.box(lx + sx, ly, cz + sz, lx + sx, ly + 5, cz + sz, iron);
   });
-  const glowCol = dock ? 0xffd890 : 0xe8ff9a;
+  const warm = WARM_LANTERNS.has(map.id);
+  const glowCol = warm ? 0xffd890 : 0xe8ff9a;
   g.on(CH.glow, () => g.box(lx - 2, ly, cz - 2, lx + 2, ly + 5, cz + 2, (x, y, z) => (Math.abs(x - lx) < 2 && Math.abs(z - cz) < 2 ? 0xfff4c0 : h3(x, y, z) < 0.3 ? shade(glowCol, 0.85) : glowCol)));
   return {
     ...toModel(g, V, { [CH.base]: pmat({ rough: 0.9 }), [CH.metal]: pmat({ metal: 0.6, rough: 0.45 }), [CH.glow]: pmat({ glow: 3.2, flicker: 0.2 }) }, { pivot: [cx + 0.5, 0, cz + 0.5], shadow: true }),
     halos: [
-      { pos: [(lx - cx) * V, (ly + 2.5) * V, 0], color: dock ? 0xffb060 : 0xb8e060, size: 1.7, opacity: 0.32 },
+      { pos: [(lx - cx) * V, (ly + 2.5) * V, 0], color: warm ? 0xffb060 : 0xb8e060, size: 1.7, opacity: 0.32 },
       { pos: [(lx - cx) * V, (ly + 2.5) * V, 0], color: 0xfff0c0, size: 0.6, opacity: 0.7 },
     ],
+    lamps: [lampAt([lx + 0.5, ly + 3, cz + 0.5], [cx + 0.5, 0, cz + 0.5], V, warm ? 'lantern' : 'marshlight')],
   };
 }
 
@@ -835,6 +844,8 @@ export function buildDecorImpl(decor: Decor[], map: MapDef, height: HeightFn, wa
   WATER_LEVEL.value = waterYFn(0, 0);
   const mood = moodOf(map.atmosphere);
   const batch = new StaticBatch(mood, false);
+  // Epic: visual-only clutter, quay chains and water plants on the reference maps (dressing.ts)
+  if (dressingOn(map)) decor = decor.concat(extraDecor(map));
   const byKind = new Map<DecorKind, Decor[]>();
   for (const d of decor) {
     let l = byKind.get(d.kind);

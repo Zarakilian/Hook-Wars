@@ -20,6 +20,11 @@ export function acquireGeo(def: PartDef): THREE.BufferGeometry {
   return e.geo;
 }
 
+/** True when the geometry for a key is built and cached (acquiring it is then free). */
+export function hasGeo(key: string): boolean {
+  return cache.has(key);
+}
+
 export function releaseGeo(key: string): void {
   const e = cache.get(key);
   if (!e) return;

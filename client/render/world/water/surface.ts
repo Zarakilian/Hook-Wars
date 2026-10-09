@@ -2,6 +2,7 @@
 // refraction (scene capture) or tinted transparency, Fresnel sky + planar reflection, sun glints,
 // and every kind of foam (shore, streaks, crests, movers, whirlpool, pours, splashes, tidal surge).
 import * as THREE from 'three';
+import { epicFragment } from './epic.ts';
 import { FIELD_GLSL } from './field.ts';
 import { MAX_RIPPLES, RIPPLE_GLSL } from './ripples.ts';
 import { MAX_WAVES } from './waves.ts';
@@ -697,12 +698,16 @@ export interface SurfaceUniforms {
   [k: string]: THREE.IUniform;
 }
 
-export function createSurfaceMaterial(uniforms: SurfaceUniforms, waves: number, detail: number): THREE.ShaderMaterial {
+/**
+ * The river surface material. epic: the Epic (cinematic) variant of the fragment shader (water/epic.ts),
+ * which also needs epicUniforms() among the uniforms. Without it the normal shader, unchanged.
+ */
+export function createSurfaceMaterial(uniforms: SurfaceUniforms, waves: number, detail: number, epic = false): THREE.ShaderMaterial {
   const all: SurfaceUniforms = { ...THREE.UniformsUtils.merge([THREE.UniformsLib.fog]), ...uniforms };
   const m = new THREE.ShaderMaterial({
     uniforms: all,
     vertexShader: vertex,
-    fragmentShader: fragment,
+    fragmentShader: epic ? epicFragment(fragment) : fragment,
     defines: { WAVES: waves, DETAIL: detail, RAIN_LAYERS: detail >= 2 ? 2 : 1 },
     transparent: true,
     depthWrite: true,

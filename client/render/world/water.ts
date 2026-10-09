@@ -12,8 +12,10 @@ import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt, tidalActive } from '../../../shared/sim/river.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { moverVz, World } from '../../../shared/world.ts';
+import { cinematicEnabled } from '../cinematic.ts';
 import { WATER_LAYER, bedY, groundY, platformDeckY, waterY, type Engine, type WaterView, type WorldView } from '../contracts.ts';
 import { createCausticsMaterial } from './water/caustics.ts';
+import { epicUniforms, epicWater } from './water/epic.ts';
 import { FallSheet } from './water/falls.ts';
 import { bakeField, buildWaterGrid, fieldUniforms, sampleField, waterBox, waterExt, type GridSpan } from './water/field.ts';
 import { createIceMaterial } from './water/ice.ts';
@@ -104,7 +106,11 @@ function smooth(a: number, b: number, x: number): number {
 export function createWater(map: MapDef, config: MatchConfig, engine: Engine, world: WorldView): WaterView {
   const quality = engine.quality;
   const tier = quality === 'low' ? 0 : quality === 'medium' ? 1 : quality === 'high' ? 2 : 3;
+  // Epic (cinematic mode at build time): its own shader variant, shading values and the lantern pool
+  // (water/epic.ts). Off: nothing below changes.
+  const epic = cinematicEnabled() ? epicWater(map) : null;
   const style = waterStyle(map);
+  if (epic) Object.assign(style, epic.style);
   const atm = map.atmosphere;
   const dry = config.riverMode === 'dry';
   const tidal = tidalActive(map, config);
@@ -229,9 +235,28 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     }
     return waterDepthAt(map, ax, az) > 0.3 ? [ax, az] : [x, z];
   };
+  // Epic: the streak starts a little further out in open water, so it lies on the water, not half on the quay
+  const reachOut = (x: number, z: number, reach: number): [number, number] => {
+    let ax = x;
+    let az = z;
+    for (let i = 0; i < Math.ceil(reach / 0.1); i++) {
+      const e = 0.2;
+      let gx = waterDepthAt(map, ax + e, az) - waterDepthAt(map, ax - e, az);
+      let gz = waterDepthAt(map, ax, az + e) - waterDepthAt(map, ax, az - e);
+      const gl = Math.hypot(gx, gz);
+      if (gl < 1e-5) break;
+      gx /= gl;
+      gz /= gl;
+      if (waterDepthAt(map, ax + gx * 0.1, az + gz * 0.1) < 0.3) break;
+      ax += gx * 0.1;
+      az += gz * 0.1;
+    }
+    return [ax, az];
+  };
   const addLamp = (x: number, y: number, z: number, col: THREE.Color, k: number, ph: number, r: number): void => {
     if (waterDepthAt(map, x, z) < -7) return;
-    const [ax, az] = anchorOf(x, z);
+    let [ax, az] = anchorOf(x, z);
+    if (epic && epic.lampReach > 0 && (ax !== x || az !== z)) [ax, az] = reachOut(ax, az, epic.lampReach);
     lamps.push({ x, y, z, ax, az, col, k, ph, r });
   };
   const buildLamps = (): void => {
@@ -377,7 +402,12 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
     tReflect: { value: null },
     uReflectMat: { value: new THREE.Matrix4() },
   };
-  const surfMat = createSurfaceMaterial(su, waves.n, Math.min(2, tier));
+  if (epic) {
+    Object.assign(su, epicUniforms(epic));
+    if (epic.shallow >= 0) su.uShallow.value = lin(epic.shallow);
+    if (epic.deep >= 0) su.uDeep.value = lin(epic.deep);
+  }
+  const surfMat = createSurfaceMaterial(su, waves.n, Math.min(2, tier), !!epic);
   const surface = new THREE.Mesh(surfGeo, surfMat);
   surface.name = 'water-surface';
   surface.layers.set(WATER_LAYER);
@@ -390,7 +420,7 @@ export function createWater(map: MapDef, config: MatchConfig, engine: Engine, wo
   let capMat: THREE.ShaderMaterial | null = null;
   let caps: THREE.Mesh | null = null;
   if (capGeo) {
-    capMat = createSurfaceMaterial(su, waves.n, Math.min(2, tier));
+    capMat = createSurfaceMaterial(su, waves.n, Math.min(2, tier), !!epic);
     capMat.uniforms.uCapMesh = { value: 1 };
     capMat.depthWrite = false;
     caps = new THREE.Mesh(capGeo, capMat);

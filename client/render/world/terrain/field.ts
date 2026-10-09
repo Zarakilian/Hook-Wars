@@ -20,6 +20,11 @@ export interface Cell {
   sparkle: number;
   /** 0..1 self-lit glow of the top in the biome's glow colour (glowing ice); 0 on every v1 map */
   glow?: number;
+  /**
+   * 0..1 how much the cinematic voxel look calms its seams and bevels on this top (soft lawn, sand, mud,
+   * snow); written by the Epic colour pass only (terrain/epic.ts), 0 on every normal build
+   */
+  calm?: number;
   /** biome side material id (0..255) */
   side: number;
   /** biome-defined extra byte, passed back to sideColor (e.g. building id, strata seed) */
@@ -60,7 +65,7 @@ export class HeightField {
   /** world index offsets so hashes are stable across fields */
   readonly ix0: number;
   readonly iz0: number;
-  /** RGBA, width nx + 1 (last texel column is white, used by side faces) */
+  /** RGBA (A = 255 - calm), width nx + 1 (last texel column is white, used by side faces) */
   readonly colorData: Uint8Array;
   /** RGBA: R = baked lamp light (bakeLamps), G = roughness, B = sparkle, A = 255 - glow; last column G = 255 */
   readonly roughData: Uint8Array;
@@ -106,6 +111,7 @@ export class HeightField {
         cell.rough = 0.9;
         cell.sparkle = 0;
         cell.glow = 0;
+        cell.calm = 0;
         cell.side = 0;
         cell.tag = 0;
         biome.sample(x, z, this.ix0 + i, this.iz0 + j, this.s, cell);
@@ -118,7 +124,7 @@ export class HeightField {
         this.colorData[t] = (cell.top >> 16) & 255;
         this.colorData[t + 1] = (cell.top >> 8) & 255;
         this.colorData[t + 2] = cell.top & 255;
-        this.colorData[t + 3] = 255;
+        this.colorData[t + 3] = 255 - Math.max(0, Math.min(255, Math.round((cell.calm ?? 0) * 255)));
         this.roughData[t] = 0;
         this.roughData[t + 1] = Math.max(0, Math.min(255, Math.round(cell.rough * 255)));
         this.roughData[t + 2] = Math.max(0, Math.min(255, Math.round(cell.sparkle * 255)));

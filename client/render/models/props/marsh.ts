@@ -1,7 +1,8 @@
 // Mirelight Marsh props: stilt hut, hollow swamp stump, hanging-lantern post (the post also serves the
 // harbour maps with a themed finish). Origins at ground contact, +Z is the front (faces the river).
 import type { PropCtx } from './buildProps.ts';
-import { blob, blotch, capTop, CH, curve, h3, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { blob, blotch, capTop, CH, curve, h3, lampAt, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropLamp, type PropModel } from './common.ts';
+import { LampSet, mossDrape, strand } from './dressing.ts';
 import { grain, ironCol, lanternCage, mats, post, ropeCol, ropeWrap, snowCol, WOOD, waterline } from './kit.ts';
 
 const SINK = 3;
@@ -161,10 +162,36 @@ export function buildStiltHut(r: number, seed: number, ctx: PropCtx): PropModel 
   const c = lanternCage(g, lx, fy + 7, lz + 2, 1, 3, 0xffb050);
   const pivot: [number, number, number] = [cx + 0.5, SINK, cz + 0.5];
   void rnd;
+  const dressed = new LampSet(pivot, V);
+  if (ctx.dress) {
+    // Epic: a second lantern on the other porch post, and moss hanging off the roof eaves (ref04)
+    const lx2 = cx - s - 1;
+    g.box(lx2, fy + 13, lz, lx2, fy + 14, lz + 2, darkWood);
+    dressed.add(lanternCage(g, lx2, fy + 7, lz + 2, 1, 3, 0xffb050), 'stilthut', 1.8, 0xffa040, PORCH_STANDOFF);
+    const mr = rngFor(seed * 613 + 29);
+    const eave = s + ov;
+    for (let k = 0; k < 18; k++) {
+      const x = cx - s - ov + Math.floor(mr() * (2 * (s + ov) + 1));
+      const z = mr() < 0.5 ? cz - eave : cz + eave;
+      strand(g, x, y1 - 1, z, 3 + Math.floor(mr() * 7), mossDrape, mr);
+    }
+  }
   return {
     ...toModel(g, V, { [CH.base]: mats.wood('marsh'), [CH.metal]: mats.iron(), [CH.glow]: mats.window() }, { pivot }),
-    halos: [...lampHalos(c, pivot, V, 0xffa040, 1.8), { pos: [(cx - pivot[0]) * V, (y0 + 7 - SINK) * V, (s + 1.5) * V], color: 0xffb060, size: 1.4, opacity: 0.22 }],
+    halos: [...lampHalos(c, pivot, V, 0xffa040, 1.8), { pos: [(cx - pivot[0]) * V, (y0 + 7 - SINK) * V, (s + 1.5) * V], color: 0xffb060, size: 1.4, opacity: 0.22 }, ...dressed.halos],
+    lamps: [standoff(lampAt(c, pivot, V, 'stilthut'), PORCH_STANDOFF), ...dressed.lamps],
   };
+}
+
+/**
+ * The porch lanterns hang a hand's width from the corner post and under a metre from the front wall: a light
+ * at the glass centre burned the post white and bloomed the whole front (Epic close-ups). The light sits out
+ * in front of the porch and a little higher instead; the glass and halos stay where they are.
+ */
+const PORCH_STANDOFF: [number, number, number] = [0, 0.15, 0.45];
+
+function standoff(l: PropLamp, d: [number, number, number]): PropLamp {
+  return { ...l, pos: [l.pos[0] + d[0], l.pos[1] + d[1], l.pos[2] + d[2]] };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -267,6 +294,7 @@ export function buildSwampStump(r: number, seed: number): PropModel {
     }
   });
   const halos: NonNullable<PropModel['halos']> = [];
+  const lamps: NonNullable<PropModel['lamps']> = [];
   if (seed % 3 === 0) {
     // a lantern hung on a broken branch stub
     const a = 0.6;
@@ -277,12 +305,14 @@ export function buildSwampStump(r: number, seed: number): PropModel {
     const lx = Math.round(bx + Math.cos(a) * 6);
     const lz = Math.round(bz + Math.sin(a) * 6);
     g.on(CH.metal, () => g.box(lx, by - 1, lz, lx, by + 1, lz, 0x2a2a2a));
-    const c = lanternCage(g, lx, by - 7, lz, 1, 3, 0xe8ff9a);
-    halos.push(...lampHalos(c, [cx, SINK, cz], V, 0xb8e060, 1.7));
+    const c = lanternCage(g, lx, by - 7, lz, 1, 3, 0xffc070);
+    halos.push(...lampHalos(c, [cx, SINK, cz], V, 0xffa040, 1.7));
+    lamps.push(lampAt(c, [cx, SINK, cz], V, 'lantern'));
   }
   return {
     ...toModel(g, V, { [CH.base]: pmat({ rough: 0.95 }), [CH.leaf]: mats.leaf(0.04, 2.5), [CH.metal]: mats.iron(), [CH.glow]: mats.lamp(), [CH.glow2]: pmat({ glow: 1.8, pulse: 0.5, rough: 0.5 }) }, { pivot: [cx, SINK, cz] }),
     halos,
+    lamps,
   };
 }
 
@@ -359,6 +389,7 @@ export function buildLanternPost(r: number, seed: number, ctx: PropCtx): PropMod
   return {
     ...toModel(g, V, { [CH.base]: mats.wood(theme), [CH.metal]: mats.iron(), [CH.glow]: mats.lamp(), [CH.ice]: mats.ice() }, { pivot }),
     halos: lampHalos(c, pivot, V, theme === 'ice' ? 0xffb860 : 0xffa040, 2.3),
+    lamps: [lampAt(c, pivot, V, 'lanternpost')],
   };
 }
 

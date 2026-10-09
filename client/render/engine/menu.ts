@@ -1,9 +1,16 @@
 // Menu backdrop: a warm sunset over a calm sea seen from a gently bobbing boat. The sea reflects
 // the same procedural sky (clouds included), the sun lays a glitter path on the water, and voxel
 // islands with a lighthouse sweep a soft beam across the dusk. Built and disposed by the engine.
+// Epic (cinematic mode) shows the showcase stage instead (client/render/showcase/): a low camera on a
+// lantern-lit dock with the player's Lunker posed in front. The UI controls it through menuShowcase.
+// With cinematic off the sunset is built and drawn exactly as before; turning Epic on or off while
+// the menu shows swaps the two (the sunset is built the first time it is needed).
 import * as THREE from 'three';
-import { VoxelGrid, meshVoxels, hashVox, shade } from '../voxel/voxel.ts';
+import { cinematicEnabled, onCinematicChange } from '../cinematic.ts';
+import { meshVoxels } from '../voxel/voxel.ts';
 import { applyVoxelLook } from '../look/voxelLook.ts';
+import { createShowcaseStage, menuShowcase, type ShowcaseStage } from '../showcase/index.ts';
+import { islandGrid, lighthouseGrid } from '../showcase/landmarks.ts';
 import type { SkyUniforms } from './sky.ts';
 import { NOISE_GLSL, SKY_FN_GLSL, SKY_UNIFORMS_GLSL } from './glsl.ts';
 
@@ -148,95 +155,70 @@ interface Bird {
   phase: number;
 }
 
-function islandGrid(nx: number, nz: number, maxH: number, seed: number, palms: number): VoxelGrid {
-  const ny = maxH + 16;
-  const g = new VoxelGrid(nx, ny, nz);
-  const rock = [0x4c4440, 0x5a504a, 0x433b38, 0x625750];
-  const grass = [0x3f5a2c, 0x4a6632, 0x56713a];
-  const sand = 0xc79a62;
-  for (let z = 0; z < nz; z++)
-    for (let x = 0; x < nx; x++) {
-      const dx = (x + 0.5) / nx * 2 - 1;
-      const dz = (z + 0.5) / nz * 2 - 1;
-      const r = Math.sqrt(dx * dx + dz * dz);
-      const bump = hashVox(x >> 1, 0, z >> 1, seed) * 0.25 + hashVox(x >> 3, 1, z >> 3, seed) * 0.5;
-      const h = Math.floor(maxH * Math.max(0, 1 - r * r * (0.95 + bump * 0.4)) + bump * 2 - 0.5);
-      if (h < 0) continue;
-      for (let y = 0; y <= h; y++) {
-        let c: number;
-        if (y === h && h > 2 && r < 0.75) c = grass[Math.floor(hashVox(x, y, z, seed + 3) * grass.length)];
-        else if (y <= 1 && r > 0.6) c = shade(sand, 0.9 + hashVox(x, y, z, seed) * 0.2);
-        else c = rock[Math.floor(hashVox(x, y, z, seed + 1) * rock.length)];
-        g.set(x, y, z, c);
-      }
-    }
-  // palms
-  for (let i = 0; i < palms; i++) {
-    const px = Math.floor(nx * (0.3 + hashVox(i, 7, 1, seed) * 0.4));
-    const pz = Math.floor(nz * (0.3 + hashVox(i, 7, 2, seed) * 0.4));
-    let base = 0;
-    for (let y = ny - 1; y >= 0; y--)
-      if (g.solid(px, y, pz)) {
-        base = y + 1;
-        break;
-      }
-    const th = 7 + Math.floor(hashVox(i, 3, 3, seed) * 4);
-    const lean = hashVox(i, 4, 4, seed) > 0.5 ? 1 : -1;
-    for (let y = 0; y < th; y++) g.set(px + Math.round((y * y) / (th * 3.2)) * lean, base + y, pz, shade(0x6b4a2f, 0.85 + (y % 2) * 0.15));
-    const tx = px + Math.round((th * th) / (th * 3.2)) * lean;
-    const ty = base + th;
-    for (let a = 0; a < 6; a++) {
-      const ang = (a / 6) * Math.PI * 2 + i;
-      for (let s = 1; s <= 4; s++) {
-        const lx = tx + Math.round(Math.cos(ang) * s);
-        const lz = pz + Math.round(Math.sin(ang) * s);
-        const ly = ty - Math.floor((s * s) / 6);
-        g.set(lx, ly, lz, shade(0x3d6a2a, 0.85 + hashVox(lx, ly, lz, seed) * 0.3));
-      }
-    }
-    g.set(tx, ty, pz, 0x4a7a30);
-  }
-  return g;
-}
-
-function lighthouseGrid(): VoxelGrid {
-  const g = new VoxelGrid(9, 34, 9);
-  for (let y = 0; y < 26; y++) {
-    const r = 3.6 - y * 0.05;
-    const band = Math.floor(y / 4) % 2 === 0 ? 0xe9e2d6 : 0xc8463a;
-    g.cylinder(4.5, 4.5, r, y, y, (x, yy, z) => shade(band, 0.92 + hashVox(x, yy, z, 5) * 0.12));
-  }
-  g.cylinder(4.5, 4.5, 3.4, 26, 26, 0x2e2b2a); // gallery
-  g.cylinder(4.5, 4.5, 2.2, 31, 32, 0x3a3230); // roof
-  g.set(4, 33, 4, 0x3a3230);
-  for (let y = 27; y <= 30; y++) {
-    g.set(2, y, 2, 0x2e2b2a);
-    g.set(6, y, 2, 0x2e2b2a);
-    g.set(2, y, 6, 0x2e2b2a);
-    g.set(6, y, 6, 0x2e2b2a);
-  }
-  return g;
-}
-
 export class MenuBackdrop {
   readonly group = new THREE.Group();
   private readonly disposables: { dispose(): void }[] = [];
-  private readonly oceanMaterial: THREE.ShaderMaterial;
-  private readonly beam: THREE.Mesh;
-  private readonly lamp: THREE.Mesh;
-  private readonly lampMat: THREE.MeshBasicMaterial;
-  private readonly beamMat: THREE.ShaderMaterial;
-  private readonly birds: THREE.InstancedMesh;
-  private readonly birdMat: THREE.ShaderMaterial;
+  // the classic sunset backdrop (built at once while cinematic is off, else when Epic is turned off)
+  private oceanMaterial!: THREE.ShaderMaterial;
+  private beam!: THREE.Mesh;
+  private lamp!: THREE.Mesh;
+  private lampMat!: THREE.MeshBasicMaterial;
+  private beamMat!: THREE.ShaderMaterial;
+  private birds!: THREE.InstancedMesh;
+  private birdMat!: THREE.ShaderMaterial;
   private readonly flock: Bird[] = [];
   private readonly m4 = new THREE.Matrix4();
   private readonly q4 = new THREE.Quaternion();
   private readonly p4 = new THREE.Vector3();
   private readonly s4 = new THREE.Vector3();
   private readonly e4 = new THREE.Euler();
+  private classicBuilt = false;
+  private readonly classic: THREE.Object3D[] = [];
+  private readonly sky: SkyUniforms;
+  private readonly cloudOctaves: number;
+  private readonly overlayLayer: number;
+  // Epic (cinematic): the staged showcase vignette instead of the sunset (client/render/showcase/)
+  private stage: ShowcaseStage | null = null;
+  private stageOn = false;
+  private stageVersion = -1;
+  private lastTime = Number.NaN;
+  private readonly unsubCine: () => void;
 
   constructor(sky: SkyUniforms, cloudOctaves: number, overlayLayer: number) {
     this.group.name = 'HW.MenuBackdrop';
+    this.sky = sky;
+    this.cloudOctaves = cloudOctaves;
+    this.overlayLayer = overlayLayer;
+    if (cinematicEnabled()) this.stageOn = true;
+    else this.buildClassic(sky, cloudOctaves, overlayLayer);
+    this.unsubCine = onCinematicChange((on) => this.onCinematic(on));
+  }
+
+  /** The Epic showcase stage while it is the backdrop (debug, proofs). */
+  get showcase(): ShowcaseStage | null {
+    return this.stageOn ? this.stage : null;
+  }
+
+  private onCinematic(on: boolean): void {
+    if (on === this.stageOn) return;
+    this.stageOn = on;
+    if (on) {
+      // the stage is created on the next update (it needs the engine's scene)
+      for (const o of this.classic) o.visible = false;
+    } else {
+      // the stage puts the engine's own sky, lights and fog back as it goes, and frees its set
+      if (this.stage) {
+        this.stage.dispose();
+        this.stage = null;
+      }
+      if (!this.classicBuilt) this.buildClassic(this.sky, this.cloudOctaves, this.overlayLayer);
+      for (const o of this.classic) o.visible = true;
+    }
+  }
+
+  private buildClassic(sky: SkyUniforms, cloudOctaves: number, overlayLayer: number): void {
+    this.classicBuilt = true;
+    const first = this.group.children.length;
     // ocean
     const oceanGeo = new THREE.PlaneGeometry(900, 900, 1, 1);
     oceanGeo.rotateX(-Math.PI / 2);
@@ -342,9 +324,47 @@ export class MenuBackdrop {
     this.birds.frustumCulled = false;
     this.group.add(this.birds);
     this.disposables.push(birdGeo, this.birdMat);
+    this.classic.push(...this.group.children.slice(first));
+  }
+
+  /** Epic: create the stage once the engine has put the backdrop in its scene. */
+  private ensureStage(camera: THREE.PerspectiveCamera): ShowcaseStage | null {
+    if (this.stage) return this.stage;
+    let scene: THREE.Object3D | null = this.group.parent;
+    while (scene && !(scene as THREE.Scene).isScene) scene = scene.parent;
+    if (!scene) return null;
+    const st = menuShowcase.state;
+    this.stage = createShowcaseStage({ scene: scene as THREE.Scene, camera, sky: this.sky }, { mode: 'backdrop', theme: st.theme, look: st.look, frame: st.frame, quality: 'ultra' });
+    this.stageVersion = st.version;
+    this.group.add(this.stage.group);
+    this.stage.setActive(true);
+    return this.stage;
+  }
+
+  private updateStage(time: number, camera: THREE.PerspectiveCamera): void {
+    const stage = this.ensureStage(camera);
+    if (!stage) return;
+    const st = menuShowcase.state;
+    if (st.version !== this.stageVersion) {
+      this.stageVersion = st.version;
+      stage.setTheme(st.theme);
+      stage.setLook(st.look);
+      stage.setFrame(st.frame);
+    }
+    const input = menuShowcase.takeInput();
+    if (input.dragPx) stage.drag(input.dragPx);
+    for (const s of input.shots) stage.play(s);
+    let dt = time - this.lastTime;
+    if (!(dt >= 0 && dt < 0.25)) dt = 1 / 60;
+    this.lastTime = time;
+    stage.update(dt, time);
   }
 
   update(time: number, camera: THREE.PerspectiveCamera): void {
+    if (this.stageOn) {
+      this.updateStage(time, camera);
+      return;
+    }
     this.oceanMaterial.uniforms.uOceanTime.value = time;
     this.birdMat.uniforms.uBirdTime.value = time;
     for (let i = 0; i < this.flock.length; i++) {
@@ -375,6 +395,9 @@ export class MenuBackdrop {
   }
 
   dispose(): void {
+    this.unsubCine();
+    if (this.stage) this.stage.dispose();
+    this.stage = null;
     for (const d of this.disposables) d.dispose();
     this.disposables.length = 0;
     this.group.removeFromParent();

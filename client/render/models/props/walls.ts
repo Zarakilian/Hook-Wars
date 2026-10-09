@@ -2,11 +2,21 @@
 // Local frame: the wall runs along +Z (length = segment length + 2r), thickness 2r along X, height h.
 import type { PropKind } from '../../../../shared/maps/types.ts';
 import { blob, blotch, CH, fbm3, h3, mix, PGrid, pmat, rngFor, shade, toModel, vn3, type PropModel } from './common.ts';
+import type { PropCtx } from './buildProps.ts';
+import { wallLanterns } from './dressing.ts';
 import { iceMat } from './rocks.ts';
 
 const SINK = 3;
 
-export function buildWall(kind: PropKind, length: number, r: number, h: number, seed: number): PropModel {
+export function buildWall(kind: PropKind, length: number, r: number, h: number, seed: number, ctx?: PropCtx): PropModel {
+  const wall = wallModel(kind, length, r, h, seed);
+  if (!ctx?.dress) return wall;
+  // Epic (reference maps): lantern posts at both ends of the segment
+  const lan = wallLanterns(length, h, seed);
+  return { parts: [...wall.parts, ...lan.parts], halos: [...(wall.halos ?? []), ...(lan.halos ?? [])], lamps: [...(wall.lamps ?? []), ...(lan.lamps ?? [])] };
+}
+
+function wallModel(kind: PropKind, length: number, r: number, h: number, seed: number): PropModel {
   switch (kind) {
     case 'wall_wood':
       return woodWall(length, r, h, seed);

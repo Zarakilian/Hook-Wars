@@ -1,5 +1,8 @@
 // Cogwater Canal props: crate, barrel, bollard, lamppost, pipe.
-import { blotch, CH, h3, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type PropModel } from './common.ts';
+import type { PropCtx } from './buildProps.ts';
+import { blotch, CH, h3, lampAt, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type PropModel } from './common.ts';
+import { LampSet } from './dressing.ts';
+import { lanternCage, mats } from './kit.ts';
 
 const SINK = 2;
 const woodMat = () => pmat({ rough: 0.82 });
@@ -70,7 +73,7 @@ export function crateBox(g: PGrid, x0: number, y0: number, z0: number, sx: numbe
   }
 }
 
-export function buildCrate(r: number, seed: number): PropModel {
+export function buildCrate(r: number, seed: number, ctx?: PropCtx): PropModel {
   const V = 0.08;
   const rnd = rngFor(seed * 67 + 3);
   const a = Math.round((r * 0.74) / V);
@@ -104,15 +107,25 @@ export function buildCrate(r: number, seed: number): PropModel {
         }
     g.set(cx - 1, SINK + h + 7, cz, 0x8a6a42);
   }
-  return toModel(g, V, { [CH.base]: woodMat(), [CH.metal]: ironMat() }, { pivot: [cx, SINK, cz] });
+  const dressed = new LampSet([cx, SINK, cz], V);
+  // Epic: a lantern set down inside the rope coil
+  if (ctx?.dress && variant === 1) dressed.add(lanternCage(g, Math.floor(cx), SINK + h, Math.floor(cz), 1, 3, 0xffc070), 'small', 1.5, 0xffa040, [0, 0.9, 0]);
+  return {
+    // (the lamp glass material is only asked for when there is a lamp: material creation order is draw order)
+    ...toModel(g, V, dressed.lamps.length ? { [CH.base]: woodMat(), [CH.metal]: ironMat(), [CH.glow]: mats.lamp() } : { [CH.base]: woodMat(), [CH.metal]: ironMat() }, { pivot: [cx, SINK, cz] }),
+    halos: dressed.halos,
+    lamps: dressed.lamps,
+  };
 }
 
-export function buildBarrel(r: number, seed: number): PropModel {
+export function buildBarrel(r: number, seed: number, ctx?: PropCtx): PropModel {
   const V = 0.06;
   const rv = r / V;
   const n = Math.ceil(rv * 2 + 6);
   const H = Math.round(1.12 / V);
-  const g = new PGrid(n, H + SINK + 6, n);
+  // Epic (reference maps): a lantern stands on the closed lids, so it needs headroom
+  const lit = !!ctx?.dress && seed % 2 === 1;
+  const g = new PGrid(n, H + SINK + (lit ? 13 : 6), n);
   const cx = n / 2;
   const cz = n / 2;
   const staves = [0x8a5a30, 0x9a6838, 0x7e5029, 0xa47240];
@@ -177,7 +190,14 @@ export function buildBarrel(r: number, seed: number): PropModel {
     // painted band
     g.recolor((c, x, y, z) => (g.chanAt(x, y, z) === CH.base && y === SINK + Math.floor(H * 0.5) ? 0xd8b440 : c));
   }
-  return toModel(g, V, { [CH.base]: woodMat(), [CH.metal]: ironMat() }, { pivot: [cx, SINK, cz] });
+  if (!lit) return toModel(g, V, { [CH.base]: woodMat(), [CH.metal]: ironMat() }, { pivot: [cx, SINK, cz] });
+  const dressed = new LampSet([cx, SINK, cz], V);
+  dressed.add(lanternCage(g, Math.floor(cx) - 1, topY + 1, Math.floor(cz) - 1, 1, 3, 0xffc070), 'small', 1.5, 0xffa040, [0, 0.9, 0]);
+  return {
+    ...toModel(g, V, { [CH.base]: woodMat(), [CH.metal]: ironMat(), [CH.glow]: mats.lamp() }, { pivot: [cx, SINK, cz] }),
+    halos: dressed.halos,
+    lamps: dressed.lamps,
+  };
 }
 
 export function buildBollard(r: number, seed: number): PropModel {
@@ -287,6 +307,7 @@ export function buildLamppost(r: number, seed: number): PropModel {
       { pos: [0, lampY, 0], color: 0xffb060, size: 2.6, opacity: 0.42 },
       { pos: [0, lampY, 0], color: 0xffe0a0, size: 0.9, opacity: 0.75 },
     ],
+    lamps: [lampAt([cx, SINK + 64, cz], [cx, SINK, cz], V, 'lamppost')],
   };
 }
 

@@ -3,7 +3,8 @@
 // Origins at ground contact (deck top for bridge piers). Fronts (+Z) face the canal.
 import { waterY } from '../../contracts.ts';
 import type { PropCtx } from './buildProps.ts';
-import { blotch, CH, h3, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { blotch, CH, h3, lampAt, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { hangLantern, LampSet } from './dressing.ts';
 import { blocks, grain, ironCol, lanternCage, mats, post, ropeDark, WOOD } from './kit.ts';
 import { bedY } from '../../contracts.ts';
 
@@ -145,9 +146,16 @@ export function buildCrane(r: number, seed: number, ctx: PropCtx): PropModel {
   g.on(CH.metal, () => g.box(cx + ch + 1, cy1 - 1, zc + ch + 1, cx + ch + 2, cy1 - 1, zc + ch + 1, 0x2a2a2e));
   const lc = lanternCage(g, cx + ch + 2, cy1 - 7, zc + ch + 1, 1, 4, 0xffc070);
   const pivot: [number, number, number] = [cx + 0.5, SINK, zc + 0.5];
+  const dressed = new LampSet(pivot, V);
+  if (ctx.dress) {
+    // Epic: a lantern hanging from the jib out over the water, like the reference cranes and gantries
+    const t = 0.42;
+    dressed.add(hangLantern(g, cx, Math.floor(jy0 + (jy1 - jy0) * t) - 1, Math.round(jz0 + (jz1 - jz0) * t), 7, 2, 5), 'crane', 2.2);
+  }
   return {
     ...toModel(g, V, { [CH.base]: mats.wood(ctx.theme), [CH.metal]: mats.rust(), [CH.glow]: mats.lamp() }, { pivot }),
-    halos: [...halo2(lc, pivot, V, 2.0), { pos: [0, (cy0 + 6 - SINK) * V, (ch + 1) * V], color: 0xffa850, size: 1.8, opacity: 0.25 }],
+    halos: [...halo2(lc, pivot, V, 2.0), { pos: [0, (cy0 + 6 - SINK) * V, (ch + 1) * V], color: 0xffa850, size: 1.8, opacity: 0.25 }, ...dressed.halos],
+    lamps: [lampAt(lc, pivot, V, 'crane'), ...dressed.lamps],
   };
 }
 
@@ -198,7 +206,8 @@ export function buildWarehouse(length: number, r: number, h: number, seed: numbe
       const wz = Math.round(z0 + 5 + ((b + 0.5) * (L - 10)) / bays);
       for (const [wy0, wh] of [[plinthTop + 3, Math.round(H * 0.28)], [floor2 + 3, Math.round(H * 0.24)]] as const) {
         if (side > 0 && Math.abs(wz - doorZ) < 6 && wy0 < floor2) continue;
-        const lit = h3(b, wy0, side, seed) < 0.62;
+        // Epic: nearly every window lit, as the reference quays are
+        const lit = h3(b, wy0, side, seed) < (ctx.dress ? 0.9 : 0.62);
         for (let y = wy0; y <= wy0 + wh; y++)
           for (let k = -2; k <= 2; k++) {
             const arch = y > wy0 + wh - 2 && Math.abs(k) === 2;
@@ -252,9 +261,22 @@ export function buildWarehouse(length: number, r: number, h: number, seed: numbe
     for (const x of [x0 - 1, x1 + 1]) g.box(x, ry0 - 1, z0, x, ry0 - 1, z1, 0x2e3238);
     g.box(x1 + 1, SINK, z1 - 1, x1 + 1, ry0 - 1, z1 - 1, 0x2e3238);
   });
+  const pivotW: [number, number, number] = [cxm, SINK, z0 + L / 2];
+  const dressed = new LampSet(pivotW, V);
+  if (ctx.dress) {
+    // Epic: wall lanterns on iron brackets between the window bays of the canal-facing (+x) front
+    for (let b = 0; b + 1 < bays; b++) {
+      const lz = Math.round(z0 + 5 + ((b + 1) * (L - 10)) / bays);
+      if (Math.abs(lz - doorZ) < dw + 2) continue;
+      const by = floor2 + 1;
+      g.on(CH.metal, () => g.box(x1 + 1, by, lz, x1 + 4, by, lz, ironCol(seed, 0.2)));
+      dressed.add(hangLantern(g, x1 + 4, by - 1, lz, 1, 2, 4), 'lantern', 1.7, 0xffa040, [0.45, 0.1, 0]);
+    }
+  }
   return {
-    ...toModel(g, V, { [CH.base]: pmat({ rough: 0.62 }), [CH.glow]: mats.window(), [CH.metal]: mats.iron() }, { pivot: [cxm, SINK, z0 + L / 2] }),
-    halos,
+    ...toModel(g, V, { [CH.base]: pmat({ rough: 0.62 }), [CH.glow]: mats.window(), [CH.metal]: mats.iron() }, { pivot: pivotW }),
+    halos: [...halos, ...dressed.halos],
+    lamps: dressed.lamps,
   };
 }
 
@@ -320,6 +342,7 @@ export function buildGasLamp(r: number, seed: number, ctx: PropCtx): PropModel {
   return {
     ...toModel(g, V, { [CH.metal]: mats.iron(), [CH.glow]: mats.lamp() }, { pivot }),
     halos: halo2([cx + 1, ly + 4.5, lz + 1], pivot, V, 2.6, 0xffa850),
+    lamps: [lampAt([cx + 1, ly + 4.5, lz + 1], pivot, V, 'gaslamp')],
   };
 }
 
@@ -387,6 +410,7 @@ export function buildBridgePier(r: number, seed: number, ctx: PropCtx): PropMode
   return {
     ...toModel(g, V, { [CH.base]: mats.stone(true), [CH.metal]: mats.iron(), [CH.glow]: mats.lamp() }, { pivot }),
     halos: halo2(c, pivot, V, 2.6),
+    lamps: [lampAt(c, pivot, V, 'bridgepier')],
   };
 }
 

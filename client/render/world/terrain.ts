@@ -8,14 +8,17 @@ import { channelDepthAt, platformAt, riverAt } from '../../../shared/maps/helper
 import type { Decor, MapDef } from '../../../shared/maps/types.ts';
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { MatchConfig, RiverState } from '../../../shared/types.ts';
+import { cinematicEnabled, onCinematicChange } from '../cinematic.ts';
 import { bedY, platformDeckY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
+import { applyVoxelLook } from '../look/voxelLook.ts';
 import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
 import { buildCascades } from './terrain/cascades.ts';
+import { epicBiome, epicStyle, type EpicStyle } from './terrain/epic.ts';
 import { HeightField, newCell, type Biome } from './terrain/field.ts';
 import { buildFlora, type FloraView } from './terrain/flora.ts';
-import { terrainMaterial, terrainUniforms } from './terrain/material.ts';
+import { terrainEpicUniforms, terrainMaterial, terrainUniforms } from './terrain/material.ts';
 import { meshChunk } from './terrain/mesher.ts';
 import { buildMist } from './terrain/mist.ts';
 
@@ -47,6 +50,9 @@ interface Fields {
   near: HeightField;
   outer: HeightField;
   height: (x: number, z: number) => number;
+  /** what the meshes colour side faces with (the Epic colour pass in cinematic mode, else the biome) */
+  nearSides: Biome;
+  outerSides: Biome;
 }
 
 /**
@@ -72,12 +78,18 @@ function deckClamped(map: MapDef, biome: MapBiome): Biome {
   };
 }
 
-function buildFields(map: MapDef, config: MatchConfig): Fields {
+/**
+ * epic: the match's Epic style when it is built in cinematic mode. Its colour pass changes column
+ * colours and roughness only, never a height, so height() is the same in every mode.
+ */
+function buildFields(map: MapDef, config: MatchConfig, epic: EpicStyle | null = null): Fields {
   const biome = createBiome(map, config);
   const near = new HeightField(NEAR.x0, NEAR.z0, NEAR.nx, NEAR.nz, NEAR.s);
-  near.fill(deckClamped(map, biome));
+  const nearB = epic ? epicBiome(map, config, deckClamped(map, biome), biome, epic) : deckClamped(map, biome);
+  near.fill(nearB);
   const outer = new HeightField(OUTER.x0, OUTER.z0, OUTER.nx, OUTER.nz, OUTER.s);
-  outer.fill(biome, (x, z) => near.contains(x, z));
+  const outerB = epic ? epicBiome(map, config, biome, biome, epic) : biome;
+  outer.fill(outerB, (x, z) => near.contains(x, z));
   const cell = newCell();
   const height = (x: number, z: number): number => {
     if (near.contains(x, z)) return near.heightAt(x, z);
@@ -88,7 +100,7 @@ function buildFields(map: MapDef, config: MatchConfig): Fields {
     biome.sample(x, z, Math.floor(x), Math.floor(z), 1, cell);
     return cell.h;
   };
-  return { biome, near, outer, height };
+  return { biome, near, outer, height, nearSides: epic ? nearB : biome, outerSides: epic ? outerB : biome };
 }
 
 /** Shared ground height function (kept for callers of the slice API). Builds the fields, so cache it. */
@@ -130,7 +142,10 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   const quality: Quality = engine.quality;
   const group = new THREE.Group();
   group.name = 'world';
-  const f = buildFields(map, config);
+  // Epic ("cinematic"): read once at build time. A match built with it off is exactly the normal build.
+  const style = epicStyle(map);
+  const epic = cinematicEnabled() ? style : null;
+  const f = buildFields(map, config, epic);
   const { biome, near, outer, height } = f;
 
   // ---------------------------------------------------------------- terrain meshes
@@ -139,7 +154,8 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   u.uSparkle.value = biome.sparkle;
   if (biome.lampLight) {
     near.bakeLamps(lampsFor(map).concat(biome.lamps ? biome.lamps() : []));
-    u.uLamp.value = biome.lampLight;
+    // Epic: the real lantern lights light the ground too, so the baked pools step back a little
+    u.uLamp.value = epic ? biome.lampLight * epic.lamp : biome.lampLight;
     if (biome.lampColor !== undefined) u.uLampColor.value.setHex(biome.lampColor);
   }
   if (biome.glowLight) {
@@ -148,8 +164,19 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   }
   const nt = near.textures();
   const ot = outer.textures();
-  const nearMat = terrainMaterial(nt.color, nt.rough, u);
-  const outerMat = terrainMaterial(ot.color, ot.rough, u);
+  const eu = terrainEpicUniforms(style.spec, style.streak, biome.base);
+  const nearMat = terrainMaterial(nt.color, nt.rough, u, { base: biome.base, epic: !!epic, uniforms: eu });
+  const outerMat = terrainMaterial(ot.color, ot.rough, u, { base: biome.base, epic: !!epic, uniforms: eu });
+  // voxel bevels, seams and glints (cinematic only: while it is off this only registers the materials)
+  applyVoxelLook(nearMat, style.near);
+  applyVoxelLook(outerMat, style.outer);
+  // an Epic-built match recompiles the normal terrain shader if cinematic mode is turned off mid-match
+  const unsubCine = epic
+    ? onCinematicChange(() => {
+        nearMat.needsUpdate = true;
+        outerMat.needsUpdate = true;
+      })
+    : null;
   const geos: THREE.BufferGeometry[] = [];
   const nearCast = quality !== 'low';
   // -Z side faces are never seen by the follow camera; they only matter as shadow casters when the
@@ -158,7 +185,7 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   const outerCast = quality === 'high' || quality === 'ultra';
   for (let j = 0; j < near.nz; j += NEAR_CHUNK) {
     for (let i = 0; i < near.nx; i += NEAR_CHUNK) {
-      const geo = meshChunk(near, biome, i, j, Math.min(near.nx, i + NEAR_CHUNK), Math.min(near.nz, j + NEAR_CHUNK), {
+      const geo = meshChunk(near, f.nearSides, i, j, Math.min(near.nx, i + NEAR_CHUNK), Math.min(near.nz, j + NEAR_CHUNK), {
         segH: 0.25,
         aoTop: 0.5,
         aoSide: 0.42,
@@ -177,7 +204,7 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   }
   for (let j = 0; j < outer.nz; j += OUTER_CHUNK) {
     for (let i = 0; i < outer.nx; i += OUTER_CHUNK) {
-      const geo = meshChunk(outer, biome, i, j, Math.min(outer.nx, i + OUTER_CHUNK), Math.min(outer.nz, j + OUTER_CHUNK), {
+      const geo = meshChunk(outer, f.outerSides, i, j, Math.min(outer.nx, i + OUTER_CHUNK), Math.min(outer.nz, j + OUTER_CHUNK), {
         segH: 1,
         aoTop: 0.45,
         aoSide: 0.35,
@@ -292,7 +319,9 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   group.add(details.group);
 
   // ---------------------------------------------------------------- mist banks and backdrop waterfalls
-  const mist = biome.mist && quality !== 'low' ? buildMist(biome.mist(), biome.mistColor ?? map.atmosphere.fogColor) : null;
+  // Epic adds low banks over the backdrop water (ref04's marsh mist), lit by the lantern pool
+  const mistDefs = (biome.mist && quality !== 'low' ? biome.mist() : []).concat(epic?.mist ? epic.mist({ map, biome, fullY: waterY(map, 1), halfW: map.w / 2, halfD: map.d / 2 }) : []);
+  const mist = mistDefs.length ? buildMist(mistDefs, epic?.mistColor ?? biome.mistColor ?? map.atmosphere.fogColor, !!epic) : null;
   if (mist) group.add(mist.mesh);
   const cascades = biome.cascades && !dry ? buildCascades(biome.cascades(), map.atmosphere.waterShallow, map.atmosphere.waterFoam) : null;
   if (cascades) {
@@ -355,6 +384,7 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
       for (const fv of fountains) fv.update(dt, time);
     },
     dispose() {
+      unsubCine?.();
       for (const g of geos) g.dispose();
       nearMat.dispose();
       outerMat.dispose();

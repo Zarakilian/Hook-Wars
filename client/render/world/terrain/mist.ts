@@ -1,7 +1,9 @@
 // Low drifting mist banks for the backdrop (Mirelight's bayou, Aurora's sea smoke, Lantern Wharf's
 // canal haze): camera-facing soft billboards, one instanced draw call, noise and drift in the shader.
 // Transparent, so the engine draws them in its overlay pass after the water.
+// Epic (cinematic) builds add more banks (terrain/epic.ts) and light them with the lantern pool.
 import * as THREE from 'three';
+import { LANTERN_GLSL, LANTERN_UNIFORMS } from '../../look/lanterns.ts';
 
 export interface MistDef {
   x: number;
@@ -74,7 +76,36 @@ void main() {
 }
 `;
 
-export function buildMist(defs: MistDef[], color: number): MistView | null {
+/** Insert code after anchors; throws if one is missing. */
+function insertAt(src: string, edits: { at: string; add: string }[]): string {
+  let s = src;
+  for (const e of edits) {
+    const i = s.indexOf(e.at);
+    if (i < 0) throw new Error('[mist] Epic shader anchor missing: ' + e.at.trim());
+    const j = i + e.at.length;
+    s = s.slice(0, j) + e.add + s.slice(j);
+  }
+  return s;
+}
+
+/** Epic: the banks glow warm where they drift past a lantern (the engine's lantern pool). */
+function epicShaders(): { vert: string; frag: string } {
+  return {
+    vert: insertAt(vert, [
+      { at: 'uniform float uTime;\n', add: `${LANTERN_GLSL}\nvarying vec3 vHwLit;\n` },
+      { at: '  gl_Position = projectionMatrix * mvPosition;\n', add: '  vHwLit = hwLanternLight(p);\n' },
+    ]),
+    frag: insertAt(frag, [
+      { at: 'varying float vSeed;\n', add: 'varying vec3 vHwLit;\n' },
+      {
+        at: '  gl_FragColor = vec4(uColor, a);\n',
+        add: '  gl_FragColor.rgb += vHwLit * 0.16;\n  gl_FragColor.a = min(1.0, a * (1.0 + dot(vHwLit, vec3(0.08))));\n',
+      },
+    ]),
+  };
+}
+
+export function buildMist(defs: MistDef[], color: number, epic = false): MistView | null {
   if (!defs.length) return null;
   const geo = new THREE.PlaneGeometry(1, 1);
   const attr = new Float32Array(defs.length * 4);
@@ -89,14 +120,21 @@ export function buildMist(defs: MistDef[], color: number): MistView | null {
     uTime: { value: 0 },
     uColor: { value: new THREE.Color(color) },
   };
+  const sh = epic ? epicShaders() : null;
   const mat = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, u]),
-    vertexShader: vert,
-    fragmentShader: frag,
+    vertexShader: sh ? sh.vert : vert,
+    fragmentShader: sh ? sh.frag : frag,
     transparent: true,
     depthWrite: false,
     fog: true,
   });
+  if (sh) {
+    // shared with the engine, which fills them every frame (merge() above would have cloned them)
+    mat.uniforms.hwLanternPos = LANTERN_UNIFORMS.hwLanternPos;
+    mat.uniforms.hwLanternCol = LANTERN_UNIFORMS.hwLanternCol;
+    mat.uniforms.hwLanternCount = LANTERN_UNIFORMS.hwLanternCount;
+  }
   // UniformsUtils.merge clones: keep our handles on the material's copies
   const uTime = mat.uniforms.uTime as { value: number };
   const mesh = new THREE.InstancedMesh(geo, mat, defs.length);

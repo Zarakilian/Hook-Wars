@@ -7,6 +7,7 @@ import { StaticBatch, tickMesh } from './batch.ts';
 import { autoClock, cachedModel, moodOf, propsQuality, qLevel, trs, type PropModel } from './common.ts';
 import { buildBarrel, buildBollard, buildCrate, buildLamppost, buildPipe } from './harbour.ts';
 import { themeOf, type Theme } from './kit.ts';
+import { dressingOn } from './dressing.ts';
 import { buildCratePile, buildSeastack, buildShipwreck } from './lagoon.ts';
 import { buildLanternPost, buildStiltHut, buildSwampStump } from './marsh.ts';
 import { buildCoralRock, buildIcePillar, buildIceRock, buildMossRock, buildReefPost, buildRunestone, buildTikiTotem } from './rocks.ts';
@@ -21,6 +22,8 @@ export interface PropCtx {
   theme: Theme;
   /** metres from the model origin down to the river bed (bridge piers and sea stacks reach it) */
   below: number;
+  /** Epic set dressing on (cinematic, reference maps only): builders add lanterns, moss, vines in their footprint */
+  dress: boolean;
 }
 
 type CircleBuilder = (r: number, seed: number, ctx: PropCtx) => PropModel;
@@ -71,12 +74,13 @@ const DEEP = new Set<PropKind>(['bridgepier', 'seastack', 'watchtower', 'shipwre
 const FACE_RIVER = new Set<PropKind>(['stilthut', 'lanternpost', 'crane', 'gaslamp', 'bridgepier', 'watchtower']);
 
 function ctxFor(map: MapDef, below: number): PropCtx {
-  return { map, theme: themeOf(map), below };
+  return { map, theme: themeOf(map), below, dress: dressingOn(map) };
 }
 
 function circleModel(kind: PropKind, r: number, seed: number, ctx: PropCtx): PropModel {
   const b = CIRCLE_BUILDERS[kind] ?? buildMossRock;
-  const mapKey = MAP_DEPENDENT.has(kind) ? ctx.map.id : '';
+  // dressed (Epic) models differ per map even for kinds that otherwise share one model
+  const mapKey = MAP_DEPENDENT.has(kind) || ctx.dress ? ctx.map.id : '';
   const deep = DEEP.has(kind) ? ctx.below.toFixed(1) : '';
   return cachedModel(`c|${kind}|${r.toFixed(2)}|${seed}|${mapKey}|${deep}`, () => b(r, seed, ctx));
 }
@@ -116,13 +120,14 @@ export function buildPropsImpl(obstacles: Obstacle[], map: MapDef, height: Heigh
       }
       const ctx = ctxFor(map, Math.max(0, Math.round((y - by) * 10) / 10));
       const wb = WALL_BUILDERS[o.kind];
-      const mapKey = MAP_DEPENDENT.has(o.kind) ? map.id : '';
+      // dressed (Epic) walls carry lantern posts: their models differ per map
+      const mapKey = MAP_DEPENDENT.has(o.kind) || ctx.dress ? map.id : '';
       const deep = DEEP.has(o.kind) ? ctx.below.toFixed(1) : '';
       const key = `w|${o.kind}|${len.toFixed(2)}|${o.r.toFixed(2)}|${h.toFixed(2)}|${seed}|${mapKey}|${deep}`;
       const model = wb
         ? cachedModel(key, () => wb(len, o.r, h, seed, ctx))
         : o.kind.startsWith('wall_')
-          ? cachedModel(key, () => buildWall(o.kind, len, o.r, h, seed))
+          ? cachedModel(key, () => buildWall(o.kind, len, o.r, h, seed, ctx))
           : circleModel(o.kind, o.r, seed, ctx);
       const yaw = Math.atan2(o.bx - o.ax, o.bz - o.az);
       batch.add(model, trs(cx, y - 0.05, cz, yaw, 1), shadows);

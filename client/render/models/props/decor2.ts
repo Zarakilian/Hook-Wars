@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { platformAt, waterDepthAt } from '../../../../shared/maps/helpers.ts';
 import type { Decor, MapDef, Obstacle } from '../../../../shared/maps/types.ts';
 import { platformDeckY, type HeightFn, type Quality } from '../../contracts.ts';
-import { blob, blotch, cachedModel, CH, h3, mix, PGrid, pmat, PROP_TIME, qLevel, rngFor, seg, shade, taper, toModel, trs, WATER_LEVEL, type CFn, type PropModel } from './common.ts';
+import { blob, blotch, cachedModel, CH, h3, lampAt, mix, PGrid, pmat, PROP_TIME, qLevel, rngFor, seg, shade, taper, toModel, trs, WATER_LEVEL, type CFn, type PropModel } from './common.ts';
 import { coralBranch } from './rocks.ts';
 import { grain, ironCol, lanternCage, mats, post, ropeCol, ropeDark, ropeWrap, sagRope, snowCol, themeOf, WOOD } from './kit.ts';
 
@@ -368,6 +368,8 @@ export function lanternString(d: Decor, map: MapDef, height: HeightFn): Placed {
     const xs = [4, nx - 5];
     const zs = p ? [4, nz - 5] : [Math.floor(nz / 2)];
     const halos: Halos = [];
+    // one Epic light per string (its middle lantern), so a deck of lanterns does not take the whole light pool
+    const lamps: NonNullable<PropModel['lamps']> = [];
     const pivot: [number, number, number] = [nx / 2, 0, nz / 2];
     const glowPal = theme === 'marsh' ? [0xffb050, 0xffd070, 0xff9a50] : theme === 'tropic' ? [0xffc060, 0xff9a60, 0xffe080] : [0xffc870, 0xffd890, 0xffb860];
     for (const z of zs) {
@@ -389,11 +391,13 @@ export function lanternString(d: Decor, map: MapDef, height: HeightFn): Placed {
         g.on(CH.metal, () => g.set(x, y, z, 0x2a2a2a));
         const c = lanternCage(g, x, y - 5, Math.round(z), 1, 2, glow);
         halos.push(...haloAt(c, pivot, V, glow, 1.45, 0.42));
+        if (k === Math.floor(nL / 2)) lamps.push(lampAt(c, pivot, V, 'string'));
       }
     }
     return {
       ...toModel(g, V, { [CH.base]: mats.wood(theme), [CH.metal]: mats.iron(), [CH.glow]: mats.lamp() }, { pivot, shadow: false }),
       halos,
+      lamps,
     };
   });
   let yaw = d.rot;

@@ -9,21 +9,25 @@
 //   rig.ts       joint hierarchy, hook grip
 //   anim.ts      procedural animation
 //   puffs.ts     cigar smoke and smokestack steam
+//   lod.ts       Epic only: in-match units switch to the showcase geometry when the camera is close
 //   brawler.ts, ogre.ts, bot.ts  the three families and every catalog item
 import * as THREE from 'three';
 import { COSMETICS, COSMETIC_SLOTS, DEFAULT_LOADOUT, type CosmeticSlot } from '../../../shared/cosmetics.ts';
 import type { FamilyId, Loadout, Team } from '../../../shared/types.ts';
 import { UnitState } from '../../../shared/types.ts';
-import { TEAM_COLORS, type PudgyAnimInput, type PudgyOneShot, type PudgyOptions, type PudgyPalette, type PudgyView } from '../contracts.ts';
+import { cinematicEnabled } from '../cinematic.ts';
+import { TEAM_COLORS, type PudgyAnimInput, type PudgyOneShot, type PudgyOptions, type PudgyPalette, type PudgyView, type Quality } from '../contracts.ts';
 import { createHeldHook, disposeHeldHook } from '../fx/hookSkins.ts';
+import { SURF_EPIC, setSurfEpic } from '../fx/sculpt.ts';
 import { PudgyAnimator } from './pudgy/anim.ts';
 import { botPalette, buildBot } from './pudgy/bot.ts';
 import { brawlerPalette, buildBrawler } from './pudgy/brawler.ts';
 import { cacheStats, releaseGeo } from './pudgy/cache.ts';
 import { islandReport } from './pudgy/check.ts';
-import { lookOf, type Look } from './pudgy/common.ts';
+import { lookOf, resOf, type Look } from './pudgy/common.ts';
 import { VOX } from './pudgy/grid.ts';
-import { makePudgyMaterial, makeUniforms } from './pudgy/material.ts';
+import { DetailLod, LOD_PX } from './pudgy/lod.ts';
+import { PUDGY_EPIC, PUDGY_EPIC_TEAM_RIM, makePudgyMaterial, makeUniforms, setPudgyEpicExtras, setPudgyLook, setPudgyVoxelLook } from './pudgy/material.ts';
 import { buildOgre, ogrePalette } from './pudgy/ogre.ts';
 import { PuffSystem } from './pudgy/puffs.ts';
 import { buildRig } from './pudgy/rig.ts';
@@ -94,9 +98,9 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   const l = look(o.family, o.loadout, o.team, fine, o.quality);
   const fb = familyBuild(o.family, l);
   const tc = TEAM_COLORS[o.team];
-  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light, fine ? TEAM_GLOW.showcase : TEAM_GLOW.game, fine ? ENV_LIGHT.showcase : ENV_LIGHT.game);
+  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light, fine ? TEAM_GLOW.showcase : TEAM_GLOW.game, fine ? ENV_LIGHT.showcase : ENV_LIGHT.game, PUDGY_EPIC_TEAM_RIM[o.team]);
   uniforms.uSparkle.value = fb.premium ? 1 : 0;
-  const solid = makePudgyMaterial(uniforms, false);
+  const solid = makePudgyMaterial(uniforms, false, resOf(fine), !fine);
   let ghost: THREE.MeshStandardMaterial | null = null;
   let twins: THREE.Mesh[] | null = null;
   let held: THREE.Object3D | null = null;
@@ -115,6 +119,11 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
     }
   }
   const nodes = buildRig(fb, solid, o.quality, held);
+  // Epic, in match: the showcase geometry when the camera gets close enough to show it (lod.ts). The
+  // unit keeps its game look otherwise (team glow, environment share, ring); only the parts' geometry swaps.
+  const lod = !fine && cinematicEnabled()
+    ? new DetailLod(nodes.meshes, fb.scale, () => familyBuild(o.family, look(o.family, o.loadout, o.team, true, o.quality)), solid, () => twins)
+    : null;
   const root = new THREE.Group();
   root.name = `pudgy:${o.name}`;
   root.add(nodes.rig);
@@ -147,6 +156,11 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
       return headProbe.getWorldPosition(out);
     },
     update(dt: number, a: PudgyAnimInput): void {
+      if (lod) {
+        lod.update();
+        // Epic rims are sized in pixels from the projected voxel size (kept while the unit is off screen)
+        if (lod.lastPx > 0) uniforms.uPudgyPx.value = lod.lastPx;
+      }
       anim.onFootstep = view.onFootstep;
       anim.update(dt, a, root);
       if (ring) {
@@ -178,7 +192,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
         }
         if (twins) for (const t of twins) t.visible = false;
       } else {
-        if (!ghost) ghost = makePudgyMaterial(uniforms, true);
+        if (!ghost) ghost = makePudgyMaterial(uniforms, true, resOf(fine), !fine);
         ghost.opacity = q;
         // depth-only twins (children of each part, so they follow its transform and visibility) draw
         // first, then the ghost draws only the front-most surface: one clean see-through layer
@@ -204,6 +218,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
       }
     },
     dispose(): void {
+      lod?.dispose();
       for (const k of nodes.keys) releaseGeo(k);
       if (held) disposeHeldHook(held);
       held = null;
@@ -217,6 +232,9 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   };
   Object.defineProperty(view, '_anim', { value: anim, enumerable: false });
   Object.defineProperty(view, '_fb', { value: fb, enumerable: false });
+  Object.defineProperty(view, '_u', { value: uniforms, enumerable: false });
+  Object.defineProperty(view, '_team', { value: o.team, enumerable: false });
+  if (lod) Object.defineProperty(view, '_lod', { value: lod, enumerable: false });
   return view;
 }
 
@@ -241,6 +259,8 @@ interface LineupOpts {
   y?: number;
   /** rotate every unit (radians, 0 = facing +Z) */
   yaw?: number;
+  /** quality tier the units are built for (default 'high'; Epic renders 'ultra') */
+  quality?: Quality;
 }
 
 if (typeof window !== 'undefined' && typeof location !== 'undefined' && location.search.includes('debug')) {
@@ -269,7 +289,7 @@ if (typeof window !== 'undefined' && typeof location !== 'undefined' && location
           outfits = [empty, ...COSMETICS.filter((c) => c.family === f && c.slot === opts.slot).map((c) => ({ ...base, [opts.slot as CosmeticSlot]: c.id }))];
         } else outfits = [{}, { ...DEFAULT_LOADOUT[f] }];
         outfits.forEach((lo, i) => {
-          const v = createPudgy({ family: f, loadout: lo, team: tm, name: `${f}${i}`, isLocal: false, quality: 'high', detail: opts.detail ?? 'game' });
+          const v = createPudgy({ family: f, loadout: lo, team: tm, name: `${f}${i}`, isLocal: false, quality: opts.quality ?? 'high', detail: opts.detail ?? 'game' });
           v.root.position.set(x + (i - (outfits.length - 1) / 2) * sp, opts.y ?? 1.2, z + row * sp * 1.25);
           v.root.rotation.y = opts.yaw ?? 0;
           g.add(v.root);
@@ -397,5 +417,75 @@ if (typeof window !== 'undefined' && typeof location !== 'undefined' && location
   };
   lineup.views = views;
   lineup.stats = cacheStats;
+  // Epic (cinematic) helpers: live strengths, A/B of this module's Epic additions, the level of detail
+  /** back light, gloss, extra team glow, metal lift for the Lunkers; gloss and metal lift for hook skins */
+  lineup.epic = (p: { back?: number; gloss?: number; team?: number; metal?: number; backNear?: number; glowTint?: number; teamRim?: number; faceRim?: number; backW?: number; teamW?: number; gate?: number; grow?: number; red?: number; blue?: number; shape?: number; wetGlint?: number; glintFrom?: number; glintTo?: number; metalGloss?: number; hookGloss?: number; hookMetal?: number } = {}) => {
+    const u = PUDGY_EPIC.uPudgyEpic.value;
+    const u2 = PUDGY_EPIC.uPudgyEpic2.value;
+    const u3 = PUDGY_EPIC.uPudgyEpic3.value;
+    const u4 = PUDGY_EPIC.uPudgyEpic4.value;
+    const s = SURF_EPIC.uSurfEpic.value;
+    if (p.back !== undefined) u.x = p.back;
+    if (p.gloss !== undefined) u.y = p.gloss;
+    if (p.team !== undefined) u.z = p.team;
+    if (p.metal !== undefined) u.w = p.metal;
+    if (p.backNear !== undefined) u2.x = p.backNear;
+    if (p.glowTint !== undefined) u2.y = p.glowTint;
+    if (p.teamRim !== undefined) u2.z = p.teamRim;
+    if (p.faceRim !== undefined) u2.w = p.faceRim;
+    if (p.backW !== undefined) u3.x = p.backW;
+    if (p.teamW !== undefined) u3.y = p.teamW;
+    if (p.gate !== undefined) u3.z = p.gate;
+    if (p.grow !== undefined) u3.w = p.grow;
+    if (p.shape !== undefined) u4.x = p.shape;
+    if (p.wetGlint !== undefined) u4.y = p.wetGlint;
+    if (p.glintFrom !== undefined) u4.z = p.glintFrom;
+    if (p.glintTo !== undefined) u4.w = p.glintTo;
+    if (p.metalGloss !== undefined) PUDGY_EPIC.uPudgyEpic5.value.x = p.metalGloss;
+    if (p.hookGloss !== undefined) s.y = p.hookGloss;
+    if (p.hookMetal !== undefined) s.w = p.hookMetal;
+    // Epic team rim colours (hex) on every live lineup unit
+    if (p.red !== undefined || p.blue !== undefined) {
+      for (const v of views) {
+        const dbg = v as unknown as { _u?: { uPudgyTeamRim: { value: THREE.Color } }; _team?: Team };
+        const un = dbg._u;
+        const team = dbg._team;
+        const hex = team === 0 ? p.red : p.blue;
+        if (un && hex !== undefined) un.uPudgyTeamRim.value.setHex(hex);
+      }
+    }
+    return { pudgy: u.toArray(), pudgy2: u2.toArray(), pudgy3: u3.toArray(), pudgy4: u4.toArray(), pudgy5: PUDGY_EPIC.uPudgyEpic5.value.toArray(), surf: s.toArray() };
+  };
+  /** profiling: every Epic addition of the characters module off (false) or on (true), on every live unit */
+  lineup.epicAB = (on: boolean, scene?: THREE.Object3D) => {
+    setPudgyEpicExtras(on);
+    setSurfEpic(on, on);
+    let n = 0;
+    const root = scene ?? hw().app.engine.scene;
+    const seen = new Set<THREE.Material>();
+    root.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (!m || seen.has(m) || m.name !== 'pudgy') return;
+      seen.add(m);
+      setPudgyVoxelLook(m, on);
+      m.needsUpdate = true;
+      n++;
+    });
+    return n;
+  };
+  /** level of detail on the lineup units: px forces a projected voxel size (null = measure); returns the state */
+  lineup.lod = (px?: number | null) => {
+    const out: { res: number; px: number; tris: number }[] = [];
+    for (const v of views) {
+      const l = (v as unknown as { _lod?: DetailLod })._lod;
+      if (!l) continue;
+      if (px !== undefined) l.forcePx = px;
+      out.push({ res: l.res, px: +l.lastPx.toFixed(2), tris: l.triangles() });
+    }
+    return out;
+  };
+  lineup.LOD_PX = LOD_PX;
+  /** voxel look options on every live Lunker (seam, bevel, tilt, glint, tile) */
+  lineup.look = setPudgyLook;
   (window as unknown as Record<string, unknown>).__pudgyLineup = lineup;
 }

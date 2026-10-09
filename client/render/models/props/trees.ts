@@ -1,6 +1,8 @@
 // Trees and stumps: cypress, dead tree, stump (Muckmire), pine (Frostfang), palm (Coral Cove).
 // Built at 0.1 m voxels. Trunks at hook height match the collision radius.
+import type { PropCtx } from './buildProps.ts';
 import { blob, blotch, capTop, CH, curve, h3, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type PropModel } from './common.ts';
+import { mossDrape, strand } from './dressing.ts';
 
 const V = 0.1;
 const SINK = 3;
@@ -36,7 +38,7 @@ function barkCol(pal: readonly number[], seed: number): (x: number, y: number, z
 
 // ---------------------------------------------------------------------------------------------
 
-export function buildCypress(r: number, seed: number): PropModel {
+export function buildCypress(r: number, seed: number, ctx?: PropCtx): PropModel {
   const rnd = rngFor(seed * 31 + 7);
   const rv = r / V;
   const Rc = 17;
@@ -104,6 +106,23 @@ export function buildCypress(r: number, seed: number): PropModel {
       }
     }
   });
+  if (ctx?.dress) {
+    // Epic: long curtains of pale spanish moss under every canopy pad (ref04)
+    const mr = rngFor(seed * 389 + 5);
+    g.on(CH.leaf, () => {
+      for (let k = 0; k < 70; k++) {
+        const x = Math.floor(cx + (mr() - 0.5) * Rc * 1.9);
+        const z = Math.floor(cz + (mr() - 0.5) * Rc * 1.9);
+        let y = -1;
+        for (let yy = SINK + 30; yy < H + SINK; yy++)
+          if (g.solid(x, yy, z) && g.chanAt(x, yy, z) === CH.leaf) {
+            y = yy;
+            break;
+          }
+        if (y > 0) strand(g, x, y - 1, z, 5 + Math.floor(mr() * 11), mossDrape, mr);
+      }
+    });
+  }
   return toModel(g, V, { [CH.base]: barkMat(), [CH.leaf]: leafMat(0.07, 5) }, { pivot: [cx, SINK, cz] });
 }
 

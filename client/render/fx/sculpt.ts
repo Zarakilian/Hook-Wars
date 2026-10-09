@@ -8,6 +8,8 @@
 // module level and cached for the life of the page: FxSystem.dispose never frees it, because the
 // Locker and menu previews keep using the held hooks after a match ends.
 import * as THREE from 'three';
+import { cinematicEnabled, onCinematicChange } from '../cinematic.ts';
+import { applyVoxelLook, removeVoxelLook } from '../look/voxelLook.ts';
 import { hashVox, mix, shade } from '../voxel/voxel.ts';
 
 const EMPTY = -1;
@@ -520,6 +522,9 @@ export function meshSculpt(sc: Sculpt, o: SculptMeshOptions): THREE.BufferGeomet
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geo.setAttribute('aSurf', new THREE.Float32BufferAttribute(surfs, 4));
+  // Epic only: the voxel size per vertex, for the voxel look (one surf material draws skins, links, coils
+  // and tethers of several voxel sizes). Off, the attribute is never created.
+  if (cinematicEnabled()) geo.setAttribute('hwVoxelSize', new THREE.Float32BufferAttribute(new Float32Array(positions.length / 3).fill(size), 1));
   if (positions.length / 3 > 65535) geo.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
   else geo.setIndex(new THREE.Uint16BufferAttribute(indices, 1));
   geo.computeBoundingBox();
@@ -554,6 +559,58 @@ const LONG_EMIT = /* glsl */ `
 
 const matCache = new Map<string, THREE.MeshStandardMaterial>();
 
+// ---------------------------------------------------------------------------------------------
+// Epic only (cinematic mode): never compiled while it is off, so the normal tiers keep their program
+// ---------------------------------------------------------------------------------------------
+
+/** Epic strengths for every surf material (live). y = gloss (0 = the normal roughness), w = metal lift. */
+export const SURF_EPIC = {
+  uSurfEpic: { value: new THREE.Vector4(0, 1, 0, 0.15) },
+};
+/**
+ * The voxel look on sculpted meshes: per-vertex voxel size (meshSculpt writes hwVoxelSize while Epic is
+ * on); geometry built before Epic turned on falls back to the ultra skin voxel (skinKit VOXEL_M.ultra,
+ * the tier Epic renders). The fresnel rim catches the map's rim light (moon, dusk) on hook edges.
+ */
+const SURF_LOOK = { voxelSize: 'attribute', fallbackSize: 0.018, space: 'local', glint: 0.7, rim: 0.8 } as const;
+
+// right after the roughness read: glossier steel, chrome, gold, paint, wet and tar (rope, wood and rust
+// stay matte), full only where the cubes are big enough on screen to break the highlight up; then the
+// voxel look's per-cube roughness jitter again (its own block ran before this read overwrote it)
+const SURF_ROUGH_EPIC = /* glsl */ `
+  float hwSurfNear = 0.0;
+#ifdef HW_VOXEL_LOOK
+  hwSurfNear = hwFadeG;
+#endif
+  roughnessFactor *= mix(1.0, 0.68, uSurfEpic.y * mix(0.4, 1.0, hwSurfNear) * (1.0 - smoothstep(0.7, 0.9, roughnessFactor)));
+#ifdef HW_VOXEL_LOOK
+  roughnessFactor = clamp(roughnessFactor * (1.0 - 0.4 * hwBev * hwVoxB.x) * mix(1.0, 0.72 + 0.56 * hwH2, hwVoxB.x * hwFadeG), 0.04, 1.0);
+#endif`;
+const SURF_METAL_EPIC = /* glsl */ `
+  metalnessFactor = min(1.0, metalnessFactor * (1.0 + uSurfEpic.w * step(0.3, metalnessFactor)));`;
+
+let surfExtras = true;
+function surfEpicOn(): boolean {
+  return cinematicEnabled() && surfExtras;
+}
+// a runtime toggle of cinematic mode recompiles the cached surf materials with or without the Epic code
+// (dispose, not needsUpdate: a program three reuses keeps the uniforms of the material's last compile,
+// so uSurfEpic and the voxel look's uniforms would go stale after an Epic -> off -> Epic round trip;
+// see touchAll in models/pudgy/material.ts)
+onCinematicChange(() => {
+  for (const m of matCache.values()) m.dispose();
+});
+
+/** Debug / profiling: Epic gloss on surf materials off or on (look = false also takes the voxel look off). */
+export function setSurfEpic(extras: boolean, look = true): void {
+  surfExtras = extras;
+  for (const m of matCache.values()) {
+    if (look) applyVoxelLook(m, SURF_LOOK);
+    else removeVoxelLook(m);
+    m.dispose();
+  }
+}
+
 /** Team tint colours (linear), matching TEAM_COLORS main. */
 const TEAM_TINT: readonly THREE.Color[] = [new THREE.Color(0xe0533d), new THREE.Color(0x3d8be0), new THREE.Color(1, 1, 1)];
 
@@ -570,6 +627,8 @@ export function surfMaterial(kind: SurfMatKind = 'base', team: 0 | 1 | 2 = 2): T
   m.name = `hw-surf-${kind}-${team}`;
   const tint = { value: TEAM_TINT[team] };
   m.onBeforeCompile = (sh) => {
+    const epic = surfEpicOn();
+    if (epic) sh.uniforms.uSurfEpic = SURF_EPIC.uSurfEpic;
     sh.uniforms.uTime = fxUniforms.uTime;
     sh.uniforms.uHeat = fxUniforms.uHeat;
     sh.uniforms.uLong = fxUniforms.uLong;
@@ -582,21 +641,23 @@ export function surfMaterial(kind: SurfMatKind = 'base', team: 0 | 1 | 2 = 2): T
         '#include <begin_vertex>',
         '#include <begin_vertex>\n  vSurf = aSurf;' + (inst ? '\n#ifdef USE_INSTANCING\n  vInst = float(gl_InstanceID);\n#else\n  vInst = 0.0;\n#endif' : ''),
       );
-    let fs = 'uniform float uTime;\nuniform float uHeat;\nuniform vec3 uLong;\nuniform vec3 uTeam;\nvarying vec4 vSurf;\n' + (inst ? 'varying float vInst;\n' : '') + sh.fragmentShader;
+    let fs = 'uniform float uTime;\nuniform float uHeat;\nuniform vec3 uLong;\nuniform vec3 uTeam;\nvarying vec4 vSurf;\n' + (inst ? 'varying float vInst;\n' : '') + (epic ? 'uniform vec4 uSurfEpic;\n' : '') + sh.fragmentShader;
     fs = fs.replace(
       '#include <color_fragment>',
       '#include <color_fragment>\n  float hwTm = step(vSurf.z, -0.5);\n  float hwEm = mix(vSurf.z, -vSurf.z - 1.0, hwTm);\n  diffuseColor.rgb *= mix(vec3(1.0), uTeam, hwTm);' + (kind === 'ember' ? EMBER_COLOR : ''),
     );
-    fs = fs.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = vSurf.x;');
-    fs = fs.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vSurf.y;');
+    fs = fs.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = vSurf.x;' + (epic ? SURF_ROUGH_EPIC : ''));
+    fs = fs.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vSurf.y;' + (epic ? SURF_METAL_EPIC : ''));
     fs = fs.replace(
       '#include <emissivemap_fragment>',
       '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * hwEm;' + (kind === 'ember' ? EMBER_EMIT : kind === 'longshot' ? LONG_EMIT : ''),
     );
     sh.fragmentShader = fs;
   };
-  m.customProgramCacheKey = () => `hw-surf-${kind}`;
+  m.customProgramCacheKey = () => (surfEpicOn() ? `hw-surf-${kind}|epic1` : `hw-surf-${kind}`);
   matCache.set(key, m);
+  // registers only while cinematic is off (the material is not touched); patched while it is on
+  applyVoxelLook(m, SURF_LOOK);
   return m;
 }
 

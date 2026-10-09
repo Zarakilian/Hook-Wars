@@ -1,5 +1,6 @@
 // Helpers shared by the three family builders.
 import type * as THREE from 'three';
+import { cinematicEnabled } from '../../cinematic.ts';
 import type { Quality } from '../../contracts.ts';
 import type { Loadout, Team } from '../../../../shared/types.ts';
 import { atRes, CH, hashVox, hv, meshPart, mix, P, RGrid, shade, teamTone, type ColorFn, type Paint, type Test } from './grid.ts';
@@ -42,9 +43,18 @@ export function resOf(fine: boolean): number {
   return fine ? 2 : 1;
 }
 
+/**
+ * Geometry built while Epic (cinematic) is on carries extra attributes (grid.ts: the macro normals), so it
+ * is cached under its own key: a part built before Epic was switched on (the menu's Lunker, a match left
+ * running) is never handed to an Epic unit, nor an Epic part to the normal tiers. Empty while it is off.
+ */
+function epicTag(): string {
+  return cinematicEnabled() ? 'E' : '';
+}
+
 export function part(key: string, build: () => RGrid, joint: V3, res = 1, ao = 0.52): PartDef {
   return {
-    key: `${key}@${res}`,
+    key: `${key}@${res}${epicTag()}`,
     build: () => atRes(res, () => meshPart(build(), joint, ao)),
     grid: () => atRes(res, build),
   };
@@ -52,7 +62,7 @@ export function part(key: string, build: () => RGrid, joint: V3, res = 1, ao = 0
 
 export function partMirrored(key: string, build: () => RGrid, joint: V3, res = 1, ao = 0.52): PartDef {
   return {
-    key: `${key}@${res}R`,
+    key: `${key}@${res}R${epicTag()}`,
     build: () => atRes(res, () => meshPart(mirrorGrid(build()), mirrorV(joint), ao)),
     grid: () => atRes(res, () => mirrorGrid(build())),
   };

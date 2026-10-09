@@ -5,7 +5,8 @@
 // in the shadow pass, so the far bank and off-screen props cost nothing, and a whole kind-set draws
 // with one multi-draw call. Static glow halos are merged into a single additive billboard mesh.
 import * as THREE from 'three';
-import { haloTexture, moodVariant, PROP_TIME, type PropModel } from './common.ts';
+import { cinematicEnabled } from '../../cinematic.ts';
+import { ensureVoxelSize, haloTexture, moodVariant, neutralVoxelSize, PROP_TIME, trackOffGeometry, type PropModel } from './common.ts';
 
 interface Item {
   geo: THREE.BufferGeometry;
@@ -15,6 +16,15 @@ interface Bucket {
   mat: THREE.Material;
   shadow: boolean;
   items: Item[];
+}
+/** A lamp flame in group space (Epic lantern lights). Kept on group.userData.hwLamps. */
+export interface LampItem {
+  x: number;
+  y: number;
+  z: number;
+  color: number;
+  intensity: number;
+  range: number;
 }
 export interface HaloItem {
   x: number;
@@ -30,6 +40,7 @@ const _v = new THREE.Vector3();
 export class StaticBatch {
   private readonly buckets = new Map<string, Bucket>();
   private readonly halos: HaloItem[] = [];
+  private readonly lamps: LampItem[] = [];
   /** triangles per instance, for the build log */
   tris = 0;
   instances = 0;
@@ -60,6 +71,11 @@ export class StaticBatch {
         _v.set(h.pos[0], h.pos[1], h.pos[2]).applyMatrix4(m);
         this.halos.push({ x: _v.x, y: _v.y, z: _v.z, color: h.color, size: h.size, opacity: h.opacity });
       }
+    if (model.lamps)
+      for (const l of model.lamps) {
+        _v.set(l.pos[0], l.pos[1], l.pos[2]).applyMatrix4(m);
+        this.lamps.push({ x: _v.x, y: _v.y, z: _v.z, color: l.color, intensity: l.intensity, range: l.range });
+      }
   }
 
   /** A loose halo in world space. */
@@ -82,6 +98,13 @@ export class StaticBatch {
         group.add(mesh);
         continue;
       }
+      // every geometry of a batch needs the same attributes: Epic voxel geometry carries its voxel size
+      // (models cached before a runtime toggle get theirs here). Built with cinematic off, a cached geometry
+      // can only carry one from an earlier mid-match switch (the neutral size, common.ts trackOffGeometry):
+      // the rest get it too.
+      const epic = cinematicEnabled();
+      if (epic) for (const it of b.items) ensureVoxelSize(it.geo);
+      else if (b.items.some((it) => it.geo.getAttribute('hwVoxelSize'))) for (const it of b.items) neutralVoxelSize(it.geo);
       const geos = new Map<THREE.BufferGeometry, number>();
       let nv = 0;
       let ni = 0;
@@ -104,10 +127,19 @@ export class StaticBatch {
       bm.name = name;
       bm.computeBoundingBox();
       bm.computeBoundingSphere();
+      // the batch copies its own vertex buffers: a mid-match Epic switch has to reach them too
+      if (!epic) trackOffGeometry(bm.geometry);
       group.add(bm);
     }
     if (this.halos.length) group.add(haloMesh(this.halos));
+    if (this.lamps.length) addLamps(group, this.lamps);
   }
+}
+
+/** Record lamp flames on a group (read back by propLanternSources in props.ts). */
+export function addLamps(group: THREE.Object3D, list: LampItem[]): void {
+  const prev = group.userData.hwLamps as LampItem[] | undefined;
+  group.userData.hwLamps = prev ? prev.concat(list) : list.slice();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -227,6 +259,8 @@ function haloMesh(list: HaloItem[]): THREE.Mesh {
 /** Free per-match GPU buffers of a props / decor / platforms group (shared caches stay). */
 export function disposeBatchGroup(group: THREE.Object3D): void {
   group.traverse((o) => {
+    // cached per map (Epic decks): reused by the next match on that map, like the shared geometry
+    if (o.userData.hwCached) return;
     if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
     else if ((o as THREE.BatchedMesh).isBatchedMesh) (o as THREE.BatchedMesh).dispose();
     else if (o.userData.ownsGeometry && (o as THREE.Mesh).geometry) (o as THREE.Mesh).geometry.dispose();

@@ -3,8 +3,9 @@
 import { bedY, waterY } from '../../contracts.ts';
 import type { PropCtx } from './buildProps.ts';
 import { blob, blotch, capTop, CH, curve, h3, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { LampSet, strand, vineCol } from './dressing.ts';
 import { crateBox } from './harbour.ts';
-import { grain, mats, ropeCol, snowCol, WOOD } from './kit.ts';
+import { grain, lanternCage, mats, ropeCol, snowCol, WOOD } from './kit.ts';
 import { coralBranch } from './rocks.ts';
 
 const SINK = 2;
@@ -130,6 +131,24 @@ export function buildSeastack(r: number, seed: number, ctx: PropCtx): PropModel 
     const z = cz + Math.sin(a) * d;
     if (k % 3 === 0) blob(g, x, P, z, 2.2, 1.6, 2.2, 0.1, seed + k, (xx, yy, zz) => (Math.sin(xx * 1.3 + Math.sin(zz * 0.9) * 2) > 0.4 ? 0xb8cc58 : 0xd2e070), 0.3);
     else coralBranch(g, x, P, z, Math.cos(a) * 0.3, 1, Math.sin(a) * 0.3, 2 + rnd() * 2, 2, CORALS[k % CORALS.length], rnd);
+  }
+  if (ctx.dress) {
+    // Epic: curtains of jungle vine down every face (ref06), from the green cap to below the ledges
+    const vr = rngFor(seed * 977 + 11);
+    g.on(CH.leaf, () => {
+      for (let k = 0; k < 22; k++) {
+        const a = vr() * Math.PI * 2;
+        let x = Math.floor(cx + Math.cos(a) * (rv * 1.3 + 3));
+        let z = Math.floor(cz + Math.sin(a) * (rv * 1.3 + 3));
+        const y0 = topY - Math.floor(vr() * 6);
+        // walk in until the next step would hit rock, so the strand hugs the face
+        for (let s = 0; s < 14 && !g.solid(Math.floor(x - Math.cos(a)), y0, Math.floor(z - Math.sin(a))); s++) {
+          x = Math.floor(x - Math.cos(a));
+          z = Math.floor(z - Math.sin(a));
+        }
+        strand(g, x, y0, z, 6 + Math.floor(vr() * Hs * 0.35), vineCol, vr);
+      }
+    });
   }
   const pivot: [number, number, number] = [cx, P, cz];
   return toModel(g, V, { [CH.base]: pmat({ rough: 0.9 }), [CH.leaf]: mats.leaf(0.06, 3) }, { pivot });
@@ -334,5 +353,22 @@ export function buildCratePile(r: number, seed: number, ctx: PropCtx): PropModel
   } else g.recolor((col, x, y, z) => (y < SINK + 4 && h3(x, y, z, 3) < 0.4 ? mix(col, 0x4a6a2a, 0.6) : col));
   void blotch;
   void curve;
-  return toModel(g, V, { [CH.base]: mats.wood(ctx.theme === 'wharf' ? 'wharf' : 'tropic'), [CH.metal]: mats.iron() }, { pivot: [cx, SINK, cz] });
+  const dressed = new LampSet([cx, SINK, cz], V);
+  if (ctx.dress) {
+    // Epic: one more crate stacked on the second crate (inside the pile's footprint, ref07's stacked quays)
+    const sx0 = Math.floor(cx + 5);
+    const sy0 = SINK + Math.round(b * 1.7);
+    const sz0 = Math.floor(cz - b * 0.2);
+    const sw = Math.round(b * 1.2);
+    crateBox(g, sx0, sy0, sz0, sw, sw, sw, seed + 3, false);
+    if (ctx.theme === 'ice') capTop(g, 1, (x, y, z) => y >= sy0 + sw - 1 && x >= sx0 && x < sx0 + sw && z >= sz0 && z < sz0 + sw, snowCol);
+  }
+  // Epic: a lantern standing on the barrel lid
+  if (ctx.dress) dressed.add(lanternCage(g, Math.floor(bx), SINK + BH + 2, Math.floor(bz), 1, 3, 0xffc070), 'small', 1.5, 0xffa040, [0, 0.9, 0]);
+  return {
+    // (the lamp glass material is only asked for when there is a lamp: material creation order is draw order)
+    ...toModel(g, V, dressed.lamps.length ? { [CH.base]: mats.wood(ctx.theme === 'wharf' ? 'wharf' : 'tropic'), [CH.metal]: mats.iron(), [CH.glow]: mats.lamp() } : { [CH.base]: mats.wood(ctx.theme === 'wharf' ? 'wharf' : 'tropic'), [CH.metal]: mats.iron() }, { pivot: [cx, SINK, cz] }),
+    halos: dressed.halos,
+    lamps: dressed.lamps,
+  };
 }

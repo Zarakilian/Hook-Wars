@@ -1,7 +1,8 @@
 // Aurora Harbour props: the lantern-lit timber watchtower, snow-laden pines and chunky glacier ice shelves.
 // Origins at ground contact; the watchtower's front (+Z, ladder side) faces the river.
 import type { PropCtx } from './buildProps.ts';
-import { blob, blotch, capTop, CH, h3, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { blob, blotch, capTop, CH, h3, lampAt, mix, PGrid, pmat, rngFor, seg, shade, taper, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { LampSet } from './dressing.ts';
 import { grain, ironCol, lanternCage, mats, post, ropeWrap, snowCol, WOOD } from './kit.ts';
 
 const SINK = 3;
@@ -131,6 +132,18 @@ export function buildWatchtower(r: number, seed: number, ctx: PropCtx): PropMode
   const c = lanternCage(g, lx, rTop - 10, lz, 2, 4, 0xffcc70);
   ropeWrap(g, cx - cab + 1, cz + cab - 1, 1.5, deckY + 2, 2);
   const pv: [number, number, number] = [cx, base, cz];
+  const dressed = new LampSet(pv, V);
+  if (ctx.dress) {
+    // Epic: lanterns under the other three eave corners, so the tower reads as a beacon (ref05)
+    for (const [ex, ez] of [
+      [Math.floor(cx - cab), lz],
+      [lx, Math.floor(cz - cab - 3)],
+      [Math.floor(cx - cab), Math.floor(cz - cab - 3)],
+    ]) {
+      g.on(CH.metal, () => g.box(ex, rTop - 3, ez, ex, rTop - 1, ez, 0x2a2a2e));
+      dressed.add(lanternCage(g, ex, rTop - 10, ez, 2, 4, 0xffcc70), 'lanternpost', 2.0, 0xffb050);
+    }
+  }
   const lp: [number, number, number] = [(c[0] - pv[0]) * V, (c[1] - pv[1]) * V, (c[2] - pv[2]) * V];
   return {
     ...toModel(g, V, { [CH.base]: mats.wood('ice'), [CH.glow]: mats.window(), [CH.metal]: mats.iron(), [CH.ice]: mats.ice() }, { pivot: pv }),
@@ -138,7 +151,9 @@ export function buildWatchtower(r: number, seed: number, ctx: PropCtx): PropMode
       { pos: lp, color: 0xffb050, size: 2.2, opacity: 0.45 },
       { pos: lp, color: 0xfff0c8, size: 0.7, opacity: 0.75 },
       { pos: [0, (cy0 + cabH / 2 - base) * V, 0], color: 0xffa850, size: 4.6, opacity: 0.22 },
+      ...dressed.halos,
     ],
+    lamps: [lampAt(c, pv, V, 'watchtower'), ...dressed.lamps],
   };
 }
 

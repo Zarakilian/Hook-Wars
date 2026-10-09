@@ -3,7 +3,9 @@
 // call per material with per-instance frustum culling, shadows only for the near band).
 import * as THREE from 'three';
 import { Rng } from '../../../../shared/math.ts';
+import { cinematicEnabled } from '../../cinematic.ts';
 import type { Quality } from '../../contracts.ts';
+import { applyVoxelLook } from '../../look/voxelLook.ts';
 import { hashVox, mix, shade } from '../../voxel/voxel.ts';
 import { EXTRA_MODELS, type ExtraKind } from './floraextra.ts';
 import { VB, sp, type Mat, type ModelDef } from './vb.ts';
@@ -588,6 +590,20 @@ export function buildFlora(rules: BackdropRule[], env: BackdropEnv, seed: number
     TEMPLATES.set(k, meshVoxelsFast(b.g, def.vox[p.lod], 0.45));
   }
   const geoms = TEMPLATES;
+  // Epic: the voxel look reads each model's voxel size per vertex (one BatchedMesh mixes sizes). Every
+  // geometry in a bucket must have the same attributes, and the templates are cached across matches,
+  // so they carry the attribute exactly while this match is built in cinematic mode.
+  const cine = cinematicEnabled();
+  const synced = new Set<string>();
+  for (const p of placed) {
+    const k = geoKey(p);
+    if (synced.has(k)) continue;
+    synced.add(k);
+    const g = TEMPLATES.get(k)!;
+    const has = g.getAttribute('hwVoxelSize') !== undefined;
+    if (cine && !has) g.setAttribute('hwVoxelSize', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(MODELS[p.model].vox[p.lod]), 1));
+    else if (!cine && has) g.deleteAttribute('hwVoxelSize');
+  }
 
   const mats: Record<Mat, THREE.MeshStandardMaterial> = {
     leaf: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }),
@@ -624,12 +640,23 @@ ${swayOn ? `{
 varying float vHwEmit;`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 totalEmissiveRadiance += vColor.rgb * vHwEmit * 2.4;`);
+      // cinematic voxel look only (voxelLook.ts patched the material): the leaves sway in begin_vertex,
+      // which would drag the per-vertex lattice across cube edges and make the seams flicker, so the
+      // lattice is taken from the rest position instead
+      if (swayOn && m.defines && 'HW_VOXEL_LOOK' in m.defines) {
+        const rest = 'vHwEmit = aEmit;' + NL;
+        const proj = '#include <project_vertex>';
+        if (!shader.vertexShader.includes(rest) || !shader.vertexShader.includes(proj)) throw new Error('[flora] Epic shader anchor missing');
+        shader.vertexShader = shader.vertexShader.replace(rest, rest + 'vec3 hwtRest = transformed;' + NL).replace(proj, proj + NL + REST_LATTICE);
+      }
     };
     m.customProgramCacheKey = () => (swayOn ? 'hw-flora-sway-e' : 'hw-flora-e');
   };
   patch(mats.leaf, true);
   patch(mats.shiny, false);
   patch(mats.glow, false);
+  // voxel bevels, seams and glints (cinematic only: while it is off this only registers the materials)
+  for (const m of Object.values(mats)) applyVoxelLook(m, { voxelSize: 'attribute', fallbackSize: 0.2, space: 'local', seam: 0.24, bevel: 0.14, glint: 0.5 });
 
   const group = new THREE.Group();
   group.name = 'backdrop-flora';
@@ -685,6 +712,18 @@ totalEmissiveRadiance += vColor.rgb * vHwEmit * 2.4;`);
     },
   };
 }
+
+const NL = '\n';
+// the voxel lattice from the unswayed position (inserted after voxelLook's own block, which it replaces)
+const REST_LATTICE = `#ifdef HW_VOXEL_LOOK
+{
+  float hwtS = hwVoxA.x;
+  #ifdef HW_VOX_ATTR
+  if (hwVoxelSize > 0.0) hwtS = hwVoxelSize;
+  #endif
+  vHwVox = floor(hwtRest / hwtS + hwVoxB.w);
+}
+#endif`;
 
 function hashSeed(model: string, variant: number): number {
   let h = 2166136261;

@@ -10,9 +10,11 @@
 import * as THREE from 'three';
 import { waterDepthAt } from '../../../../shared/maps/helpers.ts';
 import type { MapDef, Platform } from '../../../../shared/maps/types.ts';
+import { cinematicEnabled } from '../../cinematic.ts';
 import { bedY, platformDeckY, waterY, type Quality } from '../../contracts.ts';
-import { haloGeometry, haloMeshOf, type HaloItem } from './batch.ts';
-import { blotch, CH, h3, mix, moodOf, moodVariant, PGrid, pmat, propsQuality, qLevel, rngFor, shade, toModel, vn3, type CFn, type PropModel } from './common.ts';
+import { addLamps, haloGeometry, haloMeshOf, StaticBatch, type HaloItem, type LampItem } from './batch.ts';
+import { blotch, CH, h3, lampAt, mix, moodOf, moodVariant, PGrid, pmat, propsQuality, qLevel, rngFor, shade, toModel, trackOffGeometry, vn3, type CFn, type PropLamp, type PropModel } from './common.ts';
+import { dressingOn, mossDrape, strand, vineCol } from './dressing.ts';
 import { blocks, grain, ironCol, lanternCage, mats, post, ropeCol, ropeDark, ropeWrap, sagRope, snowCol, themeOf, WOOD, waterline, type Theme } from './kit.ts';
 
 interface Spec {
@@ -29,6 +31,8 @@ interface Spec {
   land: [boolean, boolean];
   /** local x range that is over water (metres, -w/2..w/2), null when none */
   wet: [number, number] | null;
+  /** Epic set dressing (cinematic, reference maps only); absent otherwise, so the normal cache keys are unchanged */
+  dress?: true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -147,6 +151,8 @@ function woodDeck(s: Spec): PropModel {
     for (const px of pileX) for (const pz of rows) g.box(px - 1, railTop + 2, pz - 1, px + 1, railTop + 2, pz + 1, snowCol);
 
   const halos: PropModel['halos'] = [];
+  const lamps: PropLamp[] = [];
+  const pivotD: [number, number, number] = [M + nxD / 2, down, M + nzD / 2];
   // --- pier furniture at the water end: bollards, fender rope, a lantern post
   if (waterEnd !== 0) {
     const ex = waterEnd > 0 ? x1 - 2 : x0 + 2;
@@ -178,6 +184,32 @@ function woodDeck(s: Spec): PropModel {
     const c = lanternCage(g, lx, postTop - 10, lz + armDir * 5, 2, 5, glow);
     halos.push({ pos: [(c[0] - (M + nxD / 2)) * V, (c[1] - down) * V, (c[2] - (M + nzD / 2)) * V], color: 0xffa850, size: 1.9, opacity: 0.4 });
     halos.push({ pos: [(c[0] - (M + nxD / 2)) * V, (c[1] - down) * V, (c[2] - (M + nzD / 2)) * V], color: 0xfff0c0, size: 0.6, opacity: 0.7 });
+    lamps.push(lampAt(c, pivotD, V, 'lanternpost'));
+  }
+  if (s.dress) {
+    // Epic: lantern posts at the land end(s) too, as on the reference docks (refs 04 to 06)
+    for (const e of waterEnd !== 0 ? [-waterEnd] : [-1, 1]) {
+      const lx = e > 0 ? x1 - 1 : x0 + 1;
+      const lz = h3(s.seed, 5, e + 3) < 0.5 ? z0 + 1 : z1 - 1;
+      const postTop = down + 24;
+      post(g, lx + 0.5, lz + 0.5, 1.75, down, postTop, pileCol);
+      const armDir = lz === z0 + 1 ? -1 : 1;
+      g.box(lx, postTop - 1, lz, lx, postTop, lz + armDir * 5, shade(pal[0], 0.7));
+      g.on(CH.metal, () => g.box(lx, postTop - 3, lz + armDir * 5, lx, postTop - 2, lz + armDir * 5, 0x2a2a2e));
+      const glow = s.theme === 'ice' ? 0xffd890 : s.theme === 'tropic' ? 0xffc870 : 0xffb860;
+      const c = lanternCage(g, lx, postTop - 10, lz + armDir * 5, 2, 5, glow);
+      const l = lampAt(c, pivotD, V, 'lanternpost');
+      lamps.push(l);
+      halos.push({ pos: l.pos, color: 0xffa850, size: 1.9, opacity: 0.4 }, { pos: l.pos, color: 0xfff0c0, size: 0.6, opacity: 0.7 });
+    }
+    // moss (marsh) or weed (cove) hanging off the deck edges, under the planks
+    if (s.theme === 'marsh' || s.theme === 'tropic') {
+      const mr = rngFor(s.seed * 211 + 3);
+      for (let k = 0; k < Math.round(nxD / 3); k++) {
+        const x = x0 + Math.floor(mr() * nxD);
+        strand(g, x, down - 3, mr() < 0.5 ? z0 - 1 : z1 + 1, 3 + Math.floor(mr() * 7), s.theme === 'marsh' ? mossDrape : vineCol, mr);
+      }
+    }
   }
   // icicles hanging under the long edges
   if (s.theme === 'ice')
@@ -212,6 +244,7 @@ function woodDeck(s: Spec): PropModel {
     { pivot: [M + nxD / 2, down, M + nzD / 2], ao: 0.5 },
   );
   model.halos = halos;
+  model.lamps = lamps;
   (model as Sized).fit = [nxD * V, nzD * V];
   return model;
 }
@@ -325,6 +358,7 @@ function stoneBridge(s: Spec): PropModel {
     g.box(x0, down + 6, za, x1, down + 6, zb, (x, y, z) => shade(0x8a847a, 0.9 + h3(x, y, z) * 0.12));
   }
   const halos: PropModel['halos'] = [];
+  const lamps: PropLamp[] = [];
   const pillarsX = [x0 + 1, ca, cb, x1 - 1];
   for (const px of pillarsX)
     for (const pz of [z0, z1]) {
@@ -335,6 +369,7 @@ function stoneBridge(s: Spec): PropModel {
         g.on(CH.metal, () => g.box(px, down + 11, pz, px, down + 12, pz, 0x2a2c30));
         const c = lanternCage(g, px, down + 13, pz, 1, 3, 0xffc070);
         halos.push({ pos: [(c[0] - (M + nxD / 2)) * V, (c[1] - down) * V, (c[2] - (z0 + nzD / 2)) * V], color: 0xffa040, size: 2.0, opacity: 0.4 });
+        lamps.push(lampAt(c, [M + nxD / 2, down, z0 + nzD / 2], V, 'small'));
       }
     }
   // grime: moss in the joints above the waterline, wet streaks down the faces
@@ -351,6 +386,7 @@ function stoneBridge(s: Spec): PropModel {
     { pivot: [M + nxD / 2, down, z0 + nzD / 2], ao: 0.5 },
   );
   model.halos = halos;
+  model.lamps = lamps;
   (model as Sized).fit = [nxD * V, nzD * V];
   return model;
 }
@@ -525,6 +561,7 @@ function specOf(p: Platform, map: MapDef): Spec {
     wetDrop: Math.round((deck - waterY(map, 1)) * 100) / 100,
     land: [landAt(-p.w / 2 + 0.15), landAt(p.w / 2 - 0.15)],
     wet: a <= b ? [r1(a), r1(b)] : null,
+    ...(dressingOn(map) ? { dress: true as const } : {}),
   };
 }
 
@@ -551,6 +588,8 @@ interface MergedPart {
 interface Built {
   parts: MergedPart[];
   halo: THREE.BufferGeometry | null;
+  /** lamp flames in world space (Epic lantern lights) */
+  lamps: LampItem[];
 }
 
 const builtCache = new Map<string, Built>();
@@ -613,25 +652,37 @@ function merge(items: { geo: THREE.BufferGeometry; m: THREE.Matrix4 }[]): THREE.
   return geo;
 }
 
+/** The cached deck model for a platform (Epic models are kept apart: their spec carries `dress`, their key '|E'). */
+function deckModel(p: Platform, map: MapDef): Sized {
+  const s = specOf(p, map);
+  const key = JSON.stringify(s) + (cinematicEnabled() ? '|E' : '');
+  let model = specCache.get(key);
+  if (!model) {
+    model = modelFor(s);
+    specCache.set(key, model);
+  }
+  return model;
+}
+
+/** World placement of a deck model: deck top at platformDeckY, stretched to exactly p.w by p.d. */
+function deckMatrix(p: Platform, map: MapDef, model: Sized): THREE.Matrix4 {
+  const fit = model.fit ?? [p.w, p.d];
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(p.x, platformDeckY(map, p), p.z),
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.rot),
+    new THREE.Vector3(p.w / fit[0], 1, p.d / fit[1]),
+  );
+}
+
 function buildAll(platforms: Platform[], map: MapDef): Built {
   const mood = moodOf(map.atmosphere);
   // bucket by river side (so each half culls on its own) and material
   const buckets = new Map<string, { mat: THREE.Material; shadow: boolean; items: { geo: THREE.BufferGeometry; m: THREE.Matrix4 }[] }>();
   const halos: HaloItem[] = [];
+  const lamps: LampItem[] = [];
   for (const p of platforms) {
-    const s = specOf(p, map);
-    const key = JSON.stringify(s);
-    let model = specCache.get(key);
-    if (!model) {
-      model = modelFor(s);
-      specCache.set(key, model);
-    }
-    const fit = model.fit ?? [p.w, p.d];
-    const m = new THREE.Matrix4().compose(
-      new THREE.Vector3(p.x, platformDeckY(map, p), p.z),
-      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.rot),
-      new THREE.Vector3(p.w / fit[0], 1, p.d / fit[1]),
-    );
+    const model = deckModel(p, map);
+    const m = deckMatrix(p, map, model);
     // bucket by quadrant so each part of the map culls on its own (the camera sees about two at a time)
     const side = (p.x < 0 ? 'w' : 'e') + (p.z < 0 ? 'n' : 's');
     for (const part of model.parts) {
@@ -646,10 +697,62 @@ function buildAll(platforms: Platform[], map: MapDef): Built {
         _v.set(h.pos[0], h.pos[1], h.pos[2]).applyMatrix4(m);
         halos.push({ x: _v.x, y: _v.y, z: _v.z, color: h.color, size: h.size, opacity: h.opacity });
       }
+    if (model.lamps)
+      for (const l of model.lamps) {
+        _v.set(l.pos[0], l.pos[1], l.pos[2]).applyMatrix4(m);
+        lamps.push({ x: _v.x, y: _v.y, z: _v.z, color: l.color, intensity: l.intensity, range: l.range });
+      }
   }
   const parts: MergedPart[] = [];
-  for (const b of buckets.values()) parts.push({ geo: merge(b.items), mat: b.mat, shadow: b.shadow });
-  return { parts, halo: halos.length ? haloGeometry(halos) : null };
+  for (const b of buckets.values()) {
+    const geo = merge(b.items);
+    // normal tiers only (Epic decks are batched): a mid-match Epic switch gives it the neutral voxel size
+    trackOffGeometry(geo);
+    parts.push({ geo, mat: b.mat, shadow: b.shadow });
+  }
+  return { parts, halo: halos.length ? haloGeometry(halos) : null, lamps };
+}
+
+/**
+ * Epic decks: one BatchedMesh per material with a matrix per deck (culled per deck), plus the deck dressing.
+ * The voxel look reads each deck's own voxel lattice; the merged geometry of the normal tiers bakes the
+ * deck's rotation and fit scale into world-space vertices, which would put the lattice off the voxels.
+ */
+function buildEpic(platforms: Platform[], map: MapDef, shadows: boolean): { objs: THREE.Object3D[]; lamps: LampItem[] } {
+  const batch = new StaticBatch(moodOf(map.atmosphere), true);
+  for (const p of platforms) {
+    const model = deckModel(p, map);
+    batch.add(model, deckMatrix(p, map, model), shadows);
+  }
+  const tmp = new THREE.Group();
+  batch.build(tmp, 'platform');
+  const lamps = (tmp.userData.hwLamps as LampItem[] | undefined) ?? [];
+  return { objs: [...tmp.children], lamps };
+}
+
+/** Epic deck batches per map (bounded by map content, like builtCache; disposeBatchGroup skips them). */
+const epicCache = new Map<string, { objs: THREE.Object3D[]; lamps: LampItem[] }>();
+
+function inScene(o: THREE.Object3D): boolean {
+  let p = o;
+  while (p.parent) p = p.parent;
+  return (p as THREE.Scene).isScene === true;
+}
+
+function epicDecks(platforms: Platform[], map: MapDef, shadows: boolean, key: string, group: THREE.Group): void {
+  let hit = epicCache.get(key);
+  // the cached batches are in use by another live view (showcase and match at once): build a private set
+  const shared = !!hit && hit.objs.some((o) => o.parent !== null && inScene(o));
+  if (!hit || shared) {
+    const built = buildEpic(platforms, map, shadows);
+    if (!shared) {
+      for (const o of built.objs) o.userData.hwCached = true;
+      epicCache.set(key, built);
+    }
+    hit = built;
+  }
+  for (const o of hit.objs) group.add(o);
+  if (hit.lamps.length) addLamps(group, hit.lamps);
 }
 
 /**
@@ -664,6 +767,10 @@ export function buildPlatformsImpl(platforms: Platform[], map: MapDef, quality?:
   group.name = 'platforms';
   if (!platforms.length) return group;
   const key = map.id + '|' + JSON.stringify(platforms) + '|' + map.terrain.baseHeight + '|' + map.river.depth;
+  if (cinematicEnabled()) {
+    epicDecks(platforms, map, shadows, key + '|' + shadows, group);
+    return group;
+  }
   let built = builtCache.get(key);
   if (!built) {
     built = buildAll(platforms, map);
@@ -678,6 +785,7 @@ export function buildPlatformsImpl(platforms: Platform[], map: MapDef, quality?:
     group.add(mesh);
   }
   if (built.halo) group.add(haloMeshOf(built.halo, false));
+  if (built.lamps.length) addLamps(group, built.lamps);
   const ms = performance.now() - t0;
   if (ms > 50) console.info(`[props] buildPlatforms ${platforms.length} decks in ${ms.toFixed(0)} ms`);
   return group;

@@ -13,6 +13,7 @@
 // showcase-only extras. Colour and test callbacks always receive integer unit-cell coordinates;
 // hv() gives per-fine-voxel noise inside them, and P holds the precise centre of the voxel.
 import * as THREE from 'three';
+import { cinematicEnabled } from '../../cinematic.ts';
 import { hashVox, meshVoxels, mix, shade, VoxelGrid } from '../../voxel/voxel.ts';
 
 /** metres per skeleton unit (one voxel at 'game' detail) */
@@ -609,5 +610,123 @@ export function meshPart(g: RGrid, joint: readonly [number, number, number], aoS
     }
   }
   geo.setAttribute('surf', new THREE.BufferAttribute(surf, 4));
+  // Epic only: smooth outward normals of the whole shape for the rim and back light (material.ts)
+  if (cinematicEnabled()) geo.setAttribute('pudgyN', new THREE.Int8BufferAttribute(macroNormals(g, pos, nrm, pivot, size), 4, true));
   return geo;
+}
+
+/** blur radius of the macro normals, in skeleton units (one game voxel each) */
+const MACRO_R = 2;
+
+/**
+ * Epic only: a smooth "macro" normal per vertex (xyz), the outward gradient of the part's occupancy at
+ * game resolution blurred over about two skeleton units, and how much bulk is behind the surface there
+ * (w: 1 on bodies and heads, toward 0 on strands, drapes, straps and fingers). Voxel faces are axis
+ * aligned, so a fresnel rim on them lights every grazing face of every voxel step across the whole body
+ * (stripes); on the macro normal it follows the silhouette of the shape, like the rim in the reference
+ * sheets, and the bulk keeps thin strands from glowing all over.
+ */
+function macroNormals(g: RGrid, pos: THREE.BufferAttribute, nrm: THREE.BufferAttribute, pivot: readonly number[], size: number): Int8Array {
+  const r = g.res;
+  const P = MACRO_R + 2;
+  const X = g.ux + 2 * P;
+  const Y = g.uy + 2 * P;
+  const Z = g.uz + 2 * P;
+  const XY = X * Y;
+  const N = XY * Z;
+  // occupancy of each unit cell (share of its fine voxels filled), in a padded box
+  let a = new Float32Array(N);
+  const share = 1 / (r * r * r);
+  const nx = g.nx;
+  const ny = g.ny;
+  const nz = g.nz;
+  const data = g.data;
+  for (let k = 0; k < nz; k++) {
+    const ck = ((k / r) | 0) + P;
+    for (let j = 0; j < ny; j++) {
+      const row = X * (((j / r) | 0) + P) + XY * ck + P;
+      const src = nx * (j + ny * k);
+      for (let i = 0; i < nx; i++) if (data[src + i] >= 0) a[row + ((i / r) | 0)] += share;
+    }
+  }
+  // separable box blur, width 2 * MACRO_R + 1, as running sums along x, y and z
+  const W = 2 * MACRO_R + 1;
+  const dims = [X, Y, Z];
+  const strides = [1, X, XY];
+  for (let axis = 0; axis < 3; axis++) {
+    const out = new Float32Array(N);
+    const len = dims[axis];
+    const st = strides[axis];
+    // every line along this axis starts at an index whose coordinate on the axis is 0
+    for (let base = 0; base < N; base++) {
+      if (Math.floor(base / st) % len !== 0) continue;
+      let sum = 0;
+      for (let d = 0; d <= MACRO_R && d < len; d++) sum += a[base + d * st];
+      for (let c = 0; c < len; c++) {
+        out[base + c * st] = sum / W;
+        const add = c + MACRO_R + 1;
+        const sub = c - MACRO_R;
+        if (add < len) sum += a[base + add * st];
+        if (sub >= 0) sum -= a[base + sub * st];
+      }
+    }
+    a = out;
+  }
+  // outward gradient (central differences) and density per cell; the padding is empty, so the border is 0
+  const G = new Float32Array(N * 4);
+  for (let z = 1; z < Z - 1; z++)
+    for (let y = 1; y < Y - 1; y++)
+      for (let x = 1; x < X - 1; x++) {
+        const i = x + X * y + XY * z;
+        G[i * 4] = a[i - 1] - a[i + 1];
+        G[i * 4 + 1] = a[i - X] - a[i + X];
+        G[i * 4 + 2] = a[i - XY] - a[i + XY];
+        G[i * 4 + 3] = a[i];
+      }
+  const cnt = pos.count;
+  // packed as normalized bytes (4 bytes a vertex): plenty for a rim light
+  const out = new Int8Array(cnt * 4);
+  const inv = 1 / size;
+  const p = pos.array as Float32Array;
+  for (let v = 0; v < cnt; v++) {
+    // vertex = fine lattice corner (grid-local fine index) -> unit cell coordinates (cell c centred at c)
+    const ux = (p[v * 3] * inv + pivot[0]) / r + P - 0.5;
+    const uy = (p[v * 3 + 1] * inv + pivot[1]) / r + P - 0.5;
+    const uz = (p[v * 3 + 2] * inv + pivot[2]) / r + P - 0.5;
+    const x0 = Math.floor(ux);
+    const y0 = Math.floor(uy);
+    const z0 = Math.floor(uz);
+    const fx = ux - x0;
+    const fy = uy - y0;
+    const fz = uz - z0;
+    let gx = 0;
+    let gy = 0;
+    let gz = 0;
+    let dd = 0;
+    for (let c = 0; c < 8; c++) {
+      const dx = c & 1;
+      const dy = (c >> 1) & 1;
+      const dz = c >> 2;
+      const w = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz);
+      const i = (x0 + dx + X * (y0 + dy) + XY * (z0 + dz)) * 4;
+      gx += G[i] * w;
+      gy += G[i + 1] * w;
+      gz += G[i + 2] * w;
+      dd += G[i + 3] * w;
+    }
+    const l = Math.hypot(gx, gy, gz);
+    const o = v * 4;
+    if (l < 1e-4) {
+      out[o] = Math.round(nrm.getX(v) * 127);
+      out[o + 1] = Math.round(nrm.getY(v) * 127);
+      out[o + 2] = Math.round(nrm.getZ(v) * 127);
+    } else {
+      out[o] = Math.round((gx / l) * 127);
+      out[o + 1] = Math.round((gy / l) * 127);
+      out[o + 2] = Math.round((gz / l) * 127);
+    }
+    // a flat bulk surface has about half the blur kernel inside it; a one-voxel strand a few percent
+    out[o + 3] = Math.round(Math.max(0, Math.min(1, (dd - 0.12) / 0.26)) * 127);
+  }
+  return out;
 }

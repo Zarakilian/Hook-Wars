@@ -13,7 +13,8 @@ import type { Circle, Decor, MapDef, MoverDef, Obstacle, Platform } from '../../
 import type { HazardInst } from '../../../shared/sim/entities.ts';
 import type { RuneType, Team } from '../../../shared/types.ts';
 import { type AnimatedView, type HazardView, type HeightFn, type Quality } from '../contracts.ts';
-import { disposeBatchGroup } from './props/batch.ts';
+import type { LanternSource } from '../look/lanterns.ts';
+import { disposeBatchGroup, type LampItem } from './props/batch.ts';
 import { buildPropsImpl } from './props/buildProps.ts';
 import { buildPlatformsImpl } from './props/platforms.ts';
 import { moodOf, setPropsQuality, setPropTime } from './props/common.ts';
@@ -31,6 +32,31 @@ export { RUNE_STYLE, setPropsQuality, setPropTime };
  */
 export function disposePropGroup(group: THREE.Object3D): void {
   disposeBatchGroup(group);
+}
+
+const _lp = new THREE.Vector3();
+
+/**
+ * Epic lantern lights: the exact flame of every static lamp in these groups (props, decor, platforms; any
+ * parent such as the world group works), in world space, for engine.setLanternSources(). Lantern strings
+ * report one flame per string so they do not crowd out the lamp posts in the nearest-lights pick.
+ * Example (after the world is built): engine.setLanternSources?.(cinematicEnabled() ? propLanternSources(world.group) : null)
+ */
+export function propLanternSources(...roots: (THREE.Object3D | null | undefined)[]): LanternSource[] {
+  const out: LanternSource[] = [];
+  for (const root of roots) {
+    if (!root) continue;
+    root.updateWorldMatrix(true, true);
+    root.traverse((o) => {
+      const list = o.userData.hwLamps as LampItem[] | undefined;
+      if (!list) return;
+      for (const l of list) {
+        _lp.set(l.x, l.y, l.z).applyMatrix4(o.matrixWorld);
+        out.push({ x: _lp.x, y: _lp.y, z: _lp.z, color: new THREE.Color(l.color), intensity: l.intensity, range: l.range, seed: out.length * 0.618 + _lp.x * 0.11 + _lp.z * 0.07 });
+      }
+    });
+  }
+  return out;
 }
 
 /**
