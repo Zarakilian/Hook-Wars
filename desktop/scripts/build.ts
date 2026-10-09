@@ -72,7 +72,7 @@ export async function buildClient(outDir: string): Promise<void> {
     logLevel: 'warn',
     mode: 'production',
     base: './', // relative asset paths: app://hookwars/index.html loads ./assets/...
-    build: { outDir: clientOut, emptyOutDir: true },
+    build: { outDir: clientOut, emptyOutDir: true, chunkSizeWarningLimit: 4000 }, // one 2 MB chunk is fine from disk
   });
 }
 

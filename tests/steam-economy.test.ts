@@ -8,7 +8,8 @@ import { SOLO_PEARL_RATE } from '../shared/economy.ts';
 import type { MatchEnd, ServerMsg } from '../shared/protocol.ts';
 import type { PlayerInfo, ScoreRow } from '../shared/types.ts';
 import { createEconomy, LOCAL_ONLY_CODE, parseLocker } from '../client/economy/index.ts';
-import { CLOUD_LOCKER_FILE, CloudSaver, type CloudStore } from '../client/economy/cloudLocker.ts';
+import { CLOUD_LOCKER_FILE, CloudSaver, profileWearingLocker, type CloudStore } from '../client/economy/cloudLocker.ts';
+import { DEFAULT_LOADOUT } from '../shared/cosmetics.ts';
 import { matchKey, trustPayout } from '../client/economy/payout.ts';
 
 const LOCKER_KEY = 'hookwars.locker.v1';
@@ -102,6 +103,30 @@ test('Cloud: a newer Cloud locker (another computer) replaces this one at start,
   assert.equal(cloud.writes.length, 0, 'the Cloud copy it just read was written back');
 });
 
+test('Cloud: when the Cloud locker wins, the profile wears what it says (hello and the match send that, not the old look)', async () => {
+  const st = fakeStorage();
+  st.ls.set(LOCKER_KEY, savedLocker(100, 1000));
+  // another computer: owns the Sou'wester and wears it on the brawler
+  const other = JSON.parse(savedLocker(2500, 5000, [COMMON, 'not.an.item'])) as { loadouts: Record<string, Record<string, string>> };
+  other.loadouts.brawler = { head: COMMON, hands: 'brawler.premium.nope' };
+  const cloud = fakeCloud({ [CLOUD_LOCKER_FILE]: JSON.stringify(other) });
+  const e = createEconomy();
+  const e0 = () => e.state().account;
+  // this computer's profile wears what its own locker says (savedLocker: every slot bare)
+  const profile = { name: 'Ann', family: 'brawler' as const, loadout: {} };
+  assert.ok(profileWearingLocker({ ...profile, loadout: { ...DEFAULT_LOADOUT.brawler } }, e0(), () => true), 'a different look must count as a change');
+  assert.equal(profileWearingLocker(profile, e.state().account, (id) => e.owns(id)), null, 'nothing to change before the Cloud copy');
+  assert.equal(await e.useCloud(cloud.store, FAST), 'cloud');
+  const next = profileWearingLocker(profile, e.state().account, (id) => e.owns(id));
+  assert.ok(next, 'the profile did not follow the Cloud locker');
+  assert.equal(next.loadout.head, COMMON, 'the hat from the other computer is not worn');
+  assert.ok(!('hands' in next.loadout) || next.loadout.hands !== 'brawler.premium.nope', 'an item nobody owns was worn');
+  assert.equal(next.name, 'Ann');
+  assert.equal(profileWearingLocker(next, e.state().account, (id) => e.owns(id)), null, 'already wearing it: no second save');
+  // another family's look comes from the locker when the player switches (the Locker screen does that)
+  assert.equal(profileWearingLocker({ ...profile, family: 'ogre', loadout: {} }, e.state().account, (id) => e.owns(id)), null);
+});
+
 test('Cloud: a newer local locker goes up to the Cloud; an empty Cloud gets this one; garbage in the Cloud is ignored', async () => {
   for (const cloudText of [savedLocker(50, 1000), undefined, '{not json', JSON.stringify({ pearls: 'lots' })]) {
     const st = fakeStorage();
@@ -160,21 +185,88 @@ test('Cloud: failed writes keep the data and retry; the locker is never lost, no
   await waitFor(() => lockerOf(cloud.files.get(CLOUD_LOCKER_FILE))?.account.pearls === 500, 2000, 'the Cloud write with localStorage blocked');
 });
 
-test('Cloud: a Cloud that cannot be read keeps the local locker and is not written over until the player changes something', async () => {
+test('Cloud: a Cloud that cannot be read is never written over until it has been read again; then the newer copy wins', async () => {
   const st = fakeStorage();
   st.ls.set(LOCKER_KEY, savedLocker(700, 3000));
   const cloud = fakeCloud({ [CLOUD_LOCKER_FILE]: savedLocker(9999, 9000) }); // newer, but unreadable right now
   cloud.readFails = 5;
+  const late: string[] = [];
   const e = createEconomy();
-  assert.equal(await e.useCloud(cloud.store, { ...FAST, readTries: 3 }), 'failed');
+  assert.equal(await e.useCloud(cloud.store, { ...FAST, readTries: 3, retryMs: 30, retryMaxMs: 30, onLateRead: (u) => late.push(u) }), 'failed');
   assert.equal(cloud.reads, 3, 'the read was not retried');
   assert.equal(e.state().account?.pearls, 700, 'the local locker was lost');
-  await sleep(40);
-  assert.equal(cloud.writes.length, 0, 'an unread Cloud copy was overwritten at start');
-  // progress made from now on is saved (localStorage first, the Cloud after)
+  // progress made while the Cloud cannot be read goes to localStorage at once, and not to the Cloud
   e.grantLocal(20, 'solo match');
   assert.equal(lockerOf(st.ls.get(LOCKER_KEY))?.account.pearls, 720);
-  await waitFor(() => cloud.writes.length === 1, 1000, 'the later write');
+  await sleep(45); // one background read (the 4th) has failed by now
+  assert.equal(cloud.writes.length, 0, 'an unread Cloud copy was overwritten');
+  assert.equal(await e.flushCloud(), false, 'a flush wrote over an unread Cloud copy');
+  assert.equal(cloud.writes.length, 0);
+  // the Cloud answers again (the 6th read): this computer changed the locker since, so its copy is newer and goes up
+  await waitFor(() => cloud.writes.length === 1, 2000, 'the write after the Cloud was read again');
+  assert.ok(cloud.reads >= 6, `wrote before the Cloud was read (${cloud.reads} reads)`);
+  assert.deepEqual(late, ['local']);
+  assert.equal(lockerOf(cloud.writes[0])?.account.pearls, 720);
+});
+
+test('Cloud: a new install whose Cloud cannot be read at start never sends the fresh locker up; the Cloud copy wins once it answers', async () => {
+  const st = fakeStorage(); // nothing saved on this computer
+  const cloud = fakeCloud({ [CLOUD_LOCKER_FILE]: savedLocker(4200, 1000, ['brawler.tricorn']) });
+  cloud.readFails = 4;
+  const late: string[] = [];
+  const e = createEconomy();
+  assert.equal(await e.useCloud(cloud.store, { ...FAST, readTries: 3, onLateRead: (u) => late.push(u) }), 'failed');
+  assert.equal(e.state().account?.pearls, 500, 'the fresh locker');
+  e.grantLocal(20, 'solo match'); // played while the Cloud was away
+  await waitFor(() => late.length === 1, 2000, 'the late Cloud read');
+  assert.deepEqual(late, ['cloud']);
+  assert.equal(e.state().account?.pearls, 4200, 'the real locker was replaced by the fresh one');
+  assert.ok(e.owns('brawler.tricorn'));
+  assert.equal(lockerOf(st.ls.get(LOCKER_KEY))?.account.pearls, 4200);
+  await sleep(40);
+  assert.equal(cloud.writes.length, 0, 'the fresh locker went up to the Cloud');
+  assert.equal(lockerOf(cloud.files.get(CLOUD_LOCKER_FILE))?.account.pearls, 4200);
+  // from here on, changes go up as usual
+  e.grantLocal(30, 'solo match');
+  await waitFor(() => cloud.writes.length === 1, 1000, 'the next write');
+  assert.equal(lockerOf(cloud.writes[0])?.account.pearls, 4230);
+});
+
+test('Cloud: a new install keeps taking the Cloud copy across restarts until the Cloud has been read once', async () => {
+  const st = fakeStorage(); // nothing saved on this computer
+  const real = savedLocker(4200, 1000, ['brawler.tricorn']);
+  // run 1: the Cloud never answers; a match pays 20 into the fresh locker, saved here
+  const down = fakeCloud({ [CLOUD_LOCKER_FILE]: real });
+  down.readFails = Number.POSITIVE_INFINITY;
+  const run1 = createEconomy();
+  assert.equal(await run1.useCloud(down.store, { ...FAST, readTries: 2 }), 'failed');
+  run1.grantLocal(20, 'solo match');
+  assert.equal(lockerOf(st.ls.get(LOCKER_KEY))?.account.pearls, 520);
+  // run 2 (the app restarted): this computer has a locker now, newer than the Cloud's, but it never saw the Cloud
+  const up = fakeCloud();
+  up.files = down.files; // the same Steam Cloud, answering again after one more failure
+  up.readFails = 3;
+  const late: string[] = [];
+  const run2 = createEconomy();
+  assert.equal(run2.state().account?.pearls, 520);
+  assert.equal(await run2.useCloud(up.store, { ...FAST, readTries: 2, onLateRead: (u) => late.push(u) }), 'failed');
+  await waitFor(() => late.length === 1, 2000, 'the late Cloud read');
+  assert.deepEqual(late, ['cloud'], 'the locker made during the outage beat the real one');
+  assert.equal(run2.state().account?.pearls, 4200);
+  assert.equal(lockerOf(st.ls.get(LOCKER_KEY))?.account.pearls, 4200);
+  await sleep(40);
+  assert.equal(up.writes.length, 0, 'the outage locker went up to the Cloud');
+  assert.equal(lockerOf(up.files.get(CLOUD_LOCKER_FILE))?.account.pearls, 4200);
+  // read once: from now on the usual rule (the newer copy wins) applies on this computer
+  assert.equal(st.ls.has('hookwars.locker.cloudfirst.v1'), false);
+  run2.grantLocal(30, 'solo match');
+  const run3 = createEconomy();
+  const again = fakeCloud();
+  again.files = up.files;
+  await waitFor(() => lockerOf(up.files.get(CLOUD_LOCKER_FILE))?.account.pearls === 4230, 1000, 'run 2 saved to the Cloud');
+  again.files.set(CLOUD_LOCKER_FILE, savedLocker(4230, 1000)); // an older copy in the Cloud
+  assert.equal(await run3.useCloud(again.store, FAST), 'local', 'an older Cloud copy replaced a locker this computer had');
+  assert.equal(run3.state().account?.pearls, 4230);
 });
 
 test('Cloud: a purchase made before the Cloud answered is not undone by an older Cloud copy', async () => {
@@ -195,7 +287,8 @@ test('Cloud: a purchase made before the Cloud answered is not undone by an older
 test('Cloud: on a new install the Cloud copy wins, even over a click made before the Cloud answered', async () => {
   const st = fakeStorage(); // nothing saved on this computer
   let answer: (v: string | null) => void = () => {};
-  const slow: CloudStore = { read: () => new Promise((r) => (answer = r)), write: async () => true };
+  const written: string[] = [];
+  const slow: CloudStore = { read: () => new Promise((r) => (answer = r)), write: async (_n, d) => (written.push(d), true) };
   const e = createEconomy();
   const loading = e.useCloud(slow, FAST);
   e.buyWithPearls(COMMON); // the fresh 500-Pearl locker
@@ -204,6 +297,10 @@ test('Cloud: on a new install the Cloud copy wins, even over a click made before
   assert.equal(e.state().account?.pearls, 4200, 'a new install threw the Cloud locker away');
   assert.ok(e.owns('brawler.tricorn'));
   assert.equal(lockerOf(st.ls.get(LOCKER_KEY))?.account.pearls, 4200);
+  // the click made before the Cloud answered must not go up afterwards: with its newer savedAt it would
+  // replace the Cloud locker for good on the next start (here and on every other computer)
+  await sleep(40);
+  assert.deepEqual(written.map((w) => lockerOf(w)?.account.pearls), [], 'the stale fresh locker was written to the Cloud');
 });
 
 test('CloudSaver: holds writes while asked to, and refuses a locker over the size limit', async () => {

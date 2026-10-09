@@ -15,7 +15,9 @@ import type { EconomyClientMsg } from '../shared/economy.ts';
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import type { ScoreRow } from '../shared/types.ts';
 import { GameServer, ipKey, JOIN_MISS_LIMIT, relayPeer } from '../server/gameServer.ts';
-import { loadConfig, RELAY_PEER_HEADER, RELAY_SECRET_HEADER, relaySecretFrom, type ServerConfig } from '../server/config.ts';
+import { loadConfig, RELAY_PEER_HEADER, RELAY_PEER_RE, RELAY_SECRET_HEADER, relaySecretFrom, type ServerConfig } from '../server/config.ts';
+// the desktop app's constants (read only: its relay and page origin must match what the server trusts)
+import * as desktop from '../desktop/src/constants.ts';
 import { createNullEconomy, type EconomyConn, type ServerEconomy } from '../server/economy/api.ts';
 import { loadEconomyConfig } from '../server/economy/config.ts';
 import { createEconomyFromConfig, createServerEconomy } from '../server/economy/index.ts';
@@ -222,6 +224,30 @@ test('trusted relay sockets are keyed on their peer id: one connection slot per 
     await new Promise((r) => setTimeout(r, 50));
     const again = await connected(s.port, relayHeaders(PEER_A));
     for (const c of [host, b, again]) await c.close();
+  } finally {
+    await s.close();
+  }
+});
+
+test('the real desktop host path: ALLOWED_ORIGINS=app://hookwars lets the host page and the relay in, a web page out', async () => {
+  // the desktop app's own names for the relay headers and the page origin must match the server's
+  assert.equal(desktop.RELAY_SECRET_HEADER, RELAY_SECRET_HEADER);
+  assert.equal(desktop.RELAY_PEER_HEADER, RELAY_PEER_HEADER);
+  assert.ok(RELAY_PEER_RE.test(`${desktop.RELAY_PEER_PREFIX}76561198000000003`), 'the desktop peer id shape is not one the server trusts');
+  const econ = recordingEconomy();
+  const s = await startServer({ allowedOrigins: [desktop.APP_ORIGIN], relaySecret: SECRET }, econ);
+  try {
+    // (a) the host's own page, served from app://hookwars
+    const page = await connected(s.port, { origin: desktop.APP_ORIGIN });
+    // (b) a relayed joiner: exactly the headers desktop/src/hostRelay.ts sends (no Origin: it is Node, not a page)
+    const peer = `${desktop.RELAY_PEER_PREFIX}76561198000000003`;
+    const relayed = await connected(s.port, { [desktop.RELAY_SECRET_HEADER]: SECRET, [desktop.RELAY_PEER_HEADER]: peer });
+    assert.deepEqual(econ.ips, ['127.0.0.1', peer], 'the relayed joiner was not keyed on its Steam id');
+    // (c) any web page is refused, even one claiming the relay headers
+    assert.equal(await tryConnect(s.port, { origin: 'https://evil.example' }), 403);
+    assert.equal(await tryConnect(s.port, { origin: 'https://evil.example', ...relayHeaders(PEER_B) }), 403);
+    assert.equal(await tryConnect(s.port, { origin: 'app://hookwars.evil' }), 403);
+    for (const c of [page, relayed]) await c.close();
   } finally {
     await s.close();
   }

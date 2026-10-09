@@ -4,7 +4,7 @@
 //
 // Development uses Steam's public test app 480 (Spacewar), whose lobbies every developer shares, so
 // every Hook Wars lobby says game=hookwars and its protocol version, and the browser shows only those.
-import { PROTOCOL_VERSION } from '../../shared/constants.ts';
+import { DEFAULT_CONFIG, MAX_TEAM_SIZE, PROTOCOL_VERSION } from '../../shared/constants.ts';
 import type { RoomState } from '../../shared/protocol.ts';
 import { MAP_IDS, RIVER_MODES } from '../../shared/types.ts';
 import type { SteamLobbySummary } from '../platform.ts';
@@ -14,10 +14,21 @@ export const LOBBY_GAME = 'hookwars';
 export const LOBBY_KEYS = ['game', 'v', 'name', 'room', 'map', 'mode', 'phase', 'humans', 'max'] as const;
 export type LobbyKey = (typeof LOBBY_KEYS)[number];
 export type LobbyInfo = Record<LobbyKey, string>;
+/**
+ * Keys the Steam desktop app writes itself when it creates the lobby (game, v; and host, the persona
+ * name). Its setLobbyInfo refuses them (desktop/src/validate.ts lobbyInfo), so the page never sends
+ * them: pageLobbyInfo drops them from what the host publishes.
+ */
+export const LOBBY_APP_KEYS: readonly string[] = ['game', 'v', 'host'];
 /** Longest value published (the lobby name; everything else is far shorter). */
 export const LOBBY_NAME_MAX = 40;
-/** Players a hosted lobby can be made for (Steam's member limit; the room is half that per team). */
-export const LOBBY_MAX_CHOICES = [2, 4, 6, 8, 10] as const;
+/**
+ * Players a hosted lobby can be made for (Steam's member limit; the room is half that per team):
+ * 1v1 up to MAX_TEAM_SIZE a side (2, 4, ... 2 * MAX_TEAM_SIZE), so a bigger team size shows up here by itself.
+ */
+export const LOBBY_MAX_CHOICES: readonly number[] = Array.from({ length: MAX_TEAM_SIZE }, (_, i) => (i + 1) * 2);
+/** The member limit the host screen starts on: the default match's team size, both teams. */
+export const LOBBY_MAX_DEFAULT = clampLobbyMax(DEFAULT_CONFIG.teamSize * 2);
 export const LOBBY_ID_RE = /^[0-9]{1,20}$/;
 const ROOM_CODE_RE = /^[A-Z]{5}$/;
 /** Lobbies shown at most (the list comes from Steam; app 480's is shared with other games). */
@@ -29,15 +40,19 @@ export function cleanLobbyName(raw: unknown): string {
   return raw.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, LOBBY_NAME_MAX);
 }
 
-/** The member limit for a hosted lobby: one of LOBBY_MAX_CHOICES (the nearest one at or above). */
+/**
+ * The member limit for a hosted lobby: one of LOBBY_MAX_CHOICES (the nearest one at or above; the
+ * largest for anything bigger). Not a number: the default match's size.
+ */
 export function clampLobbyMax(n: unknown): number {
-  const v = typeof n === 'number' && Number.isFinite(n) ? n : 10;
-  return LOBBY_MAX_CHOICES.find((c) => c >= v) ?? LOBBY_MAX_CHOICES[LOBBY_MAX_CHOICES.length - 1];
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : DEFAULT_CONFIG.teamSize * 2;
+  const top = MAX_TEAM_SIZE * 2;
+  return Math.min(top, Math.max(2, Math.ceil(v / 2) * 2));
 }
 
-/** Team size for a hosted room of this many players (1 to 5 a side). */
+/** Team size for a hosted room of this many players (1 to MAX_TEAM_SIZE a side). */
 export function teamSizeFor(maxPlayers: number): number {
-  return Math.max(1, Math.min(5, Math.ceil(clampLobbyMax(maxPlayers) / 2)));
+  return Math.max(1, Math.min(MAX_TEAM_SIZE, Math.ceil(clampLobbyMax(maxPlayers) / 2)));
 }
 
 /** What the host publishes for its room (setLobbyInfo). */
@@ -53,6 +68,13 @@ export function lobbyInfoFor(room: RoomState, lobbyName: string, version: number
     humans: String(room.players.length),
     max: String(room.config.teamSize * 2),
   };
+}
+
+/** What the page hands bridge.setLobbyInfo: the lobby info without the keys the desktop app owns. */
+export function pageLobbyInfo(info: LobbyInfo): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of LOBBY_KEYS) if (!LOBBY_APP_KEYS.includes(k)) out[k] = info[k];
+  return out;
 }
 
 function sameInfo(a: LobbyInfo | null, b: LobbyInfo | null): boolean {
@@ -90,6 +112,18 @@ export function filterLobbies(list: unknown, version: number = PROTOCOL_VERSION)
   const full = (l: SteamLobbySummary) => l.max > 0 && l.members >= l.max;
   out.sort((a, b) => Number(a.info.phase === 'match') - Number(b.info.phase === 'match') || Number(full(a)) - Number(full(b)) || b.members - a.members || a.name.localeCompare(b.name));
   return out.slice(0, LOBBY_LIST_MAX);
+}
+
+/**
+ * The player slots a lobby row shows: the smaller of the room's (published max: both teams) and Steam's
+ * member limit (what the lobby was hosted for). They differ once the host changes the team size in the
+ * room, and Steam lets nobody in past its own limit. 0 when neither is known.
+ */
+export function lobbySlots(l: SteamLobbySummary): number {
+  const room = Number(l.info.max);
+  const roomMax = Number.isFinite(room) && room > 0 ? Math.floor(room) : 0;
+  const steamMax = l.max > 0 ? l.max : 0;
+  return roomMax && steamMax ? Math.min(roomMax, steamMax) : roomMax || steamMax;
 }
 
 /** The room code a lobby published, from a lobby list, or null. */

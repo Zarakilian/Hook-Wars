@@ -1,5 +1,6 @@
 // Match setup form, shared by Solo, Create Room and the lobby host: map cards, river mode,
 // hazards and rules. Built once, updated in place.
+import { MAX_TEAM_SIZE } from '../../shared/constants.ts';
 import { getMap, mapSupportsTidal } from '../../shared/maps/index.ts';
 import {
   BOT_DIFFICULTIES, HAZARD_MODES, MAP_IDS, RIVER_MODES,
@@ -104,7 +105,7 @@ export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; on
   const hazExplain = h('div', { class: 'hazard-explain cloth', 'aria-live': 'polite' }, hazIco, h('span', { class: 'hx-text' }, hazName, hazLine, hazWhere));
 
   // ---------------------------------------------------------------- rules
-  const teamSize = segmented<number>({ label: 'Team size', cls: 'seg-small', value: cfg.teamSize, options: [1, 2, 3, 4, 5].map((n) => ({ value: n, label: `${n}v${n}` })), onChange: (n) => emit({ teamSize: n }) });
+  const teamSize = segmented<number>({ label: 'Team size', cls: 'seg-small', value: cfg.teamSize, options: Array.from({ length: MAX_TEAM_SIZE }, (_, i) => i + 1).map((n) => ({ value: n, label: `${n}v${n}` })), onChange: (n) => emit({ teamSize: n }) });
   const kills = segmented<number>({ label: 'Kills to win', cls: 'seg-small', value: cfg.killsToWin, options: KILLS.map((n) => ({ value: n, label: String(n) })), onChange: (n) => emit({ killsToWin: n }) });
   const times = segmented<number>({ label: 'Time limit', cls: 'seg-small', value: cfg.timeLimitSec, options: TIMES.map((n) => ({ value: n, label: `${n / 60}m` })), onChange: (n) => emit({ timeLimitSec: n }) });
   const bots = segmented<BotDifficulty>({ label: 'Bot skill', cls: 'seg-small', value: cfg.botDifficulty, options: BOT_DIFFICULTIES.map((d) => ({ value: d, label: BOT_NAMES_UI[d].name, title: BOT_NAMES_UI[d].line })), onChange: (d) => emit({ botDifficulty: d }) });

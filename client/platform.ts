@@ -40,7 +40,10 @@ export interface SteamBridge {
   /** Leave the current lobby (as host this also stops the local server once the match is over). */
   leaveLobby(): Promise<void>;
   listLobbies(): Promise<SteamLobbySummary[]>;
-  /** Host: publish metadata for the lobby browser (keys and values are short strings). */
+  /**
+   * Host: publish metadata for the lobby browser (keys and values are short strings). The desktop app
+   * writes game, v and host itself when it creates the lobby; the page must not send those keys.
+   */
   setLobbyInfo(info: Record<string, string>): Promise<void>;
   /** Open the Steam overlay's invite dialog for the current lobby. */
   inviteFriends(): void;

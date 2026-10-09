@@ -4,7 +4,7 @@
 // Text from other players (lobby and persona names) only ever goes through textContent.
 import { getMap } from '../../../shared/maps/index.ts';
 import { MAP_IDS, RIVER_MODES, type MapId, type RiverMode } from '../../../shared/types.ts';
-import { LOBBY_MAX_CHOICES, LOBBY_NAME_MAX } from '../../net/steamLobby.ts';
+import { LOBBY_MAX_CHOICES, LOBBY_MAX_DEFAULT, LOBBY_NAME_MAX, lobbySlots } from '../../net/steamLobby.ts';
 import type { SteamPlayState } from '../../net/steamPlay.ts';
 import type { SteamLobbySummary } from '../../platform.ts';
 import { mapThumb } from '../chart.ts';
@@ -30,7 +30,7 @@ export function buildSteam(ctx: UiCtx, s0: AppState): ScreenView {
   const lamp = h('span', { class: 'lamp connected', 'aria-hidden': 'true' });
   const who = h('span', { class: 'conn-status-text' });
   const whoSub = h('span', { class: 'conn-status-sub' });
-  const fakeBadge = h('span', { class: 'stm-fake hidden', text: 'Stand-in Steam', title: 'Testing without the Steam client: lobbies are the rooms on this page’s own server' });
+  const fakeBadge = h('span', { class: 'stm-fake hidden', text: 'Stand-in Steam', title: 'Testing without the Steam client: lobbies are shared only between Hook Wars windows on this PC (or, in a browser dev build, the rooms on this page’s server)' });
   const statusBar = h('div', { class: 'conn-bar cloth stm-bar' },
     h('div', { class: 'conn-status', role: 'status' }, lamp, h('span', { class: 'conn-status-texts' }, who, whoSub)),
     fakeBadge);
@@ -43,7 +43,8 @@ export function buildSteam(ctx: UiCtx, s0: AppState): ScreenView {
   nameIn.addEventListener('input', () => (nameTouched = true));
   let isPrivate = false;
   const privT = toggle('Friends only', false, (v) => (isPrivate = v), 'Hidden from the lobby list: friends join with Invite');
-  let maxPlayers = 10;
+  // 2 up to 2 * MAX_TEAM_SIZE players (steamLobby.ts), starting on the default match's size
+  let maxPlayers = LOBBY_MAX_DEFAULT;
   const maxSeg = segmented<number>({
     label: 'Max players',
     cls: 'seg-small',
@@ -96,7 +97,7 @@ export function buildSteam(ctx: UiCtx, s0: AppState): ScreenView {
     const map = isMap(l.info.map) ? getMap(l.info.map) : null;
     const mode = isMode(l.info.mode) ? RIVER_INFO[l.info.mode] : null;
     const humans = Number(l.info.humans) || l.members;
-    const max = Number(l.info.max) || l.max;
+    const max = lobbySlots(l);
     const full = l.max > 0 && l.members >= l.max;
     const busy = st.phase !== 'idle';
     const thumb = map
@@ -134,7 +135,7 @@ export function buildSteam(ctx: UiCtx, s0: AppState): ScreenView {
     const st = s.steam;
     if (!st) return;
     who.textContent = st.player ? `Signed in to Steam as ${st.player.name}` : 'Signing in to Steam...';
-    whoSub.textContent = st.fake ? 'Testing with the stand-in: lobbies are this server’s rooms.' : 'Lobbies are hosted by players and joined through Steam.';
+    whoSub.textContent = st.fake ? 'Testing without Steam: only Hook Wars windows on this PC can see these lobbies.' : 'Lobbies are hosted by players and joined through Steam.';
     fakeBadge.classList.toggle('hidden', !st.fake);
     if (!nameTouched && document.activeElement !== nameIn) nameIn.value = defaultName();
     const busy = st.phase !== 'idle';

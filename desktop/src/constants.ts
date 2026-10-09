@@ -1,6 +1,6 @@
 // Names and limits shared by the desktop app's modules. The relay header names are part of the
 // contract with the game server (server/gameServer.ts reads them): keep them byte for byte.
-import { PROTOCOL_VERSION } from '../../shared/constants.ts';
+import { MAX_TEAM_SIZE, PROTOCOL_VERSION } from '../../shared/constants.ts';
 
 /** Custom scheme and host the built client is served from: the page's origin is exactly APP_ORIGIN. */
 export const APP_SCHEME = 'app';
@@ -24,9 +24,9 @@ export const RESERVED_LOBBY_KEYS: readonly string[] = [LOBBY_GAME_KEY, LOBBY_VER
 /** Steam's public test app (Spacewar), used until the owner's own Steamworks app exists. */
 export const DEV_APP_ID = 480;
 
-/** Humans per lobby: 5v5. */
+/** Humans per lobby: both full teams (MAX_TEAM_SIZE a side, so 5v5 today and 6v6 once that lands). */
 export const MIN_LOBBY_MEMBERS = 2;
-export const MAX_LOBBY_MEMBERS = 10;
+export const MAX_LOBBY_MEMBERS = 2 * MAX_TEAM_SIZE;
 
 /** The game server refuses client messages above this many bytes (server/gameServer.ts MAX_PAYLOAD). */
 export const MAX_CLIENT_MESSAGE = 4096;

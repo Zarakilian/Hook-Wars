@@ -112,6 +112,7 @@ tests/    node --test: sim soak, mechanics, end-to-end websocket match.
 | Solo | `LocalSession` runs `GameSim` in the page. Same client code path, zero latency |
 | Server hardening | 4 KB max message, token-bucket rate limit, per-IP and total connection caps, strict validation in `shared/protocol.ts`, slow-consumer protection with snapshot acks, same-origin check, CSP and security headers. Wrong room codes are limited per IP (20 a minute, then a 60 s block; keyed on the `TRUST_PROXY` address, IPv6 by /64). Static files are served brotli or gzip compressed (2.0 MB bundle to about 0.6 MB) |
 | Rejoin | A dropped player's unit is driven by a stand-in bot for 90 s and keeps its gold, upgrades, items and score. The rejoin token comes with the match start. A match whose last human dropped is held for those 90 s too |
+| Steam lobbies | The host's desktop app runs this same server on 127.0.0.1 with `ECONOMY=trust` (no accounts; any non-premium catalog item may be worn; each player keeps their own Pearls in a Steam Cloud locker) and a per-run `RELAY_SECRET`. Joiners reach it over Steam P2P through relays in the desktop main processes (`desktop/`). The server trusts the `x-hookwars-peer` SteamID only with the right `x-hookwars-relay` secret from 127.0.0.1, and then keys every per-IP limit on it. A dedicated server that Steam players join needs `ALLOWED_ORIGINS=app://hookwars`. Home-PC guide: `docs/steam-desktop.md` |
 
 ## Module ownership and contracts
 

@@ -1,4 +1,4 @@
-// Lobby: 5v5 slot grid, spectators, host-only rules, ready and start, room code copy and chat.
+// Lobby: slot grid (MAX_TEAM_SIZE a side), spectators, host-only rules, ready and start, room code copy and chat.
 import { FAMILY_DEFS, MAX_CHAT_LEN, MAX_TEAM_SIZE } from '../../../shared/constants.ts';
 import type { LobbySlot, RoomState } from '../../../shared/protocol.ts';
 import type { Team } from '../../../shared/types.ts';

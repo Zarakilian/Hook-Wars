@@ -2,7 +2,8 @@
 // the game and version filters (app 480 is shared with every developer), and the host leaving.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOBBY_VERSION_VALUE } from '../src/constants.ts';
+import { LOBBY_VERSION_VALUE, MAX_LOBBY_MEMBERS } from '../src/constants.ts';
+import { MAX_TEAM_SIZE } from '../../shared/constants.ts';
 import { FakeHub, FakeSteamBackend, memoryLink } from '../src/fakeSteam.ts';
 import { LobbyError, LobbyManager } from '../src/lobbyManager.ts';
 import { sleep, tempDir, until } from './helpers.ts';
@@ -15,12 +16,13 @@ test('create writes the Hook Wars metadata; list shows only Hook Wars lobbies of
   const host = new LobbyManager(hostB);
   const viewer = new LobbyManager(viewerB);
   try {
-    const cur = await host.create({ name: 'Fishing trip', maxMembers: 12, isPrivate: false });
+    const cur = await host.create({ name: 'Fishing trip', maxMembers: 99, isPrivate: false });
     assert.equal(cur.role, 'host');
     await sleep(5);
     const data = hostB.lobbyData(cur.id);
-    assert.deepEqual(data, { game: 'hookwars', v: LOBBY_VERSION_VALUE, name: 'Fishing trip', host: 'Host', max: '10', phase: 'lobby' });
-    assert.equal(hostB.lobbyMemberLimit(cur.id), 10, 'clamped to 5v5');
+    assert.deepEqual(data, { game: 'hookwars', v: LOBBY_VERSION_VALUE, name: 'Fishing trip', host: 'Host', max: String(2 * MAX_TEAM_SIZE), phase: 'lobby' });
+    assert.equal(MAX_LOBBY_MEMBERS, 2 * MAX_TEAM_SIZE, 'the lobby limit follows MAX_TEAM_SIZE');
+    assert.equal(hostB.lobbyMemberLimit(cur.id), 2 * MAX_TEAM_SIZE, 'clamped to two full teams');
     // somebody else's Spacewar lobby, and a Hook Wars lobby of another version
     const foreign = await otherDevB.createLobby('public', 4);
     otherDevB.setLobbyData(foreign, { game: 'spacewar' });
@@ -32,7 +34,7 @@ test('create writes the Hook Wars metadata; list shows only Hook Wars lobbies of
     assert.equal(list[0].name, 'Fishing trip');
     assert.equal(list[0].host, 'Host');
     assert.equal(list[0].members, 1);
-    assert.equal(list[0].max, 10);
+    assert.equal(list[0].max, 2 * MAX_TEAM_SIZE);
     // joining either of the others is refused, and leaves that lobby again
     await assert.rejects(viewer.join(foreign), (e: LobbyError) => e.code === 'not_hookwars');
     await assert.rejects(viewer.join(old), (e: LobbyError) => e.code === 'version');

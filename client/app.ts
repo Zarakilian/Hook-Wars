@@ -5,7 +5,7 @@ import { DEFAULT_CONFIG } from '../shared/constants.ts';
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import type { ItemId, MatchConfig, Team, UpgradeStat } from '../shared/types.ts';
 import { createAudio } from './audio/audio.ts';
-import { installFakeSteamFromUrl } from './dev/fakeSteamBridge.ts';
+import { profileWearingLocker } from './economy/cloudLocker.ts';
 import { createEconomy } from './economy/index.ts';
 import { matchKey, trustPayout } from './economy/payout.ts';
 import type { EconomyClient } from './economy/types.ts';
@@ -33,6 +33,16 @@ const UI_SOUNDS: Readonly<Record<string, SfxId>> = {
   listingSold: 'listingSold',
 };
 
+/** The address asks for the stand-in Steam bridge (debug only; see App.loadFakeSteam). */
+function wantsFakeSteam(): boolean {
+  try {
+    const q = new URLSearchParams(location.search);
+    return q.has('debug') && q.has('fakesteam');
+  } catch {
+    return false;
+  }
+}
+
 export class App {
   private state: AppState;
   private readonly ui: UI;
@@ -57,8 +67,6 @@ export class App {
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.canvas = canvas;
-    // debug builds only (?debug&fakesteam): a stand-in Steam bridge against this page's own server
-    installFakeSteamFromUrl();
     const settings = loadSettings();
     this.state = {
       screen: 'menu',
@@ -88,13 +96,32 @@ export class App {
     requestAnimationFrame((t) => this.loop(t));
     if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) this.installDebugHook();
     if (bridge && this.steam) this.startSteam(bridge, this.steam);
+    else if (wantsFakeSteam()) this.loadFakeSteam();
+  }
+
+  /**
+   * Debug only (?debug&fakesteam, never over a real bridge): load the stand-in Steam bridge
+   * (client/dev/fakeSteamBridge.ts, its own chunk, fetched only then) and start the Steam screens
+   * against this page's own server, so they can be clicked through in a normal browser.
+   */
+  private loadFakeSteam(): void {
+    void import('./dev/fakeSteamBridge.ts')
+      .then((m) => {
+        if (this.steam || !m.installFakeSteamFromUrl()) return;
+        const b = steamBridge();
+        if (!b) return;
+        this.initSteam(b);
+        this.render(); // the menu adds Play with Steam once the Steam state exists
+        if (this.steam) this.startSteam(b, this.steam);
+      })
+      .catch((err) => console.warn('[fakesteam]', err));
   }
 
   // ------------------------------------------------------------------------------------------
   // Steam build
   // ------------------------------------------------------------------------------------------
 
-  /** Steam lobbies and the Epic option: state only, before the UI exists. Never runs in the browser build. */
+  /** Steam lobbies and the Epic option: state only (the caller renders). Never runs in the browser build. */
   private initSteam(bridge: SteamBridge): void {
     const steam = new SteamPlay(bridge, {
       connect: (url) => this.openSteamConnection(url),
@@ -133,8 +160,20 @@ export class App {
         });
       }, 400);
     });
-    // the offline locker also lives in Steam Cloud (localStorage stays the first copy)
-    void this.economy.useCloud({ read: (n) => bridge.cloudRead(n), write: (n, d) => bridge.cloudWrite(n, d) }).catch((err) => console.warn('[cloud]', err));
+    // the offline locker also lives in Steam Cloud (localStorage stays the first copy). When the Cloud
+    // copy wins (another computer, a new install), the profile wears what that locker says, also when
+    // the Cloud only answered later (it could not be read at start).
+    const follow = (used: 'cloud' | 'local' | 'failed') => {
+      if (used !== 'cloud') return;
+      const e = this.economy.state();
+      if (e.mode !== 'local') return; // a dedicated server's account decides what is worn there
+      const p = profileWearingLocker(this.state.profile, e.account, (id) => this.economy.owns(id));
+      if (p) this.act.saveProfile(p);
+    };
+    void this.economy
+      .useCloud({ read: (n) => bridge.cloudRead(n), write: (n, d) => bridge.cloudWrite(n, d) }, { onLateRead: follow })
+      .then(follow)
+      .catch((err) => console.warn('[cloud]', err));
   }
 
   private onSteamChange(st: SteamPlayState): void {
@@ -179,8 +218,10 @@ export class App {
       this.set({ online: { status: 'idle', url: '', youId: -1, rooms: [] }, room: null, chat: [], match: inMatch ? null : this.state.match, screen: away ? 'steam' : this.state.screen });
       this.steam?.onClosed(reason);
     };
-    // the player just asked to host or join: the Steam screen shows the progress until the room arrives
-    this.set({ online: { status: 'connecting', url, youId: -1, rooms: [], error: undefined }, room: null, chat: [], match: null, screen: 'steam' });
+    // the player just asked to host or join: the Steam screen shows the progress until the room arrives.
+    // The url stays out of the state: a joiner's relay address carries its secret path token, and the
+    // Online screen prints online.url while connecting.
+    this.set({ online: { status: 'connecting', url: '', youId: -1, rooms: [], error: undefined }, room: null, chat: [], match: null, screen: 'steam' });
   }
 
   /** Close the Steam connection on purpose (leaving the lobby). The caller picks the screen. */

@@ -12,7 +12,7 @@ import { GameServer } from '../../server/gameServer.ts';
 import { createNullEconomy } from '../../server/economy/api.ts';
 import { RELAY_PEER_HEADER, RELAY_SECRET_HEADER } from '../src/constants.ts';
 import { FrameType, HOST_TO_JOINER, closeInfo, decodeFrame, encodeData, encodeFrame, encodeClose, type Frame } from '../src/framing.ts';
-import { DROP_COOLDOWN_MS, HostRelay, MAX_CONNS_PER_PEER } from '../src/hostRelay.ts';
+import { DROP_COOLDOWN_MS, HostRelay, MAX_CONNS_PER_PEER, PEER_PACKET_BURST, PEER_PACKET_RATE } from '../src/hostRelay.ts';
 import { StreamInflater } from '../src/streamCodec.ts';
 import { sleep, until } from './helpers.ts';
 
@@ -167,6 +167,48 @@ test('frames keep their order: data then the server close, after a version misma
   }
 });
 
+test('a compressed frame Steam would not send closes that connection (4002) instead of breaking its stream', async () => {
+  const http = createServer();
+  const game = new GameServer({ ...loadConfig(), relaySecret: SECRET }, createNullEconomy());
+  game.attach(http, { exclusive: true });
+  await new Promise<void>((r) => http.listen(0, '127.0.0.1', () => r()));
+  const j = new FakeJoiner();
+  let refuseData = 1; // Steam refuses the first Data frame (the welcome)
+  const relay = new HostRelay({
+    serverUrl: `ws://127.0.0.1:${(http.address() as AddressInfo).port}/ws`,
+    relaySecret: SECRET,
+    send: (_to, p) => {
+      if (p[3] === (FrameType.Data | 0x80) && refuseData > 0) {
+        refuseData--;
+        return false; // lost: the joiner's inflater would never see this piece of the stream
+      }
+      j.take(p);
+      return true;
+    },
+    isMember: (id) => id === MEMBER,
+    log: () => {},
+  });
+  try {
+    relay.onPacket(MEMBER, encodeFrame(FrameType.Open, 1));
+    await until(() => j.frames.some((f) => f.type === FrameType.Open), 2000, 'open');
+    relay.onPacket(MEMBER, encodeData(1, helloMsg('Joe')));
+    await until(() => j.closes(1).length === 1, 2000, 'the connection is closed');
+    assert.equal(j.closes(1)[0].code, 4002);
+    await until(() => game.stats().clients === 0, 2000, 'its server connection is closed too');
+    assert.equal(j.messages(1).length, 0, 'nothing after the lost piece was sent on that stream');
+    // the member reconnects on a new connection id, with a fresh stream: it works
+    relay.onPacket(MEMBER, encodeFrame(FrameType.Open, 2));
+    await until(() => j.frames.some((f) => f.type === FrameType.Open && f.conn === 2), 2000, 'open 2');
+    relay.onPacket(MEMBER, encodeData(2, helloMsg('Joe')));
+    await until(() => j.messages(2).some((m) => m.t === 'welcome'), 2000, 'welcome on the new connection');
+  } finally {
+    relay.close('done');
+    j.done();
+    game.close();
+    http.close();
+  }
+});
+
 test('non-members are ignored; a malformed packet drops the member, who is ignored for a while', async () => {
   let now = 1_000_000;
   const http = createServer();
@@ -208,6 +250,45 @@ test('non-members are ignored; a malformed packet drops the member, who is ignor
     relay.close('done');
     game.close();
     http.close();
+  }
+});
+
+test('a member flooding packets is dropped and ignored for a while; steady traffic under the budget is not', async () => {
+  let now = 5_000_000;
+  // no server needed: pings and data for unknown connections are answered by the relay itself
+  const { relay, joiner, logs } = relayTo('ws://127.0.0.1:9/ws', { now: () => now });
+  const ping = () => encodeFrame(FrameType.Ping, 0, Buffer.alloc(8, 7));
+  const count = (id: string, type: number) => joiner(id).frames.filter((f) => f.type === type).length;
+  try {
+    // steady: PEER_PACKET_RATE a second for five seconds is all answered (a real joiner sends ~35/s)
+    for (let s = 0; s < 5; s++) {
+      for (let i = 0; i < PEER_PACKET_RATE; i++) relay.onPacket(MEMBER, ping());
+      now += 1000;
+    }
+    await until(() => count(MEMBER, FrameType.Pong) === 5 * PEER_PACKET_RATE, 2000, 'pongs');
+    assert.equal(count(MEMBER, FrameType.Bye), 0, 'steady traffic is not a flood');
+
+    // a flood: pings and data for unknown connections, all at once
+    for (let i = 0; i < 5000; i++) relay.onPacket(MEMBER2, i % 2 ? ping() : encodeData(77, Buffer.from('{}')));
+    await until(() => count(MEMBER2, FrameType.Bye) === 1, 2000, 'the flooder gets a Bye');
+    await sleep(20);
+    const answered = count(MEMBER2, FrameType.Pong) + count(MEMBER2, FrameType.Close);
+    assert.ok(answered <= PEER_PACKET_BURST, `the flood drew ${answered} replies (budget ${PEER_PACKET_BURST})`);
+    assert.match(joiner(MEMBER2).frames.find((f) => f.type === FrameType.Bye)!.payload.toString(), /too many packets/);
+    assert.ok(logs.some((s) => s.includes(`dropped ${MEMBER2}`)));
+    // ignored during the cooldown, heard again after it
+    const before = joiner(MEMBER2).frames.length;
+    relay.onPacket(MEMBER2, ping());
+    await sleep(20);
+    assert.equal(joiner(MEMBER2).frames.length, before, 'ignored during the cooldown');
+    now += DROP_COOLDOWN_MS + 1;
+    relay.onPacket(MEMBER2, ping());
+    await until(() => joiner(MEMBER2).frames.length === before + 1, 1000, 'heard after the cooldown');
+    // the other member was never affected
+    relay.onPacket(MEMBER, ping());
+    await until(() => count(MEMBER, FrameType.Pong) === 5 * PEER_PACKET_RATE + 1, 1000, 'the steady member still answered');
+  } finally {
+    relay.close('done');
   }
 });
 

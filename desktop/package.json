@@ -13,6 +13,8 @@
   "scripts": {
     "build": "node scripts/build.ts",
     "build:server": "node scripts/build.ts --server",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:electron": "tsc --noEmit -p tsconfig.electron.json",
     "start": "node scripts/build.ts && node scripts/start.ts",
     "start:fake": "node scripts/build.ts && node scripts/start.ts --fake",
     "start:fake2": "node scripts/start.ts --fake --instance=2 --fake-name=Second",
@@ -31,7 +33,8 @@
     "appId": "hookwars.desktop",
     "productName": "Hook Wars",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build-resources"
     },
     "files": [
       "build/**/*",
@@ -51,6 +54,12 @@
       "target": [
         "dir"
       ]
-    }
+    },
+    "extraFiles": [
+      {
+        "from": "steam_appid.txt",
+        "to": "steam_appid.txt"
+      }
+    ]
   }
 }

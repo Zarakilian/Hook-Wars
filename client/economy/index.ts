@@ -17,10 +17,16 @@ import {
 } from '../../shared/economy.ts';
 import type { ServerMsg } from '../../shared/protocol.ts';
 import { FAMILIES, type FamilyId } from '../../shared/types.ts';
-import { CLOUD_LOCKER_FILE, CLOUD_MAX_BYTES, CloudSaver, type CloudSaverOptions, type CloudStore } from './cloudLocker.ts';
+import { CLOUD_LOCKER_FILE, CLOUD_MAX_BYTES, CLOUD_RETRY_MAX_MS, CLOUD_RETRY_MS, CloudSaver, cloudTimers, type CloudSaverOptions, type CloudStore } from './cloudLocker.ts';
 import type { EconomyClient, EconomyState } from './types.ts';
 
 const LOCKER_KEY = 'hookwars.locker.v1';
+/**
+ * Steam build: this computer started with no locker of its own and has not read the Steam Cloud copy
+ * yet. Kept across restarts, so a new install whose Cloud stays unreadable for a while still takes the
+ * Cloud copy once it answers (the locker saved here meanwhile would otherwise be the newer one).
+ */
+const CLOUD_FIRST_KEY = 'hookwars.locker.cloudfirst.v1';
 const TOKENS_KEY = 'hookwars.tokens.v1';
 const PREV_TOKENS_KEY = 'hookwars.tokens.prev.v1';
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
@@ -89,6 +95,23 @@ function writeLocker(text: string): void {
     localStorage.setItem(LOCKER_KEY, text);
   } catch {
     // storage unavailable: the locker lasts for this session only (and in Steam Cloud, in the Steam build)
+  }
+}
+
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean): void {
+  try {
+    if (on) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch {
+    // storage unavailable: nothing is saved here between runs anyway, so every start takes the Cloud copy
   }
 }
 
@@ -386,52 +409,90 @@ export function createEconomy(): EconomyClient {
     tokenFor(key) {
       return readTokens()[key] ?? null;
     },
-    async useCloud(store: CloudStore, o: CloudSaverOptions & { readTries?: number } = {}) {
+    async useCloud(store: CloudStore, o: CloudSaverOptions & { readTries?: number; onLateRead?: (used: 'cloud' | 'local') => void } = {}) {
       if (cloud) return 'local';
       const saver = new CloudSaver(store, o);
       cloud = saver;
       saver.hold(true); // nothing goes to the Cloud before its copy has been read
       const file = o.file ?? CLOUD_LOCKER_FILE;
       const tries = Math.max(1, o.readTries ?? 3);
+      // the background re-reads never keep a test process alive; the waits awaited here do
+      const timers = o.timers ?? cloudTimers;
       const wait = (ms: number) => new Promise<void>((r) => (o.timers ?? { setTimeout: (fn: () => void, t: number) => globalThis.setTimeout(fn, t) }).setTimeout(() => r(), ms));
-      let raw: string | null = null;
-      let readOk = false;
-      for (let i = 0; i < tries && !readOk; i++) {
-        try {
-          raw = await store.read(file);
-          readOk = true;
-        } catch {
-          if (i + 1 < tries) await wait((o.retryMs ?? 1000) * (i + 1));
-        }
-      }
-      const fromCloud = readOk ? parseLocker(raw) : null;
-      let used: 'cloud' | 'local' | 'failed' = readOk ? 'local' : 'failed';
-      // A computer with no locker of its own at start (a new install, or storage that cannot be kept)
-      // always takes the Cloud copy: losing a click made in the first moment beats losing the locker.
-      if (fromCloud && (fromCloud.savedAt > localSavedAt || saved === null)) {
-        // the Cloud has the newer locker (played on another computer, or this computer's storage was cleared)
-        local.pearls = fromCloud.account.pearls;
-        local.owned = fromCloud.account.owned;
-        local.loadouts = fromCloud.account.loadouts;
-        local.stats = fromCloud.account.stats;
-        localSavedAt = fromCloud.savedAt;
-        writeLocker(lockerText(local, localSavedAt));
-        if (st.mode === 'local') set({ account: copyLocal() });
-        used = 'cloud';
-      } else if (readOk && (!fromCloud || fromCloud.savedAt < localSavedAt)) {
-        // this computer has the newer copy, or the Cloud has none yet: send it up
-        if (localSavedAt === 0) localSavedAt = Math.max(1, Date.now());
-        saver.schedule(lockerText(local, localSavedAt));
-      }
-      // A Cloud that could not be read is not written over with this copy now; anything the player
-      // changes from here on still goes up (and every copy is in localStorage too).
-      saver.hold(false);
       const g = globalThis as { addEventListener?: (t: string, fn: () => void) => void; document?: { visibilityState?: string } };
       g.addEventListener?.('pagehide', () => void saver.flush());
       g.addEventListener?.('visibilitychange', () => {
         if (g.document?.visibilityState === 'hidden') void saver.flush();
       });
-      return used;
+      // started with no locker of its own: this run, or an earlier one that never read the Cloud
+      const cloudFirst = saved === null || readFlag(CLOUD_FIRST_KEY);
+      if (cloudFirst) writeFlag(CLOUD_FIRST_KEY, true);
+      const readOnce = async (): Promise<{ ok: true; raw: string | null } | { ok: false }> => {
+        try {
+          return { ok: true, raw: await store.read(file) };
+        } catch {
+          return { ok: false };
+        }
+      };
+      /** The Cloud's copy has been read: the newer copy wins, and the Cloud writes may start. */
+      const merge = (raw: string | null): 'cloud' | 'local' => {
+        const fromCloud = parseLocker(raw);
+        let used: 'cloud' | 'local' = 'local';
+        // A computer with no locker of its own at start (a new install, or storage that cannot be kept)
+        // always takes the Cloud copy, also after restarts while the Cloud could not be read: losing
+        // what was earned before the Cloud answered beats losing the locker.
+        if (fromCloud && (fromCloud.savedAt > localSavedAt || cloudFirst)) {
+          // the Cloud has the newer locker (played on another computer, or this computer's storage was cleared)
+          local.pearls = fromCloud.account.pearls;
+          local.owned = fromCloud.account.owned;
+          local.loadouts = fromCloud.account.loadouts;
+          local.stats = fromCloud.account.stats;
+          localSavedAt = fromCloud.savedAt;
+          writeLocker(lockerText(local, localSavedAt));
+          // a change made before the read is waiting to go up: it is older than the Cloud's copy, and
+          // sending it would overwrite the locker that just won (with a newer savedAt, for good)
+          saver.discard();
+          if (st.mode === 'local') set({ account: copyLocal() });
+          used = 'cloud';
+        } else if (!fromCloud || fromCloud.savedAt < localSavedAt) {
+          // this computer has the newer copy, or the Cloud has none yet: send it up
+          if (localSavedAt === 0) localSavedAt = Math.max(1, Date.now());
+          saver.schedule(lockerText(local, localSavedAt));
+        }
+        writeFlag(CLOUD_FIRST_KEY, false); // read once: from now on the newer copy wins
+        saver.hold(false);
+        return used;
+      };
+      for (let i = 0; i < tries; i++) {
+        const r = await readOnce();
+        if (r.ok) return merge(r.raw);
+        if (i + 1 < tries) await wait((o.retryMs ?? 1000) * (i + 1));
+      }
+      // The Cloud could not be read. Its copy may be the newer one (another computer, or this one before
+      // a new install), so nothing is written there until it has been read: every change stays in
+      // localStorage, and the Cloud is read again in the background (waiting longer each time). Once it
+      // answers, the same rules decide which copy wins, and onLateRead says which.
+      let backoff = Math.max(1, o.retryMs ?? CLOUD_RETRY_MS);
+      const maxBackoff = Math.max(backoff, o.retryMaxMs ?? CLOUD_RETRY_MAX_MS);
+      const again = (): void => {
+        timers.setTimeout(() => {
+          void readOnce().then((r) => {
+            if (!r.ok) {
+              backoff = Math.min(maxBackoff, backoff * 2);
+              again();
+              return;
+            }
+            const used = merge(r.raw);
+            try {
+              o.onLateRead?.(used);
+            } catch (err) {
+              console.error('[cloud] late read', err);
+            }
+          });
+        }, backoff);
+      };
+      again();
+      return 'failed';
     },
     flushCloud() {
       return cloud ? cloud.flush() : Promise.resolve(true);

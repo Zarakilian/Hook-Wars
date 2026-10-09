@@ -3,7 +3,9 @@
 // The game server here runs in-process (a GameServer on the port the launcher picked) to keep it fast.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { loadConfig } from '../../server/config.ts';
 import { GameServer } from '../../server/gameServer.ts';
 import { createNullEconomy } from '../../server/economy/api.ts';
@@ -75,6 +77,22 @@ test('every call checks its arguments before anything happens', async () => {
     assert.equal((await b.player()).name, 'Host');
   } finally {
     await done();
+  }
+});
+
+test('Steam Cloud failures reach the page: a failed read rejects (so the page keeps the Cloud copy), a failed write is false', async () => {
+  const hub = new FakeHub();
+  const dir = tempDir('cloud');
+  mkdirSync(join(dir, 'locker.v1.json')); // the locker file cannot be read or replaced
+  const backend = await FakeSteamBackend.connect({ link: memoryLink(hub), name: 'Host', cloudDir: dir });
+  const b = new DesktopBridge({ backend, spawnServer: inProcessSpawner([]), dataDir: tempDir('data'), log: () => {}, leaveFlushMs: 0 });
+  try {
+    await assert.rejects(b.cloudRead('locker.v1.json'), /could not read/);
+    assert.equal(await b.cloudWrite('locker.v1.json', '{"pearls":9}'), false);
+    assert.equal(await b.cloudRead('missing.json'), null);
+    await assert.rejects(b.cloudWrite('locker.v1.json', 'x'.repeat(1024 * 1024 + 1)), /too big/);
+  } finally {
+    await b.shutdown();
   }
 });
 

@@ -27,7 +27,7 @@ function mockLobby(id: bigint, owner: bigint, members: bigint[], data: Record<st
   return { l, calls, data };
 }
 
-function mockSteamworks(opts: { withEnum?: boolean; failInit?: boolean } = {}) {
+function mockSteamworks(opts: { withEnum?: boolean; failInit?: boolean; cloudFault?: 'exists' | 'read' | 'write' } = {}) {
   const handlers = new Map<number, (v: unknown) => void>();
   const sent: { to: bigint; type: number; data: Buffer }[] = [];
   const accepted: bigint[] = [];
@@ -59,7 +59,20 @@ function mockSteamworks(opts: { withEnum?: boolean; failInit?: boolean } = {}) {
       readP2PPacket: () => inbox.shift()!,
       acceptP2PSession: (id) => accepted.push(id),
     },
-    cloud: { readFile: (n) => files.get(n)!, writeFile: (n, c) => (files.set(n, c), true), fileExists: (n) => files.has(n) },
+    cloud: {
+      readFile: (n) => {
+        if (opts.cloudFault === 'read') throw new Error('Steam Cloud read failed');
+        return files.get(n)!;
+      },
+      writeFile: (n, c) => {
+        if (opts.cloudFault === 'write') throw new Error('Steam Cloud write failed');
+        return (files.set(n, c), true);
+      },
+      fileExists: (n) => {
+        if (opts.cloudFault === 'exists') throw new Error('Steam Cloud is not ready');
+        return files.has(n);
+      },
+    },
     overlay: { activateToWebPage: (u) => overlay.push(u), activateInviteDialog: (id) => overlay.push(`invite:${id}`) },
     callback: {
       register: (id, h) => {
@@ -148,6 +161,7 @@ test('lobbies, cloud and overlay go through to steamworks.js', async () => {
     assert.equal(m.created.data.game, 'hookwars');
     const list = await b.listLobbies();
     assert.deepEqual(list, [{ id: '109775240000000888', owner: '76561198000000002', members: 1, max: 10, data: { game: 'hookwars', v: '3' } }]);
+    assert.equal(b.lobbyOwner('109775240000000888'), null, 'a lobby that was only listed is not kept (app 480 lists many)');
     await b.joinLobby('109775240000000888');
     assert.deepEqual(b.lobbyMembers('109775240000000888'), ['76561198000000002']);
     b.openInviteDialog(id);
@@ -162,6 +176,35 @@ test('lobbies, cloud and overlay go through to steamworks.js', async () => {
     b.close();
   }
   assert.deepEqual(m.listed.calls, ['leave'], 'close leaves the lobbies we are in, not the ones we only listed');
+});
+
+test('Steam Cloud: a missing file is null, a failed read throws, a failed write is false', () => {
+  // The page treats null as "no Cloud copy yet" and uploads its own locker over it, so a read that
+  // fails must not look like a missing file (client/economy/index.ts useCloud: readOk).
+  for (const fault of ['exists', 'read'] as const) {
+    const m = mockSteamworks({ cloudFault: fault });
+    const b = new SteamworksBackend({ module: m.mod, appId: 480, log: () => {} });
+    try {
+      m.files.set('locker.json', '{"pearls":40}');
+      assert.throws(() => b.cloudRead('locker.json'), /Steam Cloud/, `a ${fault} failure is an error, not "no file"`);
+    } finally {
+      b.close();
+    }
+  }
+  const ok = mockSteamworks();
+  const b1 = new SteamworksBackend({ module: ok.mod, appId: 480, log: () => {} });
+  try {
+    assert.equal(b1.cloudRead('locker.json'), null, 'no such file');
+  } finally {
+    b1.close();
+  }
+  const w = mockSteamworks({ cloudFault: 'write' });
+  const b2 = new SteamworksBackend({ module: w.mod, appId: 480, log: () => {} });
+  try {
+    assert.equal(b2.cloudWrite('locker.json', '{}'), false, 'a write that throws is false, never an exception');
+  } finally {
+    b2.close();
+  }
 });
 
 test('Steam not running: the constructor throws, so main falls back to the stand-in', () => {

@@ -1,6 +1,6 @@
 // Main menu: the animated logo, Play (Solo, Online, and Steam lobbies in the Steam build), the hub (Locker, Store, Market, Career),
 // Settings and How to Play, the profile chip, and your character on its dock post over the live scene.
-import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN, UNIT_NOUN } from '../../../shared/constants.ts';
+import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN, MAX_TEAM_SIZE, UNIT_NOUN } from '../../../shared/constants.ts';
 import { cleanName } from '../../../shared/protocol.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
@@ -104,7 +104,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     h('div', { class: 'menu-top' }, chip.el),
     h('div', { class: 'menu-left' }, createLogo(), nav, tip),
     stageWrap,
-    h('footer', { class: 'menu-foot' }, h('span', { text: `Hook Wars v${GAME_VERSION}` }), h('span', { class: 'dot-sep', text: '·' }), h('span', { text: 'Up to 5 v 5 across the river' })),
+    h('footer', { class: 'menu-foot' }, h('span', { text: `Hook Wars v${GAME_VERSION}` }), h('span', { class: 'dot-sep', text: '·' }), h('span', { text: `Up to ${MAX_TEAM_SIZE} v ${MAX_TEAM_SIZE} across the river` })),
   );
 
   const paint = (s: AppState) => {

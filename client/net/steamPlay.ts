@@ -15,7 +15,8 @@
 import type { ClientMsg, RoomState, ServerMsg } from '../../shared/protocol.ts';
 import type { MatchConfig } from '../../shared/types.ts';
 import type { SteamBridge, SteamLobbySummary, SteamPlayer } from '../platform.ts';
-import { clampLobbyMax, cleanLobbyName, filterLobbies, LOBBY_ID_RE, lobbyInfoFor, LobbyInfoPublisher, realTimers, roomCodeFor, type Timers } from './steamLobby.ts';
+import { isPlainCloseText } from './connection.ts';
+import { clampLobbyMax, cleanLobbyName, filterLobbies, LOBBY_ID_RE, lobbyInfoFor, LobbyInfoPublisher, pageLobbyInfo, realTimers, roomCodeFor, type Timers } from './steamLobby.ts';
 
 export type SteamPhase = 'idle' | 'hosting' | 'joining' | 'lobby';
 
@@ -163,7 +164,9 @@ export class SteamPlay {
       this.set({ lobbies: filterLobbies(raw), listing: false, listedAt: Date.now() });
     } catch (err) {
       if (g !== this.listGen) return;
-      this.set({ listing: false, listedAt: Date.now(), error: errText('Could not load the Steam lobby list', err) });
+      // why a lobby just ended (leave() refreshes the list right after) matters more than a list that
+      // did not load: a lost network fails both, and the reason must stay on screen
+      this.set({ listing: false, listedAt: Date.now(), error: this.st.error ?? errText('Could not load the Steam lobby list', err) });
     }
   }
 
@@ -187,7 +190,7 @@ export class SteamPlay {
     }
     if (gen !== this.gen) {
       // left (or started something else) while the lobby was being made: do not keep it
-      void this.bridge.leaveLobby().catch(() => {});
+      this.dropStale();
       return;
     }
     const url = wsUrl(res?.url);
@@ -198,9 +201,20 @@ export class SteamPlay {
     }
     this.pending = { kind: 'create', name, config: this.deps.roomConfig(max) };
     this.publisher?.stop();
-    this.publisher = new LobbyInfoPublisher((info) => this.bridge.setLobbyInfo(info), { timers: this.timers });
+    // game and v are the desktop app's own keys (set when it made the lobby): never sent from here
+    this.publisher = new LobbyInfoPublisher((info) => this.bridge.setLobbyInfo(pageLobbyInfo(info)), { timers: this.timers });
     this.set({ lobbyId: res.lobbyId });
     this.deps.connect(url);
+  }
+
+  /**
+   * A host or join answered after the player had moved on (left, or started another host or join).
+   * When nothing newer is under way, leave that lobby. When something is, leave it alone: the desktop
+   * app runs host, join and leave one after another and every host or join leaves the old lobby first,
+   * so a leaveLobby sent now would run after the newer one and end the lobby the player is going to.
+   */
+  private dropStale(): void {
+    if (this.st.phase === 'idle') void this.bridge.leaveLobby().catch(() => {});
   }
 
   // ------------------------------------------------------------------------------------------
@@ -223,7 +237,7 @@ export class SteamPlay {
       return;
     }
     if (gen !== this.gen) {
-      void this.bridge.leaveLobby().catch(() => {});
+      this.dropStale();
       return;
     }
     const url = wsUrl(res?.url);
@@ -312,16 +326,23 @@ export class SteamPlay {
     void this.refresh();
   }
 
-  /** The Steam connection closed without leave(): the host left, its server stopped, or the relay broke. */
+  /**
+   * The Steam connection closed without leave(): the host left, its server stopped, or the relay broke.
+   * reason = the close frame's words. A joiner's relay (the desktop app) says what happened ("The host
+   * left the lobby.", "The host dropped the connection (too many packets).", ...): those are shown as
+   * they are, through textContent only; with none, a plain line.
+   */
   onClosed(reason?: string): void {
     if (this.st.phase === 'idle') return;
+    const said = (reason ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120);
+    const own = said && !isPlainCloseText(said) ? said : '';
     const why = this.st.phase === 'lobby'
       ? this.st.role === 'host'
         ? 'Your lobby server stopped. Host a new lobby to keep playing.'
-        : 'The host left, or the connection to the host was lost.'
+        : own || 'The host left, or the connection to the host was lost.'
       : this.st.role === 'host'
-        ? `Your lobby server did not start${reason ? ` (${reason.slice(0, 80)})` : ''}.`
-        : `Could not reach the host${reason ? ` (${reason.slice(0, 80)})` : ''}.`;
+        ? `Your lobby server did not start${said ? ` (${said.slice(0, 80)})` : ''}.`
+        : `Could not reach the host${said ? ` (${said.slice(0, 80)})` : ''}.`;
     void this.leave(why);
   }
 

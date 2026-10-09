@@ -86,7 +86,7 @@ function startSteamworks(): SteamworksBackend | null {
 
 const steam = primary ? startSteamworks() : null;
 
-protocol.registerSchemesAsPrivileged([{ scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } }]);
+protocol.registerSchemesAsPrivileged([{ scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, codeCache: true } }]);
 
 // ---- the stand-in -----------------------------------------------------------------------------------
 

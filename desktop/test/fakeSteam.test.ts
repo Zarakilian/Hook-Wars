@@ -2,7 +2,9 @@
 // unforgeable sender, the session-accept rule, and the TCP hub that lets windows on one PC meet.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { join } from 'node:path';
 import { FakeHub, FakeHubServer, FakeSteamBackend, connectOrHostHub, memoryLink, parseToHub, tcpLink } from '../src/fakeSteam.ts';
 import { sleep, tempDir, until } from './helpers.ts';
 
@@ -123,7 +125,21 @@ test('stand-in Steam Cloud keeps files per profile folder and refuses odd names'
     assert.equal(a.cloudWrite('locker.json', '{"pearls":12}'), true);
     assert.equal(a.cloudRead('locker.json'), '{"pearls":12}');
     assert.equal(a.cloudWrite('../escape.json', 'x'), false);
-    assert.equal(a.cloudRead('..'), null);
+    assert.throws(() => a.cloudRead('..'), /file name/);
+  } finally {
+    a.close();
+  }
+});
+
+test('stand-in Steam Cloud: a file that cannot be read is an error, not "no file"; a failed write is false', async () => {
+  const hub = new FakeHub();
+  const dir = tempDir('cloud');
+  mkdirSync(join(dir, 'locker.json')); // a folder where the file should be: reading and replacing it fail
+  const a = await FakeSteamBackend.connect({ link: memoryLink(hub), cloudDir: dir });
+  try {
+    assert.throws(() => a.cloudRead('locker.json'), /could not read/);
+    assert.equal(a.cloudWrite('locker.json', '{"pearls":1}'), false);
+    assert.equal(a.cloudRead('other.json'), null, 'a file that is not there is still null');
   } finally {
     a.close();
   }

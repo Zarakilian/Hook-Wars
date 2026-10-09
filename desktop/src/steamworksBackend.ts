@@ -58,8 +58,9 @@ export const LOBBY_TYPE = { Private: 0, FriendsOnly: 1, Public: 2, Invisible: 3 
 /** networking.SendType: Reliable is ordered and retransmitted. */
 export const SEND_RELIABLE = 2;
 /**
- * callback.SteamCallback ids, used when the module does not export the enum object at run time.
- * CHECK on the home PC against node_modules/steamworks.js/client.d.ts (homePcChecks in the docs).
+ * callback.SteamCallback ids, used when the module does not export the enum object at run time
+ * (0.4.0's index.js does export it as SteamCallback). Checked against the published 0.4.0
+ * client.d.ts and callbacks.d.ts on 2026-10-09, including the payload field names used below.
  */
 export const STEAM_CALLBACK_FALLBACK = {
   LobbyDataUpdate: 4,
@@ -109,7 +110,7 @@ export class SteamworksBackend implements SteamBackend {
   private readonly log: (s: string) => void;
   private readonly events = new Emitter<BackendEvents>();
   private readonly lobbies = new Map<string, SwLobby>();
-  /** lobbies we created or joined (the map above also keeps listed ones, to join through) */
+  /** lobbies we created or joined (their objects are the only ones the map above keeps) */
   private readonly joined = new Set<string>();
   private readonly handles: { disconnect(): void }[] = [];
   private readonly packetTimer: ReturnType<typeof setInterval>;
@@ -143,7 +144,8 @@ export class SteamworksBackend implements SteamBackend {
       if (lobby) this.events.emit('joinRequested', lobby);
     });
     this.packetTimer = setInterval(() => this.readPackets(), PACKET_POLL_MS);
-    // steamworks.js's init() already runs callbacks on its own timer; calling them here too is harmless
+    // steamworks.js 0.4.0's init() already runs callbacks 30 times a second and does not export
+    // runCallbacks, so this timer only starts with a build of the module that leaves that to us
     this.callbackTimer = typeof this.sw.runCallbacks === 'function' ? setInterval(() => this.sw.runCallbacks?.(), CALLBACK_POLL_MS) : null;
   }
 
@@ -215,7 +217,8 @@ export class SteamworksBackend implements SteamBackend {
     for (const l of found) {
       const id = idString(l.id);
       if (!id) continue;
-      if (!this.lobbies.has(id)) this.lobbies.set(id, l); // keep the object: joining goes through it
+      // not kept: joining goes through matchmaking.joinLobby, and keeping every listed lobby of the
+      // shared app 480 would grow this map with each refresh
       let data: Record<string, string> = {};
       try {
         data = l.getFullData() ?? {};
@@ -275,11 +278,23 @@ export class SteamworksBackend implements SteamBackend {
     // steamworks.js 0.4.0 has no CloseP2PSessionWithUser; Steam ends idle sessions by itself
   }
 
+  /**
+   * null only when the file is not there. A failure throws: the page reads null as "no Cloud copy
+   * yet" and uploads its own locker over it, so an error must never look like a missing file.
+   */
   cloudRead(name: string): string | null {
     const c = this.client.cloud;
-    if (!safe(() => c.fileExists(name))) return null;
-    const v = safe(() => c.readFile(name));
-    return typeof v === 'string' ? v : null;
+    let exists: boolean;
+    let v: unknown;
+    try {
+      exists = c.fileExists(name);
+      if (!exists) return null;
+      v = c.readFile(name);
+    } catch (err) {
+      throw new Error(`Steam Cloud could not read ${name}: ${(err as Error).message}`);
+    }
+    if (typeof v !== 'string') throw new Error(`Steam Cloud could not read ${name}`);
+    return v;
   }
 
   cloudWrite(name: string, data: string): boolean {

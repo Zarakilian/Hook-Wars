@@ -680,11 +680,13 @@ export class FakeSteamBackend implements SteamBackend {
   }
 
   cloudRead(name: string): string | null {
-    if (!CLOUD_NAME.test(name)) return null;
+    if (!CLOUD_NAME.test(name)) throw new Error('bad file name');
     try {
       return readFileSync(join(this.cloudDir, name), 'utf8');
-    } catch {
-      return null;
+    } catch (err) {
+      // only a file that is not there is "no file"; anything else must not look like an empty Cloud
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw new Error(`the stand-in Cloud could not read ${name} (${(err as NodeJS.ErrnoException).code ?? 'error'})`);
     }
   }
 

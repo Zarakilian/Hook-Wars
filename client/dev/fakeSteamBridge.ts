@@ -179,6 +179,8 @@ export function createFakeSteamBridge(o: { serverUrl: string; name?: string }): 
       return raw;
     },
     async setLobbyInfo(info) {
+      // like the desktop app (desktop/src/validate.ts lobbyInfo): game, v and host are its own keys
+      for (const k of ['game', 'v', 'host']) if (k in info) throw new Error(`key ${k} is set by the app`);
       controls.published.push({ ...info });
       console.info('[fakesteam] setLobbyInfo', info);
     },

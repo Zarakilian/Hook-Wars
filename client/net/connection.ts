@@ -76,6 +76,16 @@ export function normaliseServerUrl(input: string, page: PageOrigin | null = curr
   }
 }
 
+/** What onStatus('closed') says: the close frame's own reason, else a plain line for its code. */
+export function closeText(code: number, reason: string): string {
+  return reason || (code === 1006 ? 'Could not reach the server.' : `Disconnected (${code}).`);
+}
+
+/** True for the plain lines closeText makes up when the other side gave no reason. */
+export function isPlainCloseText(text: string): boolean {
+  return text === 'Could not reach the server.' || /^Disconnected \(\d{1,5}\)\.$/.test(text);
+}
+
 export interface ConnectionOptions {
   /**
    * After a dropped connection, the next Connection to the same server rejoins the dropped match by
@@ -139,7 +149,7 @@ export class Connection {
       // a drop mid-match starts the grace clock; the next connection to this server can take the unit back
       if (!this.closing && this.inMatch && this.roomCode) this.rejoin.markDropped(this.url, this.roomCode);
       this.inMatch = false;
-      this.onStatus?.('closed', ev.reason || (ev.code === 1006 ? 'Could not reach the server.' : `Disconnected (${ev.code}).`));
+      this.onStatus?.('closed', closeText(ev.code, ev.reason));
     });
     this.ws.addEventListener('error', () => {
       // 'close' follows with the details

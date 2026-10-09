@@ -19,6 +19,21 @@ export const MIME: Record<string, string> = {
   '.ttf': 'font/ttf',
   '.wasm': 'application/wasm',
   '.txt': 'text/plain; charset=utf-8',
+  // assets the graphics or sound work may add later (a file type missing here is a silent 404)
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+  '.bin': 'application/octet-stream',
+  '.hdr': 'application/octet-stream',
+  '.exr': 'application/octet-stream',
+  '.ktx2': 'image/ktx2',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
 };
 
 /**

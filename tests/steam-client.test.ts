@@ -7,19 +7,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { DEFAULT_CONFIG, PROTOCOL_VERSION } from '../shared/constants.ts';
+import { DEFAULT_CONFIG, MAX_TEAM_SIZE, PROTOCOL_VERSION } from '../shared/constants.ts';
 import { DEFAULT_LOADOUT } from '../shared/cosmetics.ts';
-import type { Profile, RoomState, ServerMsg } from '../shared/protocol.ts';
+import { parseConfig, type Profile, type RoomState, type ServerMsg } from '../shared/protocol.ts';
 import { GameServer } from '../server/gameServer.ts';
 import { loadConfig } from '../server/config.ts';
 import { createTrustEconomy } from '../server/economy/trust.ts';
 import type { SteamBridge, SteamLobbySummary } from '../client/platform.ts';
-import { Connection } from '../client/net/connection.ts';
+import { closeText, Connection, isPlainCloseText } from '../client/net/connection.ts';
+import { WebSocketServer } from 'ws';
 import { RejoinStore } from '../client/net/rejoin.ts';
 import {
-  clampLobbyMax, cleanLobbyName, filterLobbies, LOBBY_KEYS, lobbyInfoFor, LobbyInfoPublisher, roomCodeFor, teamSizeFor, type LobbyInfo, type Timers,
+  clampLobbyMax, cleanLobbyName, filterLobbies, LOBBY_APP_KEYS, LOBBY_KEYS, LOBBY_MAX_CHOICES, LOBBY_MAX_DEFAULT, lobbyInfoFor, lobbySlots, pageLobbyInfo, LobbyInfoPublisher, roomCodeFor, teamSizeFor, type LobbyInfo, type Timers,
 } from '../client/net/steamLobby.ts';
 import { SteamPlay, type SteamPlayState } from '../client/net/steamPlay.ts';
+import { CLOUD_LOCKER_FILE, CLOUD_MAX_BYTES } from '../client/economy/cloudLocker.ts';
+// the desktop app's checks on every IPC argument (read only here: the page must pass them)
+import * as desktopCheck from '../desktop/src/validate.ts';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -85,9 +89,40 @@ test('lobby info: game, protocol version, name, room code, map, mode, phase, hum
   assert.equal(lobbyInfoFor(ROOM(), `  a\u0007b${'x'.repeat(80)}`).name.length, 40);
   assert.equal(lobbyInfoFor(ROOM(), '').name, "Ann's room");
   assert.equal(cleanLobbyName('  two   spaces\n'), 'two spaces');
-  // max players picks a lobby size; the room gets half of it per team
-  assert.deepEqual([1, 2, 3, 4, 9, 10, 40, Number.NaN].map(clampLobbyMax), [2, 2, 4, 4, 10, 10, 10, 10]);
-  assert.deepEqual([2, 4, 6, 8, 10].map(teamSizeFor), [1, 2, 3, 4, 5]);
+  // max players picks a lobby size; the room gets half of it per team. Every size follows
+  // MAX_TEAM_SIZE (5 a side, or 6 with the optional 6v6), never a fixed 10.
+  const top = MAX_TEAM_SIZE * 2;
+  assert.deepEqual([...LOBBY_MAX_CHOICES], Array.from({ length: MAX_TEAM_SIZE }, (_, i) => 2 * (i + 1)));
+  assert.equal(LOBBY_MAX_CHOICES[LOBBY_MAX_CHOICES.length - 1], top);
+  assert.deepEqual([1, 2, 3, 4, 9, top - 1, top, top + 1, 40, 1e9].map(clampLobbyMax), [2, 2, 4, 4, 10, top, top, top, top, top].map((n) => Math.min(n, top)));
+  assert.equal(clampLobbyMax(Number.NaN), DEFAULT_CONFIG.teamSize * 2, 'not a number: the default match size');
+  assert.equal(clampLobbyMax('12'), DEFAULT_CONFIG.teamSize * 2);
+  assert.equal(LOBBY_MAX_DEFAULT, DEFAULT_CONFIG.teamSize * 2);
+  assert.ok(LOBBY_MAX_CHOICES.includes(LOBBY_MAX_DEFAULT));
+  assert.deepEqual(LOBBY_MAX_CHOICES.map(teamSizeFor), Array.from({ length: MAX_TEAM_SIZE }, (_, i) => i + 1));
+  assert.equal(teamSizeFor(1e9), MAX_TEAM_SIZE);
+  for (const n of LOBBY_MAX_CHOICES) {
+    // every lobby size makes a room config the server accepts (protocol.ts caps teamSize at MAX_TEAM_SIZE)
+    const cfg = parseConfig({ ...DEFAULT_CONFIG, teamSize: teamSizeFor(n) });
+    assert.equal(cfg?.teamSize !== undefined ? cfg.teamSize * 2 : -1, n, `a ${n}-player lobby`);
+  }
+});
+
+test("what the page hands the Steam bridge passes the desktop app's own IPC checks (host options, lobby info, Cloud file)", () => {
+  // the host never sends the keys the desktop app writes itself (game, v, host): its check refuses them
+  const info = lobbyInfoFor(ROOM(), "Ann's lobby");
+  const sent = pageLobbyInfo(info);
+  assert.deepEqual(sent, { name: "Ann's lobby", room: 'ABCDE', map: 'coralcove', mode: 'tidal', phase: 'lobby', humans: '1', max: '6' });
+  for (const k of LOBBY_APP_KEYS) assert.ok(!(k in sent), `${k} sent`);
+  const checked = desktopCheck.lobbyInfo(sent);
+  assert.ok(checked.ok, checked.ok ? '' : checked.error);
+  // every lobby size the host screen offers is one the desktop app accepts
+  for (const n of LOBBY_MAX_CHOICES) {
+    const r = desktopCheck.hostOpts({ name: cleanLobbyName(`${'long name '.repeat(9)}`), maxMembers: clampLobbyMax(n), isPrivate: n === 4 });
+    assert.ok(r.ok, r.ok ? '' : `${n}: ${r.error}`);
+  }
+  assert.ok(desktopCheck.cloudName(CLOUD_LOCKER_FILE).ok);
+  assert.ok(CLOUD_MAX_BYTES <= desktopCheck.MAX_CLOUD_BYTES, "the Cloud locker limit must fit the desktop app's");
 });
 
 test('the lobby browser shows only Hook Wars lobbies of this protocol version, checked field by field', () => {
@@ -213,7 +248,9 @@ function fakeBridge(hub: FakeSteamHub, steamId: string, name: string): FakeBridg
     player: async () => ({ steamId, name }),
     async hostLobby(o) {
       const id = hub.newId();
-      hub.lobbies.set(id, { id, name: o.name, host: name, hostSteamId: steamId, max: o.maxMembers, isPrivate: o.isPrivate, members: new Set([steamId]), info: {}, url: hub.serverUrl });
+      // like the desktop app (desktop/src/lobbyManager.ts baseLobbyData): it writes game, v and host itself
+      const info = { game: 'hookwars', v: String(PROTOCOL_VERSION), name: o.name, host: name, max: String(o.maxMembers), phase: 'lobby' };
+      hub.lobbies.set(id, { id, name: o.name, host: name, hostSteamId: steamId, max: o.maxMembers, isPrivate: o.isPrivate, members: new Set([steamId]), info, url: hub.serverUrl });
       lobby = id;
       return { lobbyId: id, url: hub.serverUrl };
     },
@@ -242,6 +279,8 @@ function fakeBridge(hub: FakeSteamHub, steamId: string, name: string): FakeBridg
       ];
     },
     async setLobbyInfo(info) {
+      // the desktop app refuses the keys it owns (desktop/src/validate.ts lobbyInfo)
+      for (const k of ['game', 'v', 'host']) if (k in info) throw new Error(`key ${k} is set by the app`);
       const l = lobby ? hub.lobbies.get(lobby) : undefined;
       b.published.push({ ...info });
       if (l && l.hostSteamId === steamId) Object.assign(l.info, info);
@@ -346,7 +385,9 @@ test('host a lobby: the room is made by itself and the lobby info follows it; a 
     assert.equal(room.config.teamSize, 2, 'max players 4 = 2 a side');
     const lobbyId = ann.play.state().lobbyId!;
     await waitFor(() => hub.lobbies.get(lobbyId)?.info.room === room.code, 3000, 'the published room code');
-    assert.deepEqual(hub.lobbies.get(lobbyId)!.info, lobbyInfoFor(room, "Ann's lobby"));
+    // what the lobby carries: the desktop app's own keys (game, v, host) plus everything the page published
+    assert.deepEqual(hub.lobbies.get(lobbyId)!.info, { ...lobbyInfoFor(room, "Ann's lobby"), host: 'Ann' });
+    assert.ok(ann.bridge.published.length > 0 && ann.bridge.published.every((p) => !('game' in p) && !('v' in p) && !('host' in p)), 'the page sent a key the desktop app owns');
     assert.equal(hub.lobbies.get(lobbyId)!.info.v, String(PROTOCOL_VERSION));
     // the joiner's browser: only this Hook Wars lobby (other games and old builds are filtered out)
     await bob.play.refresh();
@@ -498,5 +539,275 @@ test('join failures end cleanly: a full lobby, a lobby that is gone, a Steam err
       p.play.dispose();
     }
     await srv.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Checker pass: races against the desktop app's call order, two lobbies, a late joiner, a crash
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Make a stand-in bridge run hostLobby, joinLobby and leaveLobby one after another, each host or join
+ * leaving the current lobby first, like the desktop app does (desktop/src/desktopBridge.ts serial and
+ * leaveNow). hold() makes the next hosts and joins wait until release().
+ */
+function desktopOrder(b: FakeBridge) {
+  let chain: Promise<unknown> = Promise.resolve();
+  const run = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = chain.then(fn);
+    chain = p.then(() => {}, () => {});
+    return p;
+  };
+  const host = b.hostLobby.bind(b);
+  const join = b.joinLobby.bind(b);
+  const leave = b.leaveLobby.bind(b);
+  let gate: Promise<void> = Promise.resolve();
+  let open: () => void = () => {};
+  b.hostLobby = (o) => run(async () => {
+    await gate;
+    await leave();
+    return host(o);
+  });
+  b.joinLobby = (id) => run(async () => {
+    await gate;
+    await leave();
+    return join(id);
+  });
+  b.leaveLobby = () => run(() => leave());
+  return {
+    hold() {
+      gate = new Promise<void>((r) => (open = r));
+    },
+    release: () => open(),
+  };
+}
+
+test('a host or join that was cancelled for a newer one never ends the newer lobby when its answer comes in late', async () => {
+  const srv = await startLobbyServer();
+  const hub = new FakeSteamHub();
+  hub.serverUrl = srv.url;
+  const ann = player(hub, '76561198000000041', 'Ann');
+  const bob = player(hub, '76561198000000042', 'Bob');
+  const order = desktopOrder(bob.bridge);
+  try {
+    await ann.play.host({ name: "Ann's", maxPlayers: 4, isPrivate: false });
+    await waitFor(() => ann.play.state().phase === 'lobby', 4000, 'host lobby');
+    await bob.play.refresh();
+    // Bob presses Join, the join is slow; he presses Cancel, then Host Lobby
+    order.hold();
+    const joining = bob.play.join(ann.play.state().lobbyId!);
+    await sleep(10);
+    const leaving = bob.play.leave();
+    const hosting = bob.play.host({ name: "Bob's", maxPlayers: 4, isPrivate: false });
+    order.release();
+    await Promise.all([joining, leaving, hosting]);
+    await waitFor(() => bob.play.state().phase === 'lobby', 4000, "Bob's own lobby");
+    await sleep(50); // anything still queued for the desktop app has run
+    const mine = bob.play.state().lobbyId!;
+    assert.equal(bob.bridge.current(), mine, 'a late leaveLobby from the cancelled join ended the new lobby');
+    assert.ok(hub.lobbies.has(mine), "Bob's lobby is gone");
+    assert.equal(hub.lobbies.get(ann.play.state().lobbyId!)?.members.has('76561198000000042'), false, 'Bob is still in the lobby he cancelled');
+    assert.equal(bob.play.state().role, 'host');
+    // the same the other way round: Bob hosts again (slow), cancels and joins Ann's lobby; the late
+    // answer of the host he cancelled must not take him out of Ann's lobby
+    order.hold();
+    const hosting2 = bob.play.host({ name: "Bob's second", maxPlayers: 4, isPrivate: false });
+    await sleep(10);
+    const leaving2 = bob.play.leave();
+    const joining2 = bob.play.join(ann.play.state().lobbyId!);
+    order.release();
+    await Promise.all([hosting2, leaving2, joining2]);
+    await waitFor(() => bob.play.state().phase === 'lobby', 4000, "Bob in Ann's lobby");
+    await sleep(50);
+    assert.equal(bob.bridge.current(), ann.play.state().lobbyId, "a late leaveLobby from the cancelled host took Bob out of Ann's lobby");
+    assert.equal(bob.room()?.code, ann.room()?.code);
+    assert.equal([...hub.lobbies.values()].some((l) => l.hostSteamId === '76561198000000042'), false, 'a lobby Bob cancelled is still open');
+  } finally {
+    for (const p of [ann, bob]) {
+      p.close();
+      p.play.dispose();
+    }
+    await srv.close();
+  }
+});
+
+test('two lobbies at once: the browser lists both, a joiner moves from one to the other by invite, a host invited elsewhere ends its own', async () => {
+  const srvA = await startLobbyServer();
+  const srvB = await startLobbyServer();
+  const hub = new FakeSteamHub();
+  const ann = player(hub, '76561198000000051', 'Ann');
+  const cid = player(hub, '76561198000000052', 'Cid');
+  const bob = player(hub, '76561198000000053', 'Bob');
+  try {
+    hub.serverUrl = srvA.url; // each host runs its own server
+    await ann.play.host({ name: 'Lobby A', maxPlayers: 4, isPrivate: false });
+    await waitFor(() => ann.play.state().phase === 'lobby', 4000, 'lobby A');
+    hub.serverUrl = srvB.url;
+    await cid.play.host({ name: 'Lobby B', maxPlayers: 6, isPrivate: false });
+    await waitFor(() => cid.play.state().phase === 'lobby', 4000, 'lobby B');
+    const a = ann.play.state().lobbyId!;
+    const b = cid.play.state().lobbyId!;
+    await waitFor(() => !!hub.lobbies.get(a)?.info.room && !!hub.lobbies.get(b)?.info.room, 3000, 'both room codes published');
+    await bob.play.refresh();
+    assert.deepEqual(bob.play.state().lobbies.map((l) => l.id).sort(), [a, b].sort());
+    assert.equal(roomCodeFor(a, bob.play.state().lobbies), ann.room()!.code);
+    assert.equal(roomCodeFor(b, bob.play.state().lobbies), cid.room()!.code);
+    // each lobby leads to its own host's room
+    await bob.play.join(a);
+    await waitFor(() => bob.play.state().phase === 'lobby', 4000, 'Bob in A');
+    assert.equal(bob.room()!.code, ann.room()!.code);
+    await waitFor(() => hub.lobbies.get(a)?.info.humans === '2', 3000, 'A counts Bob');
+    // an invite to B from the menu: Bob leaves A on the way and lands in B's room, on B's server
+    bob.bridge.joinRequest(b);
+    await waitFor(() => bob.play.state().lobbyId === b && bob.play.state().phase === 'lobby', 4000, 'Bob in B');
+    assert.equal(bob.room()!.code, cid.room()!.code);
+    assert.equal(bob.bridge.current(), b);
+    assert.equal(hub.lobbies.get(a)!.members.has('76561198000000053'), false, 'Bob is still a member of A');
+    await waitFor(() => ann.room()?.players.length === 1 && hub.lobbies.get(a)?.info.humans === '1', 3000, 'A without Bob');
+    // Ann, hosting A, takes an invite to B from the menu: her own lobby ends and she joins B
+    ann.bridge.joinRequest(b);
+    await waitFor(() => ann.play.state().lobbyId === b && ann.play.state().phase === 'lobby', 4000, 'Ann in B');
+    assert.equal(ann.play.state().role, 'joiner');
+    assert.equal(hub.lobbies.has(a), false, 'the lobby Ann hosted is still listed');
+    assert.equal(ann.room()!.code, cid.room()!.code);
+    await waitFor(() => cid.room()?.players.length === 3 && hub.lobbies.get(b)?.info.humans === '3', 3000, 'B with three');
+  } finally {
+    for (const p of [ann, cid, bob]) {
+      p.close();
+      p.play.dispose();
+    }
+    await srvA.close();
+    await srvB.close();
+  }
+});
+
+test('a joiner arriving mid-match: the lobby shows In match, the joiner gets the running match, and the lobby counts them', async () => {
+  const srv = await startLobbyServer();
+  const hub = new FakeSteamHub();
+  hub.serverUrl = srv.url;
+  const ann = player(hub, '76561198000000061', 'Ann');
+  const bob = player(hub, '76561198000000062', 'Bob');
+  try {
+    await ann.play.host({ name: 'Busy', maxPlayers: 2 * MAX_TEAM_SIZE, isPrivate: false });
+    await waitFor(() => ann.play.state().phase === 'lobby', 4000, 'host lobby');
+    const id = ann.play.state().lobbyId!;
+    assert.equal(ann.room()!.config.teamSize, MAX_TEAM_SIZE);
+    ann.conn()!.send({ t: 'start' });
+    await waitFor(() => ann.inbox.some((m) => m.t === 'start'), 4000, 'the match');
+    await waitFor(() => hub.lobbies.get(id)?.info.phase === 'match', 3000, 'phase=match published');
+    await bob.play.refresh();
+    const row = bob.play.state().lobbies.find((l) => l.id === id);
+    assert.equal(row?.info.phase, 'match', 'the browser hides or mislabels a lobby in a match');
+    await bob.play.join(id);
+    await waitFor(() => bob.play.state().phase === 'lobby', 4000, 'Bob in');
+    await waitFor(() => bob.inbox.some((m) => m.t === 'start'), 4000, 'the running match for the late joiner');
+    const start = bob.inbox.find((m) => m.t === 'start') as Extract<ServerMsg, { t: 'start' }>;
+    assert.ok(start.m.you >= 0, 'the late joiner did not get a unit (a bot hands its seat over)');
+    assert.equal(bob.room()!.code, ann.room()!.code);
+    await waitFor(() => hub.lobbies.get(id)?.info.humans === '2', 3000, 'humans=2 during the match');
+  } finally {
+    for (const p of [ann, bob]) {
+      p.close();
+      p.play.dispose();
+    }
+    await srv.close();
+  }
+});
+
+test("the host's game server crashing mid-match sends the host and the joiner back to the Steam screen, both out of the Steam lobby", async () => {
+  const srv = await startLobbyServer();
+  const hub = new FakeSteamHub();
+  hub.serverUrl = srv.url;
+  const ann = player(hub, '76561198000000071', 'Ann');
+  const bob = player(hub, '76561198000000072', 'Bob');
+  try {
+    await ann.play.host({ name: 'Fragile', maxPlayers: 4, isPrivate: false });
+    await waitFor(() => ann.play.state().phase === 'lobby', 4000, 'host lobby');
+    await bob.play.refresh();
+    await bob.play.join(ann.play.state().lobbyId!);
+    await waitFor(() => bob.play.state().phase === 'lobby', 4000, 'Bob in');
+    ann.conn()!.send({ t: 'start' });
+    await waitFor(() => bob.inbox.some((m) => m.t === 'start'), 4000, 'the match');
+    // Bob's network is going too: the lobby list that leave() asks for right after fails as well
+    let listFailed = false;
+    bob.bridge.listLobbies = async () => {
+      listFailed = true;
+      throw new Error('Steam is offline');
+    };
+    srv.game.close(); // the server process is gone: every socket on it drops at once
+    await waitFor(() => ann.play.state().phase === 'idle' && bob.play.state().phase === 'idle', 4000, 'both back to idle');
+    await waitFor(() => listFailed && !bob.play.state().listing, 2000, "Bob's failed list refresh");
+    assert.match(ann.play.state().error ?? '', /lobby server stopped/i);
+    assert.match(bob.play.state().error ?? '', /host left|connection to the host/i, 'the failed list refresh hid why the lobby ended');
+    assert.equal(ann.bridge.current(), null, 'the host is still in its Steam lobby');
+    assert.equal(bob.bridge.current(), null, 'the joiner is still in the Steam lobby');
+    assert.equal(hub.lobbies.size, 0, 'the crashed lobby is still listed');
+    assert.equal(ann.conn(), null);
+    assert.equal(bob.conn(), null);
+  } finally {
+    for (const p of [ann, bob]) {
+      p.close();
+      p.play.dispose();
+    }
+    await srv.close();
+  }
+});
+
+test("a lobby row's slots are the smaller of the room's size and Steam's member limit", () => {
+  const row = (max: number, infoMax: string): SteamLobbySummary => ({ id: '1', name: 'x', host: 'h', members: 1, max, info: { max: infoMax } });
+  assert.equal(lobbySlots(row(4, '4')), 4);
+  assert.equal(lobbySlots(row(4, '12')), 4, 'the host made the teams bigger: Steam still lets only 4 in');
+  assert.equal(lobbySlots(row(12, '2')), 2, 'the host made the teams smaller: the room has 2 player slots');
+  assert.equal(lobbySlots(row(0, '6')), 6);
+  assert.equal(lobbySlots(row(8, '')), 8);
+  assert.equal(lobbySlots(row(8, 'lots')), 8);
+  assert.equal(lobbySlots(row(0, '-3')), 0);
+});
+
+test("a joiner sees the desktop relay's own words when the host side ends the connection, and a plain line without them", async () => {
+  // a stand-in for the joiner's relay: answers like the host's server, then closes the page's socket
+  // the way desktop/src/joinerRelay.ts does (a 4xxx code and the reason in words)
+  const http = createServer();
+  const wss = new WebSocketServer({ server: http, path: '/ws' });
+  let closeWith: { code: number; reason: string } | null = null;
+  const room = ROOM({ code: 'RELAY', hostId: 9 });
+  wss.on('connection', (ws) => {
+    ws.on('message', (raw) => {
+      const m = JSON.parse(String(raw)) as { t: string };
+      if (m.t === 'hello') ws.send(JSON.stringify({ t: 'welcome', id: 2, v: PROTOCOL_VERSION, serverName: 'Relay', motd: '' }));
+      if (m.t === 'joinRoom') {
+        ws.send(JSON.stringify({ t: 'room', room }));
+        const c = closeWith;
+        if (c) setTimeout(() => (c.code === 1006 ? ws.terminate() : ws.close(c.code, c.reason)), 20);
+      }
+    });
+  });
+  await new Promise<void>((r) => http.listen(0, '127.0.0.1', () => r()));
+  const hub = new FakeSteamHub();
+  hub.serverUrl = `ws://127.0.0.1:${(http.address() as AddressInfo).port}/ws`;
+  const bob = player(hub, '76561198000000082', 'Bob');
+  const id = hub.newId();
+  hub.lobbies.set(id, { id, name: 'Far away', host: 'Ann', hostSteamId: '76561198000000081', max: 4, isPrivate: false, members: new Set(['76561198000000081']), info: { game: 'hookwars', v: String(PROTOCOL_VERSION), room: 'RELAY', phase: 'lobby' }, url: hub.serverUrl });
+  const ended = async (c: { code: number; reason: string }) => {
+    closeWith = c;
+    await bob.play.refresh();
+    await bob.play.join(id);
+    await waitFor(() => bob.play.state().phase === 'idle' && bob.play.state().error !== null, 4000, `the close ${c.code}`);
+    return bob.play.state().error;
+  };
+  try {
+    assert.equal(await ended({ code: 4003, reason: 'The host dropped the connection (too many packets).' }), 'The host dropped the connection (too many packets).');
+    assert.equal(await ended({ code: 4000, reason: 'The host left the lobby.' }), 'The host left the lobby.');
+    assert.equal(await ended({ code: 1006, reason: '' }), 'The host left, or the connection to the host was lost.', 'no words: the plain line');
+    assert.equal(await ended({ code: 4001, reason: '' }), 'The host left, or the connection to the host was lost.');
+    // what closeText makes up is plain, a relay's words are not
+    assert.equal(isPlainCloseText(closeText(1006, '')), true);
+    assert.equal(isPlainCloseText(closeText(4001, '')), true);
+    assert.equal(isPlainCloseText(closeText(4000, 'The host left the lobby.')), false);
+  } finally {
+    bob.close();
+    bob.play.dispose();
+    wss.close();
+    await new Promise<void>((r) => http.close(() => r()));
   }
 });

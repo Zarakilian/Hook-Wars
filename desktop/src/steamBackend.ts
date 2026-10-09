@@ -55,7 +55,9 @@ export interface SteamBackend {
   /** forget a session (after the player left) so a later packet asks again */
   closeSession(with_: string): void;
 
+  /** the file's text; null only when there is no such file; throws when it cannot be read */
   cloudRead(name: string): string | null;
+  /** true once saved; false (never a throw) when it could not be saved */
   cloudWrite(name: string, data: string): boolean;
   openOverlayUrl(url: string): void;
 

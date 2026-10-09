@@ -181,11 +181,16 @@ export class DesktopBridge {
       launcher.onRestart = (u) => {
         relay.setServerUrl(u);
         role.url = u;
+        // a new port means the host's own page cannot find it again (the bridge has no event for that)
+        this.log(`[server] restarted after a crash on ${u}${u === url ? '' : ' (a new port)'}`);
       };
       launcher.onFailed = (reason) => {
         this.log(`[server] ${reason}`);
         if (this.role !== role) return;
-        void this.serial(() => this.leaveNow(`The host's game server stopped. ${reason}`));
+        // checked again when its turn comes: a host or join queued before it has replaced this lobby
+        void this.serial(async () => {
+          if (this.role === role) await this.leaveNow(`The host's game server stopped. ${reason}`);
+        });
       };
       this.role = role;
       this.log(`[steam] hosting lobby ${lobbyId} on ${url}`);

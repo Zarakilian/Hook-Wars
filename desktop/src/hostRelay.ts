@@ -34,6 +34,14 @@ const MAX_QUEUED = 32;
 const OPEN_TIMEOUT_MS = 5000;
 export const PEER_SILENCE_MS = 30_000;
 export const DROP_COOLDOWN_MS = 30_000;
+/**
+ * Packets a member may send per second (sustained, and in one burst). A real joiner sends about 35 a
+ * second (inputs at 30/s, pings, the odd lobby message) and the game server cuts a connection off
+ * above 90/s anyway; this budget is for what the relay answers by itself (Pongs, Close for unknown
+ * or refused connections), so a flood cannot make the host send a reply per packet.
+ */
+export const PEER_PACKET_RATE = 500;
+export const PEER_PACKET_BURST = 1000;
 const SWEEP_MS = 5000;
 
 /** Something that can open a WebSocket to the local server (tests may wrap it to inspect headers). */
@@ -69,6 +77,8 @@ interface RelayConn {
   deflater: StreamDeflater | null;
   /** every frame of this connection goes out in order behind the one being compressed */
   sending: Promise<void>;
+  /** a compressed piece was lost (Steam refused it): nothing more goes out on this connection */
+  broken: boolean;
 }
 
 interface Peer {
@@ -77,6 +87,9 @@ interface Peer {
   lastSeen: number;
   opens: number;
   opensSince: number;
+  /** packet budget (token bucket: PEER_PACKET_RATE a second, at most PEER_PACKET_BURST) */
+  tokens: number;
+  refilled: number;
   bytesIn: number;
   bytesOut: number;
 }
@@ -148,14 +161,18 @@ export class HostRelay {
       }
       return;
     }
+    let peer = this.peers.get(from);
+    if (!peer) {
+      peer = { id: from, conns: new Map(), lastSeen: now, opens: 0, opensSince: now, tokens: PEER_PACKET_BURST, refilled: now, bytesIn: 0, bytesOut: 0 };
+      this.peers.set(from, peer);
+    }
+    peer.tokens = Math.min(PEER_PACKET_BURST, peer.tokens + (Math.max(0, now - peer.refilled) / 1000) * PEER_PACKET_RATE);
+    peer.refilled = now;
+    if (peer.tokens < 1) return this.dropPeer(from, 'too many packets', true, 'The host dropped the connection (too many packets).');
+    peer.tokens -= 1;
     const d = decodeFrame(packet, JOINER_TO_HOST);
     if (!d.ok) return this.dropPeer(from, `bad packet (${d.reason})`, true);
     const f = d.frame;
-    let peer = this.peers.get(from);
-    if (!peer) {
-      peer = { id: from, conns: new Map(), lastSeen: now, opens: 0, opensSince: now, bytesIn: 0, bytesOut: 0 };
-      this.peers.set(from, peer);
-    }
     peer.lastSeen = now;
     peer.bytesIn += packet.length;
     switch (f.type) {
@@ -222,7 +239,7 @@ export class HostRelay {
       this.out(peer, encodeClose(connId, 4002, 'The game server is not running.'));
       return;
     }
-    const c: RelayConn = { id: connId, ws, open: false, queue: [], timer: null, deflater: this.compress ? new StreamDeflater() : null, sending: Promise.resolve() };
+    const c: RelayConn = { id: connId, ws, open: false, queue: [], timer: null, deflater: this.compress ? new StreamDeflater() : null, sending: Promise.resolve(), broken: false };
     peer.conns.set(connId, c);
     c.timer = setTimeout(() => {
       if (c.open || peer.conns.get(connId) !== c) return;
@@ -242,9 +259,15 @@ export class HostRelay {
       if (isBinary || peer.conns.get(connId) !== c) return; // the game server only sends text
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
       const d = c.deflater;
-      if (!d) return this.inOrder(c, () => this.out(peer, encodeData(connId, bytes)));
+      if (!d) return this.inOrder(c, () => void this.out(peer, encodeData(connId, bytes)));
       const piece = d.deflate(bytes); // starts now; sent in order
-      this.inOrder(c, async () => this.out(peer, encodeDeflatedData(connId, await piece)));
+      this.inOrder(c, async () => {
+        const p = await piece;
+        if (c.broken) return;
+        // a lost piece breaks the joiner's inflate stream for good: end this connection cleanly
+        // (the page reconnects on a fresh one) rather than send it data it cannot read
+        if (!this.out(peer, encodeDeflatedData(connId, p))) this.breakConn(peer, c);
+      });
     });
     ws.on('close', (code: number, reason: Buffer) => {
       if (c.timer) clearTimeout(c.timer);
@@ -252,8 +275,10 @@ export class HostRelay {
       this.forget(peer, c);
       const why = reason.toString('utf8');
       // after the messages still being compressed
-      if (sendableCloseCode(code)) this.inOrder(c, () => this.out(peer, encodeClose(connId, code, why)));
-      else this.inOrder(c, () => this.out(peer, encodeClose(connId, 4002, why || 'Lost the game server.'))); // 1006: the server went away
+      const closeCode = sendableCloseCode(code) ? code : 4002; // 1006: the server went away
+      this.inOrder(c, () => {
+        if (!c.broken) this.out(peer, encodeClose(connId, closeCode, closeCode === code ? why : why || 'Lost the game server.'));
+      });
     });
     ws.on('error', (err: Error) => {
       // 'close' follows; log only the first failure to reach the server
@@ -274,22 +299,34 @@ export class HostRelay {
     c.sending = c.sending.then(fn).catch((err: Error) => this.log(`[relay] send failed: ${err.message}`));
   }
 
-  private out(peer: Peer, packet: Buffer): void {
-    if (this.closed) return;
+  /** Send one packet to a member; false when Steam would not take it. */
+  private out(peer: Peer, packet: Buffer): boolean {
+    if (this.closed) return false;
     peer.bytesOut += packet.length;
-    if (!this.sendPacket(peer.id, packet)) this.log(`[relay] Steam would not send a packet to ${peer.id}`);
+    if (this.sendPacket(peer.id, packet)) return true;
+    this.log(`[relay] Steam would not send a packet to ${peer.id}`);
+    return false;
+  }
+
+  /** A compressed piece of this connection was lost: close it on both sides, with 4002 to the page. */
+  private breakConn(peer: Peer, c: RelayConn): void {
+    if (c.broken) return;
+    c.broken = true;
+    if (peer.conns.get(c.id) === c) this.forget(peer, c);
+    closeWs(c.ws, 1000, 'relay lost data');
+    this.out(peer, encodeClose(c.id, 4002, 'Lost data on the way to you.'));
   }
 
   /**
    * Close every connection of this member. With `ban` (a protocol violation) the member gets a Bye and
    * is ignored for DROP_COOLDOWN_MS; without it (they left, or went silent) nothing is sent.
    */
-  dropPeer(steamId: string, reason: string, ban = false): void {
+  dropPeer(steamId: string, reason: string, ban = false, byeText = 'The host dropped the connection (bad data).'): void {
     const peer = this.peers.get(steamId);
     if (ban) {
       this.droppedUntil.set(steamId, this.now() + DROP_COOLDOWN_MS);
       this.log(`[relay] dropped ${steamId}: ${reason}`);
-      this.sendPacket(steamId, encodeBye('The host dropped the connection (bad data).'));
+      this.sendPacket(steamId, encodeBye(byeText));
     }
     if (!peer) return;
     this.peers.delete(steamId);

@@ -5,7 +5,7 @@
 **Done when:** You see the HOOK WARS menu at http://127.0.0.1:5173 (dev) or at your server address (hosted), and a solo match starts.
 **Last verified:** 2026-10-09
 
-A voxel hook-brawler. Up to 5v5 Lunkers stand on either side of a river and drag each other across it with chain hooks. Empty slots fill with bots, so you can play alone, with one friend, or with nine.
+A voxel hook-brawler. Up to 6v6 Lunkers stand on either side of a river and drag each other across it with chain hooks (5v5 is the default). Empty slots fill with bots, so you can play alone, with one friend, or with eleven.
 
 This is the standard edition: a normal game with no crypto of any kind. It runs in the browser (free, cosmetics earned with Pearls) and is being packaged for Steam (paid, premium cosmetics sold through Steam). An experimental Solana edition is parked on the `edition/solana` branch.
 

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanName, cleanText, defaultProfile, FUNNY_NAMES, parseClientMessage, parseConfig, parseProfile } from '../shared/protocol.ts';
-import { DEFAULT_CONFIG, PROTOCOL_VERSION } from '../shared/constants.ts';
+import { DEFAULT_CONFIG, MAX_TEAM_SIZE, PROTOCOL_VERSION } from '../shared/constants.ts';
 import { Rng } from '../shared/math.ts';
 
 test('random junk never throws and is rejected', () => {
@@ -42,7 +42,7 @@ test('names and chat are stripped of control, bidi and markup characters', () =>
 });
 
 test('config validation clamps to known values and drops tidal on maps without tides', () => {
-  assert.equal(parseConfig({ ...DEFAULT_CONFIG, teamSize: 6 }), null);
+  assert.equal(parseConfig({ ...DEFAULT_CONFIG, teamSize: MAX_TEAM_SIZE + 1 }), null);
   assert.equal(parseConfig({ ...DEFAULT_CONFIG, mapId: 'mars' }), null);
   assert.equal(parseConfig({ ...DEFAULT_CONFIG, killsToWin: 1000 }), null);
   const c = parseConfig({ ...DEFAULT_CONFIG, mapId: 'muckmire', riverMode: 'tidal' });

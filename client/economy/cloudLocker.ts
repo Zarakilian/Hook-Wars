@@ -1,7 +1,28 @@
 // Steam Cloud copy of the offline locker (the Steam build only; client/economy/index.ts useCloud).
 // localStorage stays the first copy: it is written on every change, at once. The Cloud copy follows
 // a moment later (debounced, latest data wins), and a failed Cloud write keeps the data and tries
-// again later, so the locker is never lost because Steam Cloud is off, full or slow.
+// again later, so the locker is never lost because Steam Cloud is off, full or slow. Nothing is written
+// to the Cloud before its copy has been read: until then the copy there may be the newer one (another
+// computer), and a write would replace it.
+
+import { ownedLoadout } from '../../shared/cosmetics.ts';
+import type { AccountView } from '../../shared/economy.ts';
+import type { Profile } from '../../shared/protocol.ts';
+
+/**
+ * The profile wearing what the offline locker says for the profile's family, or null when it already
+ * does. Used when the Steam Cloud copy replaced this computer's locker at start (a second computer, a
+ * new install): the profile (what hello and the match send) must follow it, as the Locker's Equip does.
+ */
+export function profileWearingLocker(p: Profile, account: AccountView | null | undefined, owns: (id: string) => boolean): Profile | null {
+  const lo = account?.loadouts[p.family];
+  if (!lo || typeof lo !== 'object') return null;
+  const wear = ownedLoadout(lo, owns);
+  const a = Object.entries(wear).sort(([x], [y]) => x.localeCompare(y));
+  const b = Object.entries(p.loadout ?? {}).sort(([x], [y]) => x.localeCompare(y));
+  if (JSON.stringify(a) === JSON.stringify(b)) return null;
+  return { ...p, loadout: wear };
+}
 
 /** What the Steam bridge offers for Cloud files (SteamBridge.cloudRead / cloudWrite). */
 export interface CloudStore {
@@ -26,7 +47,8 @@ export interface Timers {
   clearTimeout(t: unknown): void;
 }
 
-const realTimers: Timers = {
+/** Real timers that never keep a test process alive. */
+export const cloudTimers: Timers = {
   setTimeout: (fn, ms) => {
     const t = globalThis.setTimeout(fn, ms);
     (t as { unref?: () => void }).unref?.(); // never keeps a test process alive
@@ -71,7 +93,7 @@ export class CloudSaver {
     this.debounceMs = o.debounceMs ?? CLOUD_DEBOUNCE_MS;
     this.retryMs = o.retryMs ?? CLOUD_RETRY_MS;
     this.retryMaxMs = o.retryMaxMs ?? CLOUD_RETRY_MAX_MS;
-    this.timers = o.timers ?? realTimers;
+    this.timers = o.timers ?? cloudTimers;
     this.log = o.log ?? ((s) => console.warn(s));
     this.backoff = this.retryMs;
   }
@@ -95,6 +117,17 @@ export class CloudSaver {
     this.pending = data;
     this.backoff = this.retryMs;
     if (!this.held) this.arm(this.debounceMs);
+  }
+
+  /**
+   * Forget the data waiting to go up. For when the Cloud's copy has just replaced this computer's: what
+   * waits here is older than the Cloud's copy, and sending it would overwrite the locker that won.
+   */
+  discard(): void {
+    this.pending = null;
+    if (this.timer !== null) this.timers.clearTimeout(this.timer);
+    this.timer = null;
+    this.backoff = this.retryMs;
   }
 
   /** Write what is pending now (page hidden, app closing). True when the Cloud has the newest copy. */

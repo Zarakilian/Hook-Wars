@@ -68,9 +68,11 @@ export interface EconomyClient {
    * Steam build: also keep the offline locker in Steam Cloud. Reads the Cloud copy first (the newer of
    * it and this computer's copy wins), then every change is written to localStorage at once and to the
    * Cloud a moment later; a failed Cloud write keeps the data and retries. Resolves with which copy
-   * is used: 'cloud', 'local', or 'failed' (the Cloud could not be read; the local copy is used).
+   * is used: 'cloud', 'local', or 'failed' (the Cloud could not be read; the local copy is used, nothing
+   * is written to the Cloud, and it is read again in the background until it answers: then the same
+   * rules pick the copy, and onLateRead says which).
    */
-  useCloud(store: CloudStore, opts?: CloudSaverOptions & { readTries?: number }): Promise<'cloud' | 'local' | 'failed'>;
+  useCloud(store: CloudStore, opts?: CloudSaverOptions & { readTries?: number; onLateRead?: (used: 'cloud' | 'local') => void }): Promise<'cloud' | 'local' | 'failed'>;
   /** Write a pending Cloud save now (true when the Cloud has the newest copy, or there is no Cloud). */
   flushCloud(): Promise<boolean>;
 }
