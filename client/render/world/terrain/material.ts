@@ -14,10 +14,13 @@ export interface TerrainUniforms {
   /** strength and colour of the lamp light baked into the roughness map's red channel (0 = off) */
   uLamp: { value: number };
   uLampColor: { value: THREE.Color };
+  /** strength and colour of the self-lit glow painted into the roughness map's alpha (255 - glow; 0 = off) */
+  uGlow: { value: number };
+  uGlowColor: { value: THREE.Color };
 }
 
 export function terrainUniforms(): TerrainUniforms {
-  return { uWetY: { value: -100 }, uRain: { value: 0 }, uSparkle: { value: 0 }, uTime: { value: 0 }, uEmit: { value: 1 }, uLamp: { value: 0 }, uLampColor: { value: new THREE.Color(0xffb060) } };
+  return { uWetY: { value: -100 }, uRain: { value: 0 }, uSparkle: { value: 0 }, uTime: { value: 0 }, uEmit: { value: 1 }, uLamp: { value: 0 }, uLampColor: { value: new THREE.Color(0xffb060) }, uGlow: { value: 0 }, uGlowColor: { value: new THREE.Color(0x7fd8ff) } };
 }
 
 export function terrainMaterial(color: THREE.Texture, rough: THREE.Texture, u: TerrainUniforms): THREE.MeshStandardMaterial {
@@ -54,6 +57,8 @@ uniform float uTime;
 uniform float uEmit;
 uniform float uLamp;
 uniform vec3 uLampColor;
+uniform float uGlow;
+uniform vec3 uGlowColor;
 varying float vRough;
 varying float vEmit;
 varying float vUp;
@@ -84,6 +89,11 @@ if (uLamp > 0.0) {
   float hwLamp = texture2D(roughnessMap, vRoughnessMapUv).r;
   if (hwLamp > 0.0) totalEmissiveRadiance += diffuseColor.rgb * uLampColor * hwLamp * uLamp * vUp * (0.93 + 0.07 * sin(uTime * 6.3 + vWPos.x * 1.7 + vWPos.z));
 }
+if (uGlow > 0.0) {
+  // self-lit tops (glowing harbour ice), painted per column into the alpha channel
+  float hwGlow = 1.0 - texture2D(roughnessMap, vRoughnessMapUv).a;
+  if (hwGlow > 0.0) totalEmissiveRadiance += uGlowColor * hwGlow * uGlow * vUp;
+}
 if (uSparkle > 0.0) {
   float hwSpk = texture2D(roughnessMap, vRoughnessMapUv).b;
   if (hwSpk > 0.0) {
@@ -96,7 +106,7 @@ if (uSparkle > 0.0) {
 #endif`,
       );
   };
-  m.customProgramCacheKey = () => 'hw-terrain-v2';
+  m.customProgramCacheKey = () => 'hw-terrain-v3';
   return m;
 }
 

@@ -1,7 +1,7 @@
 // Cosmetic catalog. Every family has a bare base body (the character sheets) and items worn in slots.
 // The DEFAULT set of each family is the look of its reference render. Cosmetics never change stats.
 // This file is the contract between the character models, the Locker / Store / Marketplace UI,
-// the server inventory and (for Limited items) the on-chain NFTs. Item ids are permanent: never rename one.
+// the server inventory and (for premium items, later) the Steam Inventory item definitions. Item ids are permanent: never rename one.
 import type { FamilyId } from './types.ts';
 
 export type CosmeticSlot = 'head' | 'face' | 'body' | 'hands' | 'feet' | 'back';
@@ -94,7 +94,7 @@ export const COSMETICS: readonly CosmeticDef[] = [
   P('ogre', 'back', 'stump_pack', 'Stump Backpack', 'rare', 900, 'A hollow stump, full of snacks.'),
   PM('ogre', 'face', 'crystal_tusks', 'Crystal Tusks', 1.99, 'Tusks of glowing amethyst.'),
 
-  // ---------------------------------------------------------------- Butcher-Bot
+  // ---------------------------------------------------------------- Dredge-Bot
   // default set = reference render: rusted hazard plating, grille dome, twin smokestacks, crane hook, heavy feet
   D('bot', 'head', 'grille_dome', 'Grille Dome', 'Riveted dome with a glowing furnace grille.'),
   D('bot', 'body', 'hazard_plates', 'Rusted Hazard Plates', 'Rust-streaked plating with orange hazard stripes, a porthole and a red valve.'),

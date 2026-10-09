@@ -28,6 +28,11 @@ export interface Frame {
   hooks: HookSnap[];
   runes: RuneSnap[];
   newer: Snapshot; // the snapshot at or after the render tick (scalars like score, river)
+  /**
+   * Hooks only in the newer snapshot (launched after the older one): drawn standing at the newer
+   * position, not interpolated, until the render tick passes that snapshot.
+   */
+  freshHooks: ReadonlySet<number>;
 }
 
 export class SnapshotBuffer {
@@ -135,9 +140,13 @@ export class SnapshotBuffer {
     }
     const prevHooks = new Map<number, HookSnap>();
     for (const h of na.h) prevHooks.set(h.i, h);
+    const freshHooks = new Set<number>();
     const hooks = nb.h.map((h) => {
       const p = prevHooks.get(h.i);
-      if (!p) return h;
+      if (!p) {
+        freshHooks.add(h.i);
+        return h;
+      }
       return { ...h, x: lerp(p.x, h.x, t), z: lerp(p.z, h.z, t) };
     });
     const prevRunes = new Map<number, RuneSnap>();
@@ -147,6 +156,6 @@ export class SnapshotBuffer {
       if (!p) return r;
       return { ...r, x: lerp(p.x, r.x, t), z: lerp(p.z, r.z, t) };
     });
-    return { tick: renderTick, units, hooks, runes, newer: nb };
+    return { tick: renderTick, units, hooks, runes, newer: nb, freshHooks };
   }
 }

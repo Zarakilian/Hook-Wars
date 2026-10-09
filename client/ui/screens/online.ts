@@ -10,6 +10,7 @@ import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { RIVER_INFO } from '../info.ts';
+import { defaultServerUrl } from '../../net/connection.ts';
 import type { AppState, OnlineState } from '../types.ts';
 import { button, iconButton, sectionTitle, setButtonLabel, toggle } from '../widgets.ts';
 
@@ -24,7 +25,7 @@ export function buildOnline(ctx: UiCtx, s0: AppState): ScreenView {
   const a = ctx.actions;
 
   // ---------------------------------------------------------------- connection bar
-  const url = h('input', { class: 'text-in url-in', placeholder: 'This site (leave empty)', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Server address', maxlength: 200 });
+  const url = h('input', { class: 'text-in url-in', placeholder: defaultServerUrl() ? 'This site (leave empty)' : 'host:port', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Server address', maxlength: 200 });
   url.value = s0.settings.serverUrl;
   const lamp = h('span', { class: 'lamp', 'aria-hidden': 'true' });
   const statusText = h('span', { class: 'conn-status-text' });
@@ -66,7 +67,7 @@ export function buildOnline(ctx: UiCtx, s0: AppState): ScreenView {
   const offline = h('div', { class: 'online-offline' },
     h('div', { class: 'oo-art', 'aria-hidden': 'true' }, icon('lifebuoy')),
     h('h3', { class: 'oo-title', text: 'Find a harbour' }),
-    h('p', { class: 'muted', text: 'Connect to a Hook Wars server to see rooms. Leave the address empty to use the server this page came from, or type host:port.' }));
+    h('p', { class: 'muted', text: defaultServerUrl() ? 'Connect to a Hook Wars server to see rooms. Leave the address empty to use the server this page came from, or type host:port.' : 'Connect to a Hook Wars server to see rooms: type its address (host:port).' }));
   const errBox = h('p', { class: 'err-box hidden', role: 'alert' });
   offline.append(errBox);
 

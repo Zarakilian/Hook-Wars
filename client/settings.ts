@@ -3,7 +3,7 @@ import type { Profile } from '../shared/protocol.ts';
 import { DEFAULT_LOADOUT } from '../shared/cosmetics.ts';
 import { FAMILIES, type ControlScheme, type FamilyId, type MatchConfig } from '../shared/types.ts';
 import { DEFAULT_CONFIG, MAX_NAME_LEN } from '../shared/constants.ts';
-import { parseConfig, parseProfile } from '../shared/protocol.ts';
+import { FUNNY_NAMES, parseConfig, parseProfile } from '../shared/protocol.ts';
 import type { Quality } from './render/contracts.ts';
 
 export interface Settings {
@@ -54,13 +54,12 @@ function write(key: string, value: unknown): void {
   }
 }
 
-const FUNNY = ['Gutbucket', 'Chumlord', 'Reelmaster', 'Bilgerat', 'Hookwright', 'Mudlark', 'Gristleface', 'Snagtooth'];
 
 export function loadProfile(): Profile {
   const p = parseProfile(read(KEY_PROFILE));
   if (p) return p;
   const family: FamilyId = FAMILIES[Math.floor(Math.random() * FAMILIES.length)];
-  const name = `${FUNNY[Math.floor(Math.random() * FUNNY.length)]}${Math.floor(Math.random() * 90 + 10)}`.slice(0, MAX_NAME_LEN);
+  const name = `${FUNNY_NAMES[Math.floor(Math.random() * FUNNY_NAMES.length)]}${Math.floor(Math.random() * 90 + 10)}`.slice(0, MAX_NAME_LEN);
   const fresh: Profile = { name, family, loadout: { ...DEFAULT_LOADOUT[family] } };
   write(KEY_PROFILE, fresh);
   return fresh;

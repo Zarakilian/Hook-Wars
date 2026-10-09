@@ -7,7 +7,7 @@
 import type { MapDef } from '../../../../../shared/maps/types.ts';
 import { valueNoise2 } from '../../../../../shared/math.ts';
 import type { MatchConfig } from '../../../../../shared/types.ts';
-import { LIP, SIDE, h01, jit, pick, shade } from '../biome.ts';
+import { LIP, SIDE, h01, jit, mix, pick, shade } from '../biome.ts';
 import type { Cell, SideOut } from '../field.ts';
 import type { BackdropRule } from '../flora.ts';
 import type { MistDef } from '../mist.ts';
@@ -20,6 +20,8 @@ const QUAY = [0x7e7872, 0x726c66, 0x88827a, 0x6a645e];
 /** dark, rain-soaked wharf timber */
 const TIMBER = [0x5a3c26, 0x4e3420, 0x664630, 0x46301e, 0x5e402a];
 const IRON = [0x2a2c30, 0x34363a, 0x23252a];
+/** rain-dark setts: warm grey-brown stones (the reference's wharf cobbles) */
+const SETT = [0x5e5046, 0x6a5a4c, 0x54483e, 0x74624f, 0x5a4c40, 0x665448];
 /** quay edge width (m from the canal), wharf decking out to this */
 const EDGE = 1.1;
 const WHARF = 3.6;
@@ -34,7 +36,7 @@ const DECKS: readonly [number, number][] = [[-23, -15.6], [-3.4, 4.6], [13.2, 21
 export class LanternwharfBiome extends CogwaterBiome {
   override readonly farColor: number = 0x1c1c22;
   readonly mistColor = 0x5a5468;
-  readonly lampLight = 2.8;
+  readonly lampLight = 3.2;
   readonly lampColor = 0xffb468;
   /** the outer harbour opens past this z (far end) */
   private readonly harbourZ: number;
@@ -74,7 +76,10 @@ export class LanternwharfBiome extends CogwaterBiome {
       super.sample(x, z, ix, iz, cs, out);
       // matt slate roofs: rain-slick glossy ones throw a glaring moon highlight at the camera
       if (out.side === SIDE.BUILDING) out.rough = 0.95;
-      if (cs < 0.5 && this.outside(x, z) < 0 && this.plazaDist(x, z) > 0.05) this.wharf(x, z, ix, iz, out);
+      if (cs < 0.5 && this.outside(x, z) < 0 && this.plazaDist(x, z) > 0.05) {
+        if (this.channel(x, z) < -0.6 && out.side === SIDE.STONE) this.setts(x, z, ix, iz, out);
+        this.wharf(x, z, ix, iz, out);
+      }
       return;
     }
     const c = this.channel(x, z);
@@ -97,6 +102,31 @@ export class LanternwharfBiome extends CogwaterBiome {
     out.side = SIDE.STONE;
     out.top = jit(shade(this.map.terrain.bed[0], 0.9), ix, iz, 0.08);
     out.rough = 0.5;
+  }
+
+  /**
+   * The open quay: chunky 0.5 m setts in a running bond (2 x 2 columns each, one tone per stone, a dark
+   * joint at the corner), rain-glossy, with standing puddles that mirror the lamps. Heights are left alone.
+   */
+  private setts(x: number, z: number, ix: number, iz: number, out: Cell): void {
+    const row = Math.floor(z / 0.5);
+    const sx = x / 0.5 + (row & 1) * 0.5;
+    const stone = Math.floor(sx);
+    const fx = sx - stone;
+    const fz = z / 0.5 - row;
+    let col = SETT[Math.floor(hashVox(stone, row, 0, 620) * SETT.length)];
+    col = shade(col, 0.82 + hashVox(stone, row, 1, 621) * 0.32);
+    if (fx < 0.5 && fz < 0.5) col = shade(col, 0.62); // the joint corner
+    else if (fx < 0.5 || fz < 0.5) col = shade(col, 0.9); // a worn, rounded edge
+    let rough = 0.5;
+    const pud = valueNoise2(x * 0.2, z * 0.2, 622) + valueNoise2(x * 0.7, z * 0.7, 623) * 0.25;
+    if (pud < 0.32) {
+      // a standing puddle over the setts: dark, mirror-wet
+      col = shade(mix(col, 0x1c222c, 0.45), 0.8);
+      rough = 0.05;
+    }
+    out.top = col;
+    out.rough = rough;
   }
 
   /**
@@ -177,11 +207,13 @@ export class LanternwharfBiome extends CogwaterBiome {
 
   /** Street gas lamps past the side edges and along the far quays, plus the wide warm halo round every lamp in play. */
   lamps(): { x: number; z: number; r: number; k: number }[] {
+    // strong, tight pools round every lamp (the reference's wet stone glows orange under each lantern
+    // and goes dark blue between them), not a wash of orange over the whole quay
     const out = this.streetLamps();
-    for (const o of this.map.obstacles) if (o.shape === 'circle' && o.kind === 'gaslamp') out.push({ x: o.x, z: o.z, r: 11, k: 0.4 });
+    for (const o of this.map.obstacles) if (o.shape === 'circle' && o.kind === 'gaslamp') out.push({ x: o.x, z: o.z, r: 7.5, k: 0.45 });
     for (const d of this.map.decor) {
-      if (d.kind === 'lantern') out.push({ x: d.x, z: d.z, r: 7.5, k: 0.35 });
-      else if (d.kind === 'lanternstring') out.push({ x: d.x, z: d.z, r: 8, k: 0.35 });
+      if (d.kind === 'lantern') out.push({ x: d.x, z: d.z, r: 6.5, k: 0.45 });
+      else if (d.kind === 'lanternstring') out.push({ x: d.x, z: d.z, r: 4.5, k: 0.3 });
     }
     return out;
   }

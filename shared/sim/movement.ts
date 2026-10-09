@@ -22,9 +22,11 @@ export interface MoveBody {
  * The layer exists only while the channel is dry or wading: once the water is deep or frozen it sits
  * just under the deck, so everyone inside a footprint is on top (a body under a deck when the water
  * turns deep climbs straight on instead of drowning out of reach under it).
- * (px, pz) is the position before the move. Airborne or dragged bodies (grapple, hook) have no layer
- * in flight; where they land the sim sets it: on top of a deck, except next to a caster (hook) or an
- * anchor unit (grapple) down in the channel, which puts them on the bed with it.
+ * (px, pz) is the position before the move. The sim runs this for hooked and grappling bodies too, so
+ * they keep their layer along the drag or the low flight, like a walker, and a hook or grapple broken early
+ * drops the body where it is. Where they land the sim sets the layer: on top of a deck, except next to a
+ * caster (hook delivery) or an anchor unit (grapple) down in the channel, which puts them on the bed with it.
+ * `airborne` clears the layer (no caller in the sim passes it any more; kept for the signature).
  */
 export function deckLayer(world: World, river: RiverState, b: MoveBody, px: number, pz: number, airborne = false): void {
   const map = world.map;

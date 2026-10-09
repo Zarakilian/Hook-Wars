@@ -1,17 +1,18 @@
 // Client glue: auto-rejoin cancelling (finding 27), the solo render clock after a long frame (28),
-// the predicted hook matching the server's (29) and the default server address (desktop readiness).
+// the predicted hook matching the server's and its hand-over (29) and the default server address
+// (desktop readiness).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BAL, DEFAULT_CONFIG, HOOK_LEVELS, TICK_RATE } from '../shared/constants.ts';
+import { BAL, DEFAULT_CONFIG, HOOK_LEVELS, TICK_DT, TICK_RATE } from '../shared/constants.ts';
 import { GameSim } from '../shared/sim/sim.ts';
-import { Btn, type MatchConfig, type PlayerInfo, type Snapshot, type Team } from '../shared/types.ts';
+import { Btn, type HookSnap, type MatchConfig, type PlayerInfo, type PlayerInput, type Snapshot, type Team, type YouSnap } from '../shared/types.ts';
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import { AutoRejoin, REJOIN_RETRY_MS, type RetryTimers } from '../client/net/autorejoin.ts';
 import { Connection, defaultServerUrl, normaliseServerUrl, setDefaultServerUrl, type PageOrigin } from '../client/net/connection.ts';
 import { SnapshotBuffer, clockStepMs } from '../client/net/interp.ts';
 import { RejoinStore, type KeyValueStore } from '../client/net/rejoin.ts';
 import { LocalSession } from '../client/net/session.ts';
-import { ghostHookParams } from '../client/game/ghost.ts';
+import { GHOST_STALL_CAP, HANDOVER_GRACE, OwnHookPredictor, ghostHead, ghostHookParams } from '../client/game/ghost.ts';
 
 // ---------------------------------------------------------------------------------------------
 // helpers
@@ -418,6 +419,373 @@ test('predicted hook: same speed, range, width and look as the hook the server l
     sim.grantRune(u, 'bouncy');
     sim.grantRune(u, 'bendy');
   }, 'Boing Barb + Bendy Eel');
+});
+
+interface OwnThrow {
+  /** frames from the ghost's first frame until the hook turns or catches: progress along the throw, m */
+  steps: number[];
+  /** index into steps of the hand-over frame (-1 = the server's hook never took over) */
+  handIdx: number;
+  /** speed along the throw of the server's head as drawn (what the blend rides on), first frames after the hand-over */
+  baseSpeeds: number[];
+  /** frames with no head drawn between the ghost's first frame and the turn */
+  gaps: number;
+  /** s from the hand-over until the head is the server's again (-1 = not within the throw) */
+  blendFor: number;
+  /** index into steps where the blend ended (steps.length if it ended after the hook turned) */
+  blendEndIdx: number;
+  /** after the hook turned or caught: distance from the drawn head to the server's, per frame, until the blend ends or the hook is gone */
+  turnGaps: number[];
+  v: number;
+}
+
+/**
+ * Our own hook online, the way GameClient draws it: a real GameSim stepping at 30 Hz, inputs and
+ * snapshots each delayed by a one-way latency plus jitter (in order, like a WebSocket), the online
+ * SnapshotBuffer driven by frameTick at the frame rate, and the OwnHookPredictor GameClient uses.
+ */
+function runOwnHook(
+  net: { up: number; down: number; jitter: number },
+  o: { fps?: number; throws?: number; targetAt?: number; stall?: { after: number; ms: number }; freeze?: { after: number; ms: number } } = {},
+): OwnThrow[] {
+  let seed = 5;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
+  for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
+  const a = sim.unitById.get(1)!;
+  const b = sim.unitById.get(2)!;
+  const stage = () => {
+    a.spawnProt = 0;
+    a.x = -20;
+    a.z = 0;
+    b.spawnProt = 0;
+    b.hp = b.maxHp;
+    b.x = -20;
+    b.z = o.targetAt ? -o.targetAt : 30; // in the path, or well out of it
+  };
+  stage();
+  const aim = { x: -20, z: -30 };
+  const tickMs = TICK_DT * 1000;
+  const frameMs = 1000 / (o.fps ?? 60);
+  const buffer = new SnapshotBuffer(false);
+  const own = new OwnHookPredictor();
+  const down: { at: number; s: Snapshot }[] = [];
+  const up: { at: number; i: PlayerInput }[] = [];
+  let lastDown = 0;
+  let lastUp = 0;
+  let serverAt = 1003.3;
+  let seq = 0;
+  let pressed = false;
+  let time = 0;
+  let last = -1;
+  let tickAcc = 0;
+  let you: YouSnap | null = null;
+  let body = { x: a.x, z: a.z };
+  let playing = false;
+  const presses = Array.from({ length: o.throws ?? 4 }, (_, i) => 3000 + i * 5137 + rnd() * 40);
+  const throws: OwnThrow[] = [];
+  let pi = 0;
+  let cur: (OwnThrow & { on: boolean; done: boolean; handAt: number; ox: number; oz: number; dx: number; dz: number; prevS: number; prevBase: number }) | null = null;
+  const tmp = { x: 0, z: 0 };
+  for (let now = 1000; now < presses[presses.length - 1] + 3000; now += frameMs) {
+    while (serverAt <= now) {
+      while (up.length && up[0].at <= serverAt) sim.queueInput(1, up.shift()!.i);
+      if (pi < presses.length && Math.abs(serverAt - (presses[pi] - 1000)) < tickMs / 2) stage();
+      sim.step();
+      let at = Math.max(lastDown, serverAt + net.down + rnd() * net.jitter);
+      // a stalled line (a Wi-Fi hiccup): what would arrive inside the window arrives at its end, all at once
+      const st = o.stall;
+      if (st) for (const pr of presses) if (at >= pr + st.after && at < pr + st.after + st.ms) at = pr + st.after + st.ms;
+      lastDown = at;
+      down.push({ at, s: sim.snapshotFor(1) });
+      serverAt += tickMs;
+    }
+    // a frozen page (a long GC pause, a slow machine) runs no frames and reads no messages; afterwards
+    // it reads everything that came in meanwhile at once
+    const fz = o.freeze;
+    let resumeAt = -1;
+    if (fz) {
+      // the key press itself lands just before the freeze
+      if (pi < presses.length && presses[pi] <= now && you && playing) {
+        own.press(you, time, aim, net.up + net.down, buffer.delay, (buffer.latest?.t ?? -1));
+        pressed = true;
+        if (cur) throws.push(cur);
+        cur = { steps: [], handIdx: -1, baseSpeeds: [], gaps: 0, blendFor: -1, blendEndIdx: -1, turnGaps: [], v: ghostHookParams(you).speed, on: false, done: false, handAt: 0, ox: 0, oz: 0, dx: 0, dz: 0, prevS: NaN, prevBase: NaN };
+        pi++;
+      }
+      if (presses.some((pr) => now >= pr + fz.after && now < pr + fz.after + fz.ms)) continue;
+      for (const pr of presses) if (now >= pr + fz.after + fz.ms) resumeAt = pr + fz.after + fz.ms;
+    }
+    while (down.length && down[0].at <= now) {
+      const d = down.shift()!;
+      buffer.push(d.s, Math.max(d.at, resumeAt));
+      if (d.s.you) you = d.s.you;
+      const me = d.s.u.find((u) => u.i === 1);
+      if (me) body = { x: me.x, z: me.z };
+    }
+    // the key goes down between frames: GameClient.localPress -> startGhost, with the time of the last frame
+    if (pi < presses.length && presses[pi] <= now && you && playing) {
+      own.press(you, time, aim, net.up + net.down, buffer.delay, (buffer.latest?.t ?? -1));
+      pressed = true;
+      if (cur) throws.push(cur);
+      cur = { steps: [], handIdx: -1, baseSpeeds: [], gaps: 0, blendFor: -1, blendEndIdx: -1, turnGaps: [], v: ghostHookParams(you).speed, on: false, done: false, handAt: 0, ox: 0, oz: 0, dx: 0, dz: 0, prevS: NaN, prevBase: NaN };
+      pi++;
+    }
+    // GameClient.frame, online
+    if (last < 0) last = now;
+    const rawMs = now - last;
+    last = now;
+    const dt = Math.min(100, Math.max(0, rawMs)) / 1000;
+    time += dt;
+    tickAcc += Math.min(500, Math.max(0, rawMs)) / 1000;
+    while (tickAcc >= TICK_DT) {
+      tickAcc -= TICK_DT;
+      lastUp = Math.max(lastUp, now + net.up + rnd() * net.jitter);
+      up.push({ at: lastUp, i: { seq: ++seq, mx: 0, mz: 0, ax: aim.x, az: aim.z, b: pressed ? Btn.Hook : 0 } });
+      if (pressed) own.sent((buffer.latest?.t ?? -1), net.up + net.down); // GameClient.localTick
+      pressed = false;
+    }
+    const f = buffer.sample(buffer.frameTick(now, rawMs, false));
+    if (!f) continue;
+    playing = f.newer.ph === 'playing';
+    // updateGhost, then updateHooks
+    const step = own.frame(f, 1, time, body, false);
+    let drawn: { x: number; z: number } | null = step.act === 'fly' && own.ghost ? ghostHead(own.ghost, time, { x: 0, z: 0 }) : null;
+    let mine: HookSnap | null = null;
+    for (const h of f.hooks) {
+      const at = own.head(h, 1, dt, tmp);
+      if (at && h.o === 1 && h.k === 0) {
+        drawn = { x: at.x, z: at.z };
+        mine = h;
+      }
+    }
+    if (!cur || cur.done) continue;
+    if (!cur.on) {
+      if (!drawn) continue;
+      cur.on = true;
+      const l = Math.hypot(aim.x - body.x, aim.z - body.z);
+      cur.dx = (aim.x - body.x) / l;
+      cur.dz = (aim.z - body.z) / l;
+      cur.ox = body.x;
+      cur.oz = body.z;
+    }
+    if (step.act === 'take') {
+      cur.handIdx = cur.steps.length;
+      cur.handAt = time;
+    }
+    if (cur.handIdx >= 0 && cur.blendFor < 0 && !own.blend) {
+      cur.blendFor = time - cur.handAt;
+      cur.blendEndIdx = cur.steps.length;
+    }
+    const turned = mine !== null && (mine.p !== 0 || mine.tg >= 0 || mine.ru >= 0);
+    if (turned || (!mine && cur.turnGaps.length)) {
+      // turned or caught: only the end of the blend is still watched, until it ends or the hook is in
+      if (!mine || cur.blendFor >= 0) cur.done = true;
+      else if (drawn) cur.turnGaps.push(Math.hypot(drawn.x - mine.x, drawn.z - mine.z));
+      continue;
+    }
+    if (!drawn) {
+      cur.gaps++;
+      continue;
+    }
+    const c = cur;
+    const along = (x: number, z: number) => (x - c.ox) * c.dx + (z - c.oz) * c.dz;
+    const sNow = along(drawn.x, drawn.z);
+    if (!Number.isNaN(cur.prevS)) cur.steps.push(sNow - cur.prevS);
+    cur.prevS = sNow;
+    if (mine && cur.handIdx >= 0) {
+      const base = along(mine.x, mine.z);
+      if (!Number.isNaN(cur.prevBase) && cur.baseSpeeds.length < 4) cur.baseSpeeds.push((base - cur.prevBase) / dt);
+      cur.prevBase = base;
+    }
+  }
+  if (cur) throws.push(cur);
+  return throws;
+}
+
+const around = (t: OwnThrow, fps: number) => t.steps.slice(Math.max(0, t.handIdx - 1), t.handIdx + 5).map((d) => (d * fps).toFixed(0)).join(', ');
+
+test('own hook online: when the server hook takes over, the head never stands still or moves back (finding 29)', () => {
+  // holdOk: on a jittery line the interpolated server head itself slows and speeds up; the head may then
+  // wait a few frames for it (it never goes back), and after the blend it is the interpolation's own motion
+  const nets = [
+    { name: 'LAN', up: 1, down: 1, jitter: 0, holdOk: false },
+    { name: '100 ms RTT', up: 50, down: 50, jitter: 10, holdOk: false },
+    { name: '150 ms RTT, 20 ms jitter', up: 75, down: 75, jitter: 20, holdOk: true },
+    { name: '60 ms RTT, 60 ms jitter', up: 30, down: 30, jitter: 60, holdOk: true },
+  ];
+  for (const n of nets) {
+    for (const fps of [60, 144]) {
+      const label = `${n.name} at ${fps} fps`;
+      const throws = runOwnHook(n, { fps, throws: 3 });
+      assert.equal(throws.length, 3, label);
+      for (const [i, t] of throws.entries()) {
+        const tl = `${label}, throw ${i + 1}`;
+        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
+        assert.equal(t.gaps, 0, `${tl}: ${t.gaps} frames drew no head (the ghost was dropped before the server hook took over)`);
+        // the server head the blend rides on must be moving: a hook only in the newer snapshot stands still
+        // (old code: exactly 0 on the first frame after the hand-over, on every line)
+        const base = n.holdOk ? t.baseSpeeds[0] : Math.min(...t.baseSpeeds);
+        assert.ok(base > 0.25 * t.v, `${tl}: right after the hand-over the server head stood still (${t.baseSpeeds.map((v) => v.toFixed(1)).join(', ')} m/s)`);
+        const blended = t.steps.slice(0, t.blendEndIdx); // the ghost, the hand-over and the blend
+        const worst = Math.min(...blended);
+        assert.ok(worst >= -1e-9, `${tl}: the head moved back ${(-worst * 100).toFixed(1)} cm in one frame (${around(t, fps)} m/s around the hand-over)`);
+        if (!n.holdOk) {
+          // one 144 fps frame can dip to nothing with the interpolation's own jitter; a hold you can see cannot
+          let run = 0;
+          let longest = 0;
+          for (const d of blended) {
+            run = d * fps < 0.02 * t.v ? run + 1 : 0;
+            longest = Math.max(longest, run);
+          }
+          assert.ok((longest * 1000) / fps <= 20, `${tl}: the head stood still for ${((longest * 1000) / fps).toFixed(0)} ms (${around(t, fps)} m/s around the hand-over)`);
+        }
+        assert.ok(Math.max(...blended) * fps <= t.v * 1.4, `${tl}: the head lurched forward at ${(Math.max(...t.steps) * fps).toFixed(1)} m/s`);
+        assert.ok(t.blendFor >= 0 && t.blendFor < 0.6, `${tl}: the head was still off the server's ${t.blendFor.toFixed(2)} s after the hand-over`);
+      }
+    }
+  }
+});
+
+test('own hook online: a hook that catches someone during the blend still lands on the server head', () => {
+  for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
+    for (const [i, t] of runOwnHook(n, { targetAt: 7, throws: 3 }).entries()) {
+      const tl = `${n.up + n.down} ms RTT, throw ${i + 1}`;
+      assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
+      assert.ok(Math.min(...t.steps) >= -1e-9, `${tl}: the head moved back while flying out`);
+      assert.ok(t.turnGaps.length > 0 || t.blendFor >= 0, `${tl}: the catch was never seen`);
+      // after the catch the drawn head closes on the server's every frame and is on it when the hook comes in
+      for (let k = 1; k < t.turnGaps.length; k++) assert.ok(t.turnGaps[k] <= t.turnGaps[k - 1] + 1e-9, `${tl}: after the catch the head drifted away from the server head (${t.turnGaps.map((g) => g.toFixed(2)).join(', ')} m)`);
+      if (t.turnGaps.length) assert.ok(t.turnGaps[t.turnGaps.length - 1] < 0.5, `${tl}: the hook came in ${t.turnGaps[t.turnGaps.length - 1].toFixed(2)} m off the server head`);
+    }
+  }
+});
+
+test('interpolation marks hooks it could not interpolate (only in the newer snapshot)', () => {
+  const hook = (i: number, z: number): HookSnap => ({ i, o: 1, k: 0, p: 0, x: 0, z, r: 0.45, pts: [], tg: -1, ru: -1, fx: 0 });
+  const snap = (t: number, h: HookSnap[]) => ({ t, u: [], h, r: [], ev: [] }) as unknown as Snapshot;
+  const buf = new SnapshotBuffer(false);
+  buf.push(snap(10, [hook(1, 0)]), 0);
+  buf.push(snap(11, [hook(1, -1), hook(2, -1)]), 33);
+  const f = buf.sample(10.5)!;
+  assert.deepEqual([...f.freshHooks], [2], 'hook 2 appeared in the newer snapshot only');
+  assert.equal(f.hooks.find((h) => h.i === 1)!.z, -0.5, 'hook 1 is interpolated');
+  assert.equal(f.hooks.find((h) => h.i === 2)!.z, -1, 'hook 2 stands at its newer position');
+  buf.push(snap(12, [hook(1, -2), hook(2, -2)]), 66);
+  assert.equal(buf.sample(11.5)!.freshHooks.size, 0, 'one tick later both hooks are interpolated');
+});
+
+test('own hook online: a snapshot stream that stalls mid-throw does not make the hook vanish and pop in behind', () => {
+  for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
+    // during the throw, or from before the press (the newest snapshot at the press is already old)
+    for (const stall of [{ after: 150, ms: 400 }, { after: 250, ms: 700 }, { after: -300, ms: 700 }, { after: -600, ms: 1000 }]) {
+      for (const [i, t] of runOwnHook(n, { throws: 3, stall }).entries()) {
+        const tl = `${n.up + n.down} ms RTT, ${stall.ms} ms stall, throw ${i + 1}`;
+        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
+        assert.equal(t.gaps, 0, `${tl}: the ghost vanished for ${t.gaps} frames before the server hook showed up`);
+        assert.ok(Math.min(...t.steps.slice(0, t.blendEndIdx)) >= -1e-9, `${tl}: the head moved back (${around(t, 60)} m/s around the hand-over)`);
+      }
+    }
+  }
+});
+
+test('own hook online: a page that freezes right after the press does not make the hook vanish and pop in behind', () => {
+  for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
+    for (const freeze of [{ after: 1, ms: 300 }, { after: 1, ms: 600 }, { after: 60, ms: 450 }]) {
+      for (const [i, t] of runOwnHook(n, { throws: 3, freeze }).entries()) {
+        const tl = `${n.up + n.down} ms RTT, ${freeze.ms} ms freeze ${freeze.after} ms after the press, throw ${i + 1}`;
+        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over (the ghost was dropped)`);
+        assert.equal(t.gaps, 0, `${tl}: the ghost vanished for ${t.gaps} frames before the server hook showed up`);
+        assert.ok(Math.min(...t.steps.slice(0, t.blendEndIdx)) >= -1e-9, `${tl}: the head moved back (${around(t, 60)} m/s around the hand-over)`);
+      }
+    }
+  }
+});
+
+test('hand-over blend: a hook that bounces or steers back while flying out is followed, not held', () => {
+  const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
+  for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
+  const you = sim.snapshotFor(1).you!;
+  const body = { x: -20, z: 0 };
+  const dt = 1 / 60;
+  // ricochet or Boing Barb: the bounce adds a bend point; Bendy Eel: the steer bit, a bend point only later
+  const cases: { name: string; turned: Partial<HookSnap> }[] = [
+    { name: 'ricochet bounce', turned: { pts: [-20, -6], fx: 2 } },
+    { name: 'Bendy Eel turning back', turned: { fx: 4 } },
+  ];
+  for (const c of cases) {
+    const own = new OwnHookPredictor();
+    own.press(you, 10, { x: -20, z: -30 }, 100, 2.5, 1000);
+    const g = own.ghost!;
+    own.frame({ tick: 1000, hooks: [], freshHooks: new Set() }, 1, g.start + 0.01, body, false); // the ghost leaves the hand
+    let t = g.start + 0.2; // the ghost is about 6 m out, the server head (drawn in the past) about 2 m
+    let hz = -3;
+    const hook = (z: number, extra: Partial<HookSnap> = {}): HookSnap => ({ i: 60, o: 1, k: 0, p: 0, x: -20, z, r: 0.45, pts: [], tg: -1, ru: -1, fx: c.turned.fx ?? 0, ...extra });
+    assert.equal(own.frame({ tick: 1006, hooks: [hook(hz)], freshHooks: new Set() }, 1, t, body, false).act, 'take', `${c.name}: setup`);
+    const dur = own.blend!.dur;
+    const out = { x: 0, z: 0 };
+    own.head(hook(hz), 1, dt, out); // the hand-over frame
+    let off = Infinity;
+    for (let k = 1; t < g.start + 0.2 + dur + 3 * dt; k++) {
+      t += dt;
+      // two more frames out, then it comes back along the throw, still flying out (phase 0)
+      hz += k <= 2 ? -0.5 : 0.5;
+      const h = hook(hz, k <= 2 ? {} : c.turned);
+      own.frame({ tick: 1006 + k, hooks: [h], freshHooks: new Set() }, 1, t, body, false);
+      own.head(h, 1, dt, out);
+      off = Math.hypot(out.x - h.x, out.z - h.z);
+    }
+    assert.ok(off < 1e-6, `${c.name}: ${off.toFixed(2)} m off the server head after the blend time (the head was held at its furthest point)`);
+    assert.equal(own.blend, null, `${c.name}: the blend never ended`);
+  }
+});
+
+test('hand-over rules: wait for an interpolated server hook, but never forever, and never draw our hook twice', () => {
+  const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
+  for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
+  const you = sim.snapshotFor(1).you!;
+  const mineH: HookSnap = { i: 50, o: 1, k: 0, p: 0, x: -20, z: -3, r: 0.45, pts: [], tg: -1, ru: -1, fx: 0 };
+  const theirs: HookSnap = { ...mineH, i: 51, o: 2, z: 3 };
+  const body = { x: -20, z: 0 };
+  const at = (tick: number, hooks: HookSnap[] = [], fresh: number[] = []) => ({ tick, hooks, freshHooks: new Set(fresh) });
+  const own = new OwnHookPredictor();
+  // pressed at render tick 997 with snapshot 1000 the newest, 100 ms round trip
+  own.press(you, 10, { x: -20, z: -30 }, 100, 2.5, 1000);
+  const g = own.ghost!;
+  assert.equal(own.frame(at(997), 1, 10.05, body, false).act, 'before', 'winding up');
+  assert.equal(own.frame(at(998), 1, g.start + 0.05, body, false).act, 'fly');
+  const fresh = at(1004, [mineH, theirs], [50, 51]);
+  assert.equal(own.frame(fresh, 1, g.start + 0.1, body, false).act, 'fly', 'the server hook is only in the newer snapshot: keep flying the ghost');
+  assert.equal(own.head(mineH, 1, 1 / 60, { x: 0, z: 0 }), null, 'our server hook is not drawn while the ghost still is');
+  assert.ok(own.head(theirs, 1, 1 / 60, { x: 0, z: 0 }), 'a new hook of someone else is drawn as usual');
+  assert.equal(own.frame({ ...fresh, tick: 1005 }, 1, g.start + 0.1 + HANDOVER_GRACE - 0.01, body, false).act, 'fly', 'still waiting for it to interpolate');
+  assert.equal(own.frame({ ...fresh, tick: 1005 }, 1, g.start + 0.1 + HANDOVER_GRACE + 0.01, body, false).act, 'take', 'a hook that never interpolates (the stream stalled) still takes over');
+  assert.equal(own.ghost, null);
+  assert.ok(own.blend, 'and blends from where the ghost was');
+
+  // no hook comes: the cast failed on the server
+  own.press(you, 20, { x: -20, z: -30 }, 100, 2.5, 2000);
+  const h = own.ghost!;
+  assert.ok(h.deadTick >= 2000 + 3 + 4, `the render-clock deadline ${h.deadTick} leaves no room for a round trip and the wind-up`);
+  assert.equal(own.frame(at(h.deadTick - 1), 1, h.start + 0.05, body, false).act, 'fly');
+  assert.equal(own.frame(at(h.deadTick + 1), 1, h.deadline - 0.01, body, false).act, 'fly', 'never dropped before the client-clock deadline');
+  // the snapshot stream stalls: the render clock stands still before the tick the hook should be on
+  assert.equal(own.frame(at(h.deadTick - 3), 1, h.deadline + 0.5, body, false).act, 'fly', 'a stalled stream dropped the ghost, and the hook would pop in behind it');
+  assert.equal(own.frame(at(h.deadTick + 1), 1, h.deadline + 0.6, body, false).act, 'drop', 'the picture passed the tick the hook should be on: the cast failed');
+  // the stream comes back after a long stall and our hook shows up only in the newer snapshot: it is
+  // still given its tick to interpolate, counted from when it showed up, not from the deadline
+  own.press(you, 25, { x: -20, z: -30 }, 100, 2.5, 2500);
+  const lg = own.ghost!;
+  assert.equal(own.frame(at(lg.deadTick - 4), 1, lg.start + 0.05, body, false).act, 'fly');
+  const late = at(lg.deadTick - 2, [mineH], [50]);
+  assert.equal(own.frame(late, 1, lg.deadline + 1, body, false).act, 'fly', 'a hook that shows up late is taken over before it interpolates');
+  assert.equal(own.frame({ ...late, freshHooks: new Set<number>() }, 1, lg.deadline + 1.02, body, false).act, 'take');
+  // a stream that never comes back still lets the ghost go
+  own.press(you, 30, { x: -20, z: -30 }, 100, 2.5, 3000);
+  assert.equal(own.frame(at(2999), 1, own.ghost!.deadline + GHOST_STALL_CAP + 0.01, body, false).act, 'drop');
+  // knocked, hooked or killed: gone at once
+  own.press(you, 40, { x: -20, z: -30 }, 100, 2.5, 4000);
+  assert.equal(own.frame(at(3999), 1, own.ghost!.start + 0.05, body, true).act, 'drop');
 });
 
 // ---------------------------------------------------------------------------------------------

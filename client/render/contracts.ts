@@ -96,6 +96,17 @@ export interface Engine {
   render(): void;
   resize(width: number, height: number): void;
   dispose(): void;
+  /**
+   * Cinematic mode (client/render/cinematic.ts; the Steam build's "Epic" setting, never offered in the
+   * browser). While on, `quality` reports 'ultra'. Off by default; ?cinematic in the URL turns it on.
+   */
+  readonly cinematic?: boolean;
+  setCinematic?(on: boolean): void;
+  /**
+   * Cinematic: exact lamp positions for the lantern lights (world metres, linear colour, candela, range).
+   * null = derive them from the map's lamp props and decor (the default).
+   */
+  setLanternSources?(list: { x: number; y: number; z: number; color: THREE.Color; intensity: number; range: number; seed: number }[] | null): void;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -256,7 +267,7 @@ export type SfxId =
   | 'rune' | 'runeSpawn' | 'mineArm' | 'mineBoom' | 'buy' | 'deny' | 'pie' | 'puff'
   | 'tideHorn' | 'iceCrack' | 'hazardBurst' | 'countdown' | 'go' | 'victory' | 'defeat'
   | 'uiClick' | 'uiHover' | 'uiOpen' | 'chat' | 'footstep'
-  | 'purchase' | 'equip' | 'listingSold' | 'walletLinked' | 'powerHook';
+  | 'purchase' | 'equip' | 'listingSold' | 'powerHook';
 
 export type MusicMood = 'menu' | 'match' | 'tense' | 'victory' | 'defeat' | 'none';
 

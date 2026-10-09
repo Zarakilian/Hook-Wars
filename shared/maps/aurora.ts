@@ -115,14 +115,16 @@ export const aurora: MapDef = {
   atmosphere: {
     timeOfDay: 'night',
     sunDir: [-0.3, 0.52, -0.5],
-    sunColor: 0xa8c4ff,
-    sunIntensity: 1.5,
+    // a whiter moon than Frostfang's: the snow caps read white, the glowing ice and lanterns carry the colour
+    sunColor: 0xc2d4ff,
+    sunIntensity: 1.7,
     skyTop: 0x070c26,
     skyHorizon: 0x284a78,
     groundAmbient: 0x283058,
-    ambientIntensity: 1.25,
-    fogColor: 0x4a5c8e,
-    fogDensity: 0.011,
+    ambientIntensity: 1.1,
+    // a darker, thinner sea smoke than Frostfang's haze: the glowing ice and the dark leads keep their contrast
+    fogColor: 0x34426a,
+    fogDensity: 0.0085,
     weather: 'snow',
     aurora: true,
     waterShallow: 0x2aa6c0,
@@ -138,8 +140,9 @@ export const aurora: MapDef = {
     grass: [0xeef3f9, 0xe2eaf4, 0xf8fbfe, 0xd6e2f0, 0xe8eff7],
     dirt: [0x8a9cb4, 0x7c8ea8, 0x9aaac0],
     bank: [0x9cc8e2, 0x86b8da, 0xb2d6ec, 0x8cbcdc],
-    bed: [0x2c4a5e, 0x24404f, 0x34566a],
-    dryBed: [0x8696a6, 0x788898, 0x98a8b8, 0x6e7e90],
+    bed: [0x1c3a46, 0x16323c, 0x24444f],
+    // the drained harbour floor: dark grey-green silt (the biome adds black stones and frost)
+    dryBed: [0x4a5458, 0x3e484c, 0x565f5e, 0x353f43],
     cliff: [0x8ea2b8, 0x7c90a6, 0xa4b6ca],
     baseHeight: 1.3,
     noiseAmp: 0.17,

@@ -61,6 +61,24 @@ test('the ring hides on corpses, drowning and see-through (stealthed) units', ()
   g.dispose();
 });
 
+test('the ring never floats: hidden while the unit is off the ground (dragged, knocked, grappling)', () => {
+  // GameClient puts the root at ground + the sim's unit height: 0.35 m while dragged on a hook,
+  // an arc up to about 1.4 m while knocked back or flying to a grapple anchor
+  for (const family of FAMILIES) {
+    const g = view(family, 0, 'game');
+    const ring = g.root.getObjectByName('pudgy-team-ring')!;
+    for (const [state, label] of [[UnitState.Hooked, 'dragged on a hook'], [UnitState.Knocked, 'knocked back'], [UnitState.Grappling, 'flying to a grapple']] as const) {
+      g.update(1 / 60, alive);
+      assert.equal(ring.visible, true, `${family}: shown on the ground`);
+      g.update(1 / 60, { ...alive, state, speed: 8 });
+      assert.equal(ring.visible, false, `${family} ${label}: hidden`);
+    }
+    g.update(1 / 60, { ...alive, state: UnitState.Casting, castKind: 'hook' });
+    assert.equal(ring.visible, true, `${family}: casting is rooted on the ground, ring shown`);
+    g.dispose();
+  }
+});
+
 /** surf.y > 1.5 flags a team voxel (grid.ts TEAM_BIT); returns flagged and unflagged vertex colours (sRGB 0..1). */
 function flagged(root: THREE.Object3D): { team: THREE.Color[]; other: number } {
   const team: THREE.Color[] = [];

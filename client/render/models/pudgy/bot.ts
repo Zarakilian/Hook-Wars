@@ -1,24 +1,25 @@
-// Butcher-Bot (ref03 default look, ref10 bare base): a riveted steel barrel-belly robot on short
+// Dredge-Bot (ref03 default look, ref10 bare base): a riveted steel barrel-belly robot on short
 // piston legs with a small dome head and a glowing visor. The right arm is always a chunky crane
 // arm (part of the body); the hook skin hangs from its pulley. Bare base: clean grey steel with
 // yellow bands, plain dome, plain feet. Default set: grille dome, rusted hazard plates (porthole,
 // red valve, pipes), crane hook, twin smokestacks puffing steam, stomper feet.
 // Team colour: painted stripes on both shoulder pauldrons and a band round each thigh.
 import type { PudgyPalette } from '../../contracts.ts';
-import { dropGrid, part, partMirrored, resOf, ring, teamCloth, type Look, type TeamCols } from './common.ts';
+import { dropGrid, hangPoint, part, partMirrored, resOf, ring, teamCloth, type Look, type TeamCols } from './common.ts';
 import { buildRes, CH, hashVox, hv, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
-import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, Skeleton, V3 } from './types.ts';
+import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, RestPose, Skeleton, V3 } from './types.ts';
 
 // ---------------------------------------------------------------------------------------------
 // Palette (ref03 / ref10)
 // ---------------------------------------------------------------------------------------------
 
-// dark gunmetal-brown riveted steel (ref10 belly panels #8f7160 / #7c6653 under studio light); the
-// old light-grey set (STEEL 0x948c83...) rendered at about twice the reference luminance (finding 34)
-const STEEL = 0x625649;
-const STEEL_L = 0x786a5c;
-const STEEL_D = 0x3e362f;
-const GUN = 0x4a4744;
+// warm taupe riveted steel panels (ref10 belly panels #8f7160 / #7c6653) between near-black
+// gunmetal straps; the old light-grey set (STEEL 0x948c83...) with mid-grey straps rendered at about
+// twice the reference luminance and with little panel-to-strap contrast (finding 34)
+const STEEL = 0x6e6258;
+const STEEL_L = 0x857868;
+const STEEL_D = 0x463e38;
+const GUN = 0x3c3936;
 /** weathered, rust-warm hazard-plate steel (default body, crane boom and housing; ref03) */
 const PLATE = 0x5e4a3c;
 /** darker rusty plate (grille dome, stomper feet) */
@@ -44,6 +45,15 @@ const RUBBER = 0x24262b;
 const RUBY = 0xe0203a;
 
 const SCALE = 0.92;
+
+const REST: RestPose = { armSplay: 0.22, armFwd: -0.12, elbow: -0.3, legSplay: 0.03, hunch: 0, headPitch: 0, jawRest: 0, holdElbow: -0.65 };
+/**
+ * The hook hangs on its cable from the crane pulley and swings about it. The cable top sits inside
+ * the crane arm, 15 cm straight above the hand socket in the idle hold pose, so the hook and its
+ * shackle hang clear of the ground in every idle and run pose; it is fixed in the forearm frame
+ * (hangPoint), so a raised or swinging crane arm never shows it (hookClearance.test.ts)
+ */
+const HANG = { pos: hangPoint(REST, 0.15), rot: [Math.PI / 2, 0, 0] } as const;
 
 const BELLY_C: V3 = [0, 19.5, 1];
 const BELLY_R: V3 = [12.2, 11.5, 11.6];
@@ -381,7 +391,7 @@ function buildHat(id: string): RGrid {
       return g;
     }
     case 'chrome_crown': {
-      // Limited: a mirror-chrome crown with ruby lamps
+      // premium: a mirror-chrome crown with ruby lamps
       g.premium(() => {
         g.on(CH.iron, () => {
           ring(g, 0, cz, 4.8, 6.2, 35, 36, (x, y, z) => shade(CHROME, 0.92 + hv(x, y, z, 40) * 0.1));
@@ -736,7 +746,7 @@ export function buildBot(l: Look): FamilyBuild {
   return {
     family: 'bot',
     sk,
-    rest: { armSplay: 0.22, armFwd: -0.12, elbow: -0.3, legSplay: 0.03, hunch: 0, headPitch: 0, jawRest: 0, holdElbow: -0.65 },
+    rest: REST,
     style: { kind: 'servo', stride: 2, bounce: 0.06, legSwing: 0.55, armSwing: 0.5, roll: 0.06, sway: 0.03, lean: 0.08, stomp: 0.6, breath: 0.4 },
     hatMode: hm.mode,
     hatSpin: hm.spin,
@@ -745,12 +755,10 @@ export function buildBot(l: Look): FamilyBuild {
     parts,
     palette: botPalette(l),
     scale: SCALE,
-    // the hook hangs on its cable from the crane pulley and swings. The cable starts inside the
-    // pulley block (15 cm above the hand socket), so the hook and its shackle hang clear of the
-    // ground in every idle and run pose (hookClearance.test.ts)
+    // the hook hangs on its cable from the crane pulley and swings (HANG)
     hookDangles: true,
-    hookMount: { pos: [0, 0.15, 0], rot: [Math.PI / 2, 0, 0] },
-    hangMount: { pos: [0, 0.15, 0], rot: [Math.PI / 2, 0, 0] },
+    hookMount: HANG,
+    hangMount: HANG,
     gripMount: { pos: [0, -0.05, 0.02], rot: [Math.PI / 2, 0, 0] },
     puffs,
     corpseLift: 0.62,

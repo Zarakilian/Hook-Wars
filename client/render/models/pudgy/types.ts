@@ -116,7 +116,10 @@ export interface PuffEmitter {
 
 /** How the held hook (fx skin or the built-in fallback) sits in the right hand socket. */
 export interface HookMount {
-  /** offset from the hand socket in metres (rig scale already compensated) */
+  /**
+   * offset from the hand socket in metres (rig scale already compensated), in the forearm frame: a
+   * dangling hook swings about this point and it stays fixed in the forearm (common.ts hangPoint)
+   */
   pos: V3;
   /** Euler XYZ rotation that turns the skin's +Z (business end) where it should point */
   rot: V3;
@@ -145,6 +148,6 @@ export interface FamilyBuild {
   puffs: PuffEmitter[];
   /** lying on its back, how high the belly centre sits (m, before scale) */
   corpseLift: number;
-  /** a Limited item is worn: premium sparkles on */
+  /** a premium item is worn: premium sparkles on */
   premium: boolean;
 }

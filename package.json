@@ -13,7 +13,7 @@
     "build": "vite build",
     "start": "node --env-file-if-exists=.env server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\"",
+    "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\" \"client/**/*.test.ts\"",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {

@@ -714,7 +714,11 @@ export class GameSim {
 
   private postMove(u: Unit, dt: number): void {
     if (u.state === UnitState.Dead) return;
-    deckLayer(this.world, this.river, u, u.tickX, u.tickZ, u.state === UnitState.Hooked || u.state === UnitState.Grappling);
+    // A hooked or grappling body keeps its layer along its path like a walker: dragged or flying (at most
+    // 1.4 m up, under the 1.5 to 3 m decks) in from the open bed it is under a deck, caught on a deck or
+    // taking off from one it stays on top. A hook or grapple broken early drops it where it is; a delivery
+    // (finishHook) or a grapple landing (grapplePull) sets the layer from the caster or the anchor.
+    deckLayer(this.world, this.river, u, u.tickX, u.tickZ);
     const inWaterZone = this.world.channelFor(u.x, u.z, u.under) > 0;
     const free = u.state === UnitState.Alive || u.state === UnitState.Casting || u.state === UnitState.Drowning;
     if (free) {
@@ -1305,7 +1309,9 @@ export class GameSim {
         if (owner.state === UnitState.Grappling) {
           owner.state = UnitState.Alive;
           owner.y = 0;
-          owner.under = false; // dropped out of the air: on top of a deck (deckLayer keeps it from here)
+          // dropped out of the air where it is: it keeps the layer of its flight path (on a deck it took off
+          // from, or on the bed under one it flew in under from the open bed)
+          if (!platformAt(this.map, owner.x, owner.z)) owner.under = false;
           owner.tickX = owner.x;
           owner.tickZ = owner.z;
         }
@@ -1321,7 +1327,9 @@ export class GameSim {
         t.x = tmpPos.x;
         t.z = tmpPos.z;
         t.y = 0;
-        t.under = false; // dropped from the chain: on top of a deck (deckLayer keeps it from here)
+        // dropped from the chain where it was dragged: it keeps its layer (on the deck, or on the bed under it),
+        // unless resolveCircle pushed it out of the footprint, where no layer applies
+        if (!platformAt(this.map, t.x, t.z)) t.under = false;
         t.tickX = t.x;
         t.tickZ = t.z;
         if (t.state === UnitState.Dead) this.emit({ e: 'corpse', v: t.id, x: q2(t.x), z: q2(t.z) });

@@ -616,7 +616,7 @@ export function withSurf(geo: THREE.BufferGeometry, surf: SurfId, heat = 0): THR
 }
 
 // ---------------------------------------------------------------------------------------------
-// Twinkles: camera-facing star glints baked at model-space points (Limited items)
+// Twinkles: camera-facing star glints baked at model-space points (premium items)
 // ---------------------------------------------------------------------------------------------
 
 const TWINKLE_VERT = /* glsl */ `

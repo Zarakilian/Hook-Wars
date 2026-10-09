@@ -2208,7 +2208,7 @@
 }
 
 /* ------------------------------------------------------------------------------------------
-   Main menu v2: chip on top, logo and nav on the left, your Pudgy on a lantern-lit post
+   Main menu v2: chip on top, logo and nav on the left, your character on a lantern-lit post
    ------------------------------------------------------------------------------------------ */
 .hw-ui .scr-menu {
   display: grid;
@@ -2358,7 +2358,7 @@
   font-size: var(--micro);
 }
 
-/* right: your Pudgy on its post */
+/* right: your character on its post */
 .hw-ui .menu-right {
   position: relative;
   display: flex;
@@ -2749,10 +2749,32 @@
   overflow: hidden;
 }
 
+/* Squarer screens (5:4 up to just below 3:2, e.g. 1280x1024, 1024x768, 1400x1000): four maps per
+   row, flatter art, and the blurb only in the card's tooltip (it is already there). From just above
+   4:3 up to 3:2 the whole form then fits; at 4:3 and 5:4 the Rules still need a short scroll, but far
+   less than with two maps per row. Narrower and portrait screens keep the two-column grid; 3:2 and
+   wider use the 8-map row below, with blurbs. */
+@media (min-aspect-ratio: 5/4) and (max-aspect-ratio: 1499/1000) {
+  .cfg-solo .map-cards,
+  .cfg-room .map-cards {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .cfg-solo .mc-art,
+  .cfg-room .mc-art {
+    aspect-ratio: 3.6 / 1;
+  }
+
+  .cfg-solo .mc-blurb,
+  .cfg-room .mc-blurb {
+    display: none;
+  }
+}
+
 /* Wide screens (16:9 and 16:10): all 8 maps in one row, so every rule, the river and hazard pickers
    and Start fit on one screen at 1280x720 and 1920x1080 alike (the root font scales with the
    viewport, so a layout that overflows at 720p overflows at 1080p too). The mood chip keeps its
-   colour dots; its label is the card's tooltip. 4:3 screens keep the two-column grid above. */
+   colour dots; its label is the card's tooltip. */
 @media (min-aspect-ratio: 3/2) {
   .cfg-solo .map-cards,
   .cfg-room .map-cards {

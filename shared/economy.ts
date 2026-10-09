@@ -108,7 +108,7 @@ export function marketLockedText(a: { created?: number; stats: { matches: number
 export type EconomyClientMsg =
   | { t: 'equip'; family: FamilyId; loadout: Loadout }
   | { t: 'storeBuy'; item: string }
-  // the market list, and live updates to it for a couple of minutes (send it again to keep them coming)
+  // the market list, and live updates to it for the next 60 s (send it again to keep them coming)
   | { t: 'market' }
   | { t: 'marketSell'; instance: string; price: Price }
   | { t: 'marketBuy'; listing: string }

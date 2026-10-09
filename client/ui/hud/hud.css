@@ -2706,6 +2706,15 @@ table.stats tr.you td {
   pointer-events: none;
 }
 
+/* the name sits outside .buff, so it needs its own pop on arrival and blink near the end */
+.buff-col .bf-name {
+  animation: pop 0.35s var(--spring);
+}
+
+.buff-col.ending .bf-name {
+  animation: buffEnd 0.4s steps(2) infinite;
+}
+
 /* v2: Pearls earned, on the end screen */
 .end-pearls {
   display: flex;

@@ -4,9 +4,9 @@
 // rope hook. Team colour: a rolled neckerchief with a back flap (head grid, survives every hat)
 // and wristbands on both forearms. Never blood: the apron carries rust, grime and paint.
 import type { PudgyPalette } from '../../contracts.ts';
-import { dropGrid, knit, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
+import { dropGrid, hangPoint, knit, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
 import { buildRes, CH, hashVox, hv, jitter, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
-import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, Skeleton, V3 } from './types.ts';
+import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, PuffEmitter, RestPose, Skeleton, V3 } from './types.ts';
 
 // ---------------------------------------------------------------------------------------------
 // Palette (sampled from the reference renders)
@@ -93,8 +93,12 @@ const SK: Skeleton = {
   top: A.top + UP + HUP + HAT,
 };
 
-/** the hook hangs straight down from the fist on its rope (curve facing front) */
-const HANG = { pos: [0, -0.02, 0], rot: [Math.PI / 2, 0, 0] } as const;
+const REST: RestPose = { armSplay: 0.27, armFwd: -0.14, elbow: -0.32, legSplay: 0.04, hunch: 0, headPitch: 0.05, jawRest: 0, holdElbow: -1.05, holdShoulder: -0.45 };
+/**
+ * the hook hangs straight down from the fist on its rope (curve facing front); the rope top sits
+ * 2 cm below the socket in the hold pose, fixed in the forearm (hangPoint)
+ */
+const HANG = { pos: hangPoint(REST, -0.02), rot: [Math.PI / 2, 0, 0] } as const;
 /** harpoons: gripped in the fist, pointing forward and a little down */
 const GRIP = { pos: [0, 0.03, 0.03], rot: [1.3, 0, Math.PI / 2] } as const;
 
@@ -837,7 +841,7 @@ function buildHook(id: string): RGrid {
       return g;
     }
     case 'golden_harpoon': {
-      // Limited: gilded harpoon with a pearl inlay
+      // premium: gilded harpoon with a pearl inlay
       const gold: ColorFn = (x, y, z) => shade(0xf0c34a, 0.85 + hv(x, y, z, 132) * 0.3);
       g.premium(() => {
         g.on(CH.cloth, () => g.tube(0, 0, 0, 0, 0, 5, 0.6, (x, y, z) => shade(0xe8dcc0, 0.85 + hv(x, y, z, 131) * 0.2)));
@@ -976,7 +980,7 @@ export function buildBrawler(l: Look): FamilyBuild {
   return {
     family: 'brawler',
     sk,
-    rest: { armSplay: 0.27, armFwd: -0.14, elbow: -0.32, legSplay: 0.04, hunch: 0, headPitch: 0.05, jawRest: 0, holdElbow: -1.05, holdShoulder: -0.45 },
+    rest: REST,
     style: { kind: 'swagger', stride: 1.9, bounce: 0.09, legSwing: 0.7, armSwing: 0.6, roll: 0.13, sway: 0.1, lean: 0.12, stomp: 0.5, breath: 0.32 },
     hatMode: hm.mode,
     hatSpin: hm.spin,

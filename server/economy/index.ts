@@ -2,9 +2,10 @@
 //   ECONOMY=off            -> the null economy (default items only, economy messages refused)
 //   otherwise              -> accounts, Pearls, the Pearl store and the Pearl market, kept in
 //                             <ECONOMY_DATA_DIR>/economy.db (./store.ts)
-// If the data folder is held by another server, or its data cannot be read, this run gets the null
-// economy too: it never runs from memory, because a memory-only run would hand every returning
-// player a brand-new account. See server/economy/config.ts and docs/economy.md.
+// If the data folder is held by another server, or cannot be opened, or its data cannot be read
+// (a damaged page included), this run gets the null economy too, with an [economy] ERROR log line.
+// It never runs from memory, because a memory-only run would hand every returning player a
+// brand-new account, and it never stops the game server from starting. See docs/economy.md.
 import type { ServerConfig } from '../config.ts';
 import { createNullEconomy, type ServerEconomy } from './api.ts';
 import { loadEconomyConfig, type EconomyConfig } from './config.ts';
@@ -37,7 +38,8 @@ export function createEconomyFromConfig(ec: EconomyConfig, deps: EconomyDeps = {
     } else if (err instanceof StoreVersionError) {
       loud(`${err.message} The economy is off until this server is updated.`);
     } else {
-      throw err;
+      // e.g. a data folder that cannot be created: the game still runs, and still hands out no tokens
+      loud(`the economy data in ${ec.dataDir} could not be opened (${(err as Error).name}: ${(err as Error).message}). This server runs WITHOUT accounts, the Store or the Market until that is fixed (players keep their saved tokens).`);
     }
     return createNullEconomy(UNAVAILABLE);
   }

@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { COSMETICS, RARITIES } from '../../../shared/cosmetics.ts';
-import { fmtPearls, fmtPrice, fmtUsd, marketFee, marketTradable, premiumOffer, RARITY_INFO, sellerReceives, sourceLine, STEAM_ONLY } from '../econ.ts';
+import { MARKET_MIN_AGE_MS, MARKET_MIN_MATCHES } from '../../../shared/economy.ts';
+import { fmtPearls, fmtPrice, fmtUsd, marketFee, marketLockNote, marketTradable, premiumOffer, RARITY_INFO, sellerReceives, sourceLine, STEAM_ONLY } from '../econ.ts';
 
 const premium = COSMETICS.filter((c) => c.rarity === 'premium');
 
@@ -46,4 +47,15 @@ test('market prices are Pearls with the shared 5% fee', () => {
   assert.equal(marketFee({ amount: 2501 }), 126);
   assert.equal(sellerReceives({ amount: 2501 }), 2375);
   assert.equal(marketFee({ amount: 50 }), 3);
+});
+
+test('the Market says up front when a new account cannot trade yet (same rule as the server)', () => {
+  const now = 1_800_000_000_000;
+  const fresh = { created: now - 3600_000, stats: { matches: 2, wins: 0, kills: 0, hooksHit: 0 } };
+  const ready = { created: now - MARKET_MIN_AGE_MS - 1, stats: { matches: MARKET_MIN_MATCHES, wins: 0, kills: 0, hooksHit: 0 } };
+  assert.equal(marketLockNote('local', fresh, now), null, 'offline: the offline note covers it');
+  assert.equal(marketLockNote('server', null, now), null, 'still signing in');
+  const note = marketLockNote('server', fresh, now);
+  assert.ok(note && note.includes('23 more hours') && note.includes('8 more online matches'), String(note));
+  assert.equal(marketLockNote('server', ready, now), null);
 });

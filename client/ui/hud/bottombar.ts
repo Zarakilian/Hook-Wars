@@ -329,6 +329,8 @@ export class BottomBar {
       setVar(el.el, '--p', Math.max(0, Math.min(1, b.left / max)).toFixed(3));
       setText(el.secs, String(Math.max(0, Math.ceil(b.left))));
       setClass(el.el, 'ending', b.left < 2);
+      // a named power-up's label sits outside the ring, so the column blinks with it too
+      if (el.root !== el.el) setClass(el.root, 'ending', b.left < 2);
     }
     for (const [k, el] of this.buffs) {
       if (el.seen === stamp) continue;

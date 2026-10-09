@@ -87,9 +87,13 @@ export function itemFrameBox(root: THREE.Object3D, item: readonly THREE.Mesh[]):
  * (or if its shape changes) nothing happens and the pose stays slightly random.
  */
 export function pinPose(view: PudgyView, seed = THUMB_SEED): boolean {
-  const a = (view as unknown as { _anim?: { seed?: unknown } })._anim;
+  const a = (view as unknown as { _anim?: { seed?: unknown; phase?: unknown; nextBlink?: unknown; nextLook?: unknown } })._anim;
   if (!a || typeof a.seed !== 'number') return false;
   a.seed = seed;
+  // the animator derives these from its seed in its constructor (walk phase, first blink and glance)
+  if (typeof a.phase === 'number') a.phase = (seed % 13) / 13;
+  if (typeof a.nextBlink === 'number') a.nextBlink = 1 + (seed % 7) * 0.4;
+  if (typeof a.nextLook === 'number') a.nextLook = 1.5 + (seed % 5) * 0.6;
   return true;
 }
 

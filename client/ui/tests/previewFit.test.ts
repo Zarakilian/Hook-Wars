@@ -98,6 +98,8 @@ test('the menu show-offs leave out the grapple (it throws the hook over the head
 });
 
 test('without the guard the spawn pop leaves the frame (the bug), with it every pose stays inside', () => {
+  // one view per family held for the whole test keeps the shared part cache warm (each run builds fast)
+  const keep = FAMILIES.map((f) => createPudgy({ family: f, loadout: DEFAULT_LOADOUT[f], team: 0, name: 'keep', isLocal: true, quality: 'high', detail: 'showcase' }));
   const before = Math.max(...FAMILIES.map((f) => run(f, 'spawn', 0.5, false)));
   assert.ok(before > 1, `old framing peaks at NDC ${before.toFixed(3)}, past the top edge`);
   console.log(`old framing: spawn pop peaks at NDC ${before.toFixed(3)} (1 = top edge)`);
@@ -109,4 +111,5 @@ test('without the guard the spawn pop leaves the frame (the bug), with it every 
       }
     }
   }
+  for (const v of keep) v.dispose();
 });

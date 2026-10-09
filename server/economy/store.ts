@@ -13,8 +13,10 @@
 // stale or name a reused pid. A second server on the same folder gets StoreLockedError, and
 // ./index.ts runs it with no economy (no accounts, no tokens) instead of from memory.
 //
-// It never starts empty over data it could not read. A database that does not open, or an old
-// economy.json that does not parse, raises StoreUnreadableError and the file is left untouched.
+// It never starts empty over data it could not read. A database that does not open, that fails
+// PRAGMA quick_check (a damaged page anywhere, indexes included), or whose rows cannot be read, or
+// an old economy.json that does not parse, raises StoreUnreadableError. The file and the last good
+// economy.db.bak are left untouched.
 //
 // Empty guest accounts (no Pearls, no items, no matches) are never written: the browser keeps its
 // token, and a returning empty guest is simply bound to a fresh empty account again.
@@ -23,7 +25,7 @@
 // behind) is imported once, then renamed to economy.json.imported-<time>. Wallet addresses, orders
 // and edition serials from the old Solana build are not imported.
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Loadout } from '../../shared/cosmetics.ts';
 import type { Listing, OwnedItem } from '../../shared/economy.ts';
@@ -182,6 +184,10 @@ export class AccountStore {
       sql.exec('PRAGMA synchronous = FULL');
       // The first write takes the exclusive lock, and EXCLUSIVE mode keeps it until close.
       sql.exec('BEGIN IMMEDIATE');
+      // A damaged page anywhere, including an index that reading the rows never touches, stops the
+      // start here: before anything is written, and before the start-up backup replaces the last
+      // good one. About 60 ms at 20,000 accounts.
+      this.checkPages(sql, file);
       sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
       sql.exec('CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
       sql.exec('CREATE TABLE IF NOT EXISTS listings (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
@@ -222,7 +228,10 @@ export class AccountStore {
       } catch {
         // closing anyway
       }
-      throw err;
+      if (err instanceof StoreVersionError || err instanceof StoreUnreadableError) throw err;
+      // anything else from SQLite here (a damaged page) must not escape as a plain Error: that
+      // would stop the whole game server from starting instead of running it without an economy
+      throw new StoreUnreadableError(`${file} could not be read (${(err as Error).message}).`);
     }
     this.backup(dir, sql);
     const n = this.db.accounts.size;
@@ -256,14 +265,38 @@ export class AccountStore {
     return db;
   }
 
-  /** One copy of the database per start: economy.db.bak. */
+  /** PRAGMA quick_check: every page of every table and index is readable and well formed. */
+  private checkPages(sql: DatabaseSync, file: string): void {
+    const rows = sql.prepare('PRAGMA quick_check').all() as Record<string, unknown>[];
+    const report = rows.map((r) => String(Object.values(r)[0]));
+    if (report.length === 1 && report[0] === 'ok') return;
+    throw new StoreUnreadableError(`${file} could not be read (damaged: ${report.slice(0, 3).join('; ').slice(0, 300)}). It was not changed.`);
+  }
+
+  /**
+   * One copy of the database per start: economy.db.bak. The new copy is written beside it and
+   * flushed to disk first, so the previous backup is only replaced by a complete one.
+   */
   private backup(dir: string, sql: DatabaseSync): void {
     const bak = join(dir, `${DB_FILE}.bak`);
+    const tmp = `${bak}.tmp`;
     try {
-      if (existsSync(bak)) unlinkSync(bak);
-      sql.prepare('VACUUM INTO ?').run(bak);
+      rmSync(tmp, { force: true });
+      sql.prepare('VACUUM INTO ?').run(tmp);
+      const fd = openSync(tmp, 'r+');
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, bak);
     } catch (err) {
-      this.log(`[economy] could not write the start-up backup ${bak}: ${(err as Error).message}`);
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        // left for the next start, which removes it first
+      }
+      this.log(`[economy] could not write the start-up backup ${bak} (the previous one is kept): ${(err as Error).message}`);
     }
   }
 

@@ -3,9 +3,11 @@
 **Purpose:** Run Hook Wars locally, play solo against bots, or host it for friends online.
 **Audience:** Someone comfortable with a terminal and Node.js. No game-dev knowledge needed.
 **Done when:** You see the HOOK WARS menu at http://127.0.0.1:5173 (dev) or at your server address (hosted), and a solo match starts.
-**Last verified:** 2026-10-08
+**Last verified:** 2026-10-09
 
-A voxel hook-brawler for the browser. Up to 5v5 Pudgies stand on either side of a river and drag each other across it with chain hooks. Empty slots fill with bots, so you can play alone, with one friend, or with nine.
+A voxel hook-brawler. Up to 5v5 Lunkers stand on either side of a river and drag each other across it with chain hooks. Empty slots fill with bots, so you can play alone, with one friend, or with nine.
+
+This is the standard edition: a normal game with no crypto of any kind. It runs in the browser (free, cosmetics earned with Pearls) and is being packaged for Steam (paid, premium cosmetics sold through Steam). An experimental Solana edition is parked on the `edition/solana` branch.
 
 Inspired by the classic Pudge Wars custom game. Every character, name, model and sound here is original and generated in code.
 
@@ -16,9 +18,10 @@ Inspired by the classic Pudge Wars custom game. Every character, name, model and
 | Modes | Solo vs bots in the browser, or online rooms on your own server (room browser, 5-letter room codes, quick play, chat) |
 | River | Deep Water (fall in and you drown), Dry Bed (walk the channel), Tidal (the water comes and goes, or the river freezes and thaws) |
 | Hazards | Thorns, Bristles, or each map's special: quicksand, ice spikes, jellyfish, steam vents |
-| Pudgies | Harbour Brawler, Swamp Ogre, Butcher-Bot, each with hats, accents and faces |
-| Kit | Chain Hook, Grapple, Belly Bash, auto melee, 4 hook upgrades, 8 items, 5 runes you hook out of the river |
-| Maps | Muckmire Bayou, Frostfang Fjord, Coral Cove, Cogwater Canal |
+| Lunkers | Harbour Brawler, Swamp Ogre, Dredge-Bot. Each has a bare base and six cosmetic slots (head, face, outfit, hook, feet, back) |
+| Cosmetics | Earned with Pearls from matches, worn in the Locker, traded for Pearls on the Market. Premium items are Steam only |
+| Kit | Chain Hook, Grapple, Belly Bash, auto melee, 4 hook upgrades, 8 items, 5 runes and 3 hook power-ups you hook out of the river |
+| Maps | Muckmire Bayou, Frostfang Fjord, Coral Cove, Cogwater Canal, Mirelight Marsh, Aurora Harbour, Maelstrom Lagoon, Lanternwharf |
 
 ## Play locally
 
@@ -40,7 +43,7 @@ npm run dev
 
 3. Open http://127.0.0.1:5173 and click **Play Solo vs Bots**.
 
-**Expect:** a 4 second countdown, then your Pudgy on the west bank with bots on both teams.
+**Expect:** a 4 second countdown, then your Lunker on the west bank with bots on both teams.
 
 ## Controls
 

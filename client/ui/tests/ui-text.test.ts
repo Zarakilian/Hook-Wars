@@ -23,8 +23,8 @@ const BANNED: { re: RegExp; why: string }[] = [
   { re: /\bLimited\b/, why: 'the rarity is Premium now' },
 ];
 
-/** The only allowed hit: the uiSound union in types.ts is additive-only and still lists this kind. */
-const ALLOWED = new Set(['types.ts:walletLinked']);
+/** No allowed hits any more (the wallet cue is gone everywhere). */
+const ALLOWED = new Set<string>([]);
 
 function tsFiles(dir: string): string[] {
   const out: string[] = [];

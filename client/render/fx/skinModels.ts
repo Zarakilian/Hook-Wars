@@ -29,7 +29,7 @@ export interface SkinRecipe {
   eye: number;
   /** spring coil centre and radius (du) for the Ricochet Spring / Boing Barb */
   coil: { x: number; z: number; r: number };
-  /** twinkle points (du), Limited items */
+  /** twinkle points (du), premium items */
   sparkles?: readonly (readonly [number, number, number])[];
   /** has a closed variant (claws) */
   closable?: boolean;
@@ -723,7 +723,7 @@ const rootHook: SkinRecipe = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Butcher-Bot
+// Dredge-Bot
 // ---------------------------------------------------------------------------------------------
 
 const HAZ: MPaint = (x, y, z) => {

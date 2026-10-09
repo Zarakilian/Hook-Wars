@@ -208,7 +208,7 @@ function solveDirect(sim: GameSim, ctx: BotContext, u: Unit, focus: number, wind
   out.ang = ang;
   out.d = ic.d;
   out.bank = false;
-  const wp = sim.map.whirlpool;
+  const wp = sim.activeWhirlpool();
   const bounces = kit.bounces;
   // static prefilter: a wall in the way means no direct shot (bank shots are searched separately)
   if (!hookLineClear(ctx.info, u.x, u.z, ic.ax, ic.az, 0.9, B.r + 0.2)) return false;
@@ -275,7 +275,7 @@ function solveBank(sim: GameSim, u: Unit, focus: number, windup: number, out: Sh
   const hr = kit.hr;
   const range = kit.range;
   const bounces = kit.bounces;
-  const wp = sim.map.whirlpool;
+  const wp = sim.activeWhirlpool();
   const base = Math.atan2(B.x - u.x, B.z - u.z);
   let bestT = Infinity;
   let bestA = 0;
@@ -1027,7 +1027,7 @@ export function findAnchor(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, wan
   const info = ctx.info;
   const r2 = (BAL.grappleRange + 0.5) ** 2;
   let best = Infinity;
-  const wp = sim.map.whirlpool;
+  const wp = sim.activeWhirlpool();
   gatherBodies(sim, ctx, u, b);
   for (let side = 0; side < 2; side++) {
     if (want >= 0 && side !== want) continue;

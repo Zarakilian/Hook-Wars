@@ -18,6 +18,8 @@ export interface Cell {
   rough: number;
   /** 0..1 snow / sand glints (shader) */
   sparkle: number;
+  /** 0..1 self-lit glow of the top in the biome's glow colour (glowing ice); 0 on every v1 map */
+  glow?: number;
   /** biome side material id (0..255) */
   side: number;
   /** biome-defined extra byte, passed back to sideColor (e.g. building id, strata seed) */
@@ -25,7 +27,7 @@ export interface Cell {
 }
 
 export function newCell(): Cell {
-  return { h: 0, q: 1 / 16, top: 0x808080, rough: 0.9, sparkle: 0, side: 0, tag: 0 };
+  return { h: 0, q: 1 / 16, top: 0x808080, rough: 0.9, sparkle: 0, glow: 0, side: 0, tag: 0 };
 }
 
 export interface SideOut {
@@ -60,7 +62,7 @@ export class HeightField {
   readonly iz0: number;
   /** RGBA, width nx + 1 (last texel column is white, used by side faces) */
   readonly colorData: Uint8Array;
-  /** RGBA: R = baked lamp light (bakeLamps), G = roughness, B = sparkle; last column G = 255 */
+  /** RGBA: R = baked lamp light (bakeLamps), G = roughness, B = sparkle, A = 255 - glow; last column G = 255 */
   readonly roughData: Uint8Array;
   colorTex: THREE.DataTexture | null = null;
   roughTex: THREE.DataTexture | null = null;
@@ -103,6 +105,7 @@ export class HeightField {
         cell.q = 1 / 16;
         cell.rough = 0.9;
         cell.sparkle = 0;
+        cell.glow = 0;
         cell.side = 0;
         cell.tag = 0;
         biome.sample(x, z, this.ix0 + i, this.iz0 + j, this.s, cell);
@@ -119,7 +122,7 @@ export class HeightField {
         this.roughData[t] = 0;
         this.roughData[t + 1] = Math.max(0, Math.min(255, Math.round(cell.rough * 255)));
         this.roughData[t + 2] = Math.max(0, Math.min(255, Math.round(cell.sparkle * 255)));
-        this.roughData[t + 3] = 255;
+        this.roughData[t + 3] = 255 - Math.max(0, Math.min(255, Math.round((cell.glow ?? 0) * 255)));
       }
       // white texel column for side faces
       const t = (this.nx + j * tw) * 4;

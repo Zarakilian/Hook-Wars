@@ -142,6 +142,10 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
     u.uLamp.value = biome.lampLight;
     if (biome.lampColor !== undefined) u.uLampColor.value.setHex(biome.lampColor);
   }
+  if (biome.glowLight) {
+    u.uGlow.value = biome.glowLight;
+    if (biome.glowColor !== undefined) u.uGlowColor.value.setHex(biome.glowColor);
+  }
   const nt = near.textures();
   const ot = outer.textures();
   const nearMat = terrainMaterial(nt.color, nt.rough, u);
@@ -256,7 +260,9 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
     const p = buildBackwater({ ...pool, hx: 0, hz: 0, cell: 0.5, maxLevel: pool.level, ground: height, colors: { shallow: map.atmosphere.waterShallow, deep: map.atmosphere.waterDeep, foam: map.atmosphere.waterFoam } });
     if (!p.mesh) continue;
     p.u.uLevel.value = pool.level;
-    p.u.uWave.value = 0.7;
+    p.u.uWave.value = pool.wave ?? 0.7;
+    // a still pool is a mirror: it shows the sky like the river beside it does
+    if (pool.wave === 0) (p.mesh.material as THREE.MeshStandardMaterial).envMapIntensity = 3.5;
     waters.push(p);
     group.add(p.mesh);
   }

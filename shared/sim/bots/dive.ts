@@ -35,7 +35,7 @@ function ensureBodies(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
 
 /** True if a grapple from u along (dx, dz) reaches the body with this unit id before anything else. */
 function grappleReaches(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, dx: number, dz: number, id: number): boolean {
-  traceHook(sim.world, sim.map.whirlpool, u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz,
+  traceHook(sim.world, sim.activeWhirlpool(), u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz,
     BAL.grappleSpeed, BAL.grappleRadius, BAL.grappleRange, 0, BAL.grappleWindup, path, true);
   ensureBodies(sim, ctx, u, b);
   const bl = bodyList();
@@ -114,7 +114,7 @@ export function thinkDive(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
       if (od - orad > BAL.grappleRange + BAL.hookHand - 0.4 || od < 3) continue;
       const dx = (ox - u.x) / od;
       const dz = (oz - u.z) / od;
-      traceHook(sim.world, sim.map.whirlpool, u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz,
+      traceHook(sim.world, sim.activeWhirlpool(), u.x + dx * BAL.hookHand, u.z + dz * BAL.hookHand, dx, dz,
         BAL.grappleSpeed, BAL.grappleRadius, BAL.grappleRange, 0, BAL.grappleWindup, path, true);
       if (!path.blocked) continue;
       // whatever we latch onto first is where we land: it must be dry ground next to the target

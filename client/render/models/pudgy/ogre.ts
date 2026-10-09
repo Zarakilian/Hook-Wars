@@ -5,21 +5,25 @@
 // drapes over the back, muddy toes, vine-wrapped tusk hook. Team colour: a woven sash from the
 // left shoulder to the right hip (drawn over every outfit) and cloth wraps on both forearms.
 import type { PudgyPalette } from '../../contracts.ts';
-import { dropGrid, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
+import { dropGrid, hangPoint, lumps, part, partMirrored, resOf, ring, teamCloth, teamTone, type Look, type TeamCols } from './common.ts';
 import { buildRes, CH, hashVox, hv, jitter, mix, P, RGrid, shade, type ColorFn } from './grid.ts';
-import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, Skeleton, V3 } from './types.ts';
+import type { BackMode, FamilyBuild, HatMode, PartDef, PartName, RestPose, Skeleton, V3 } from './types.ts';
 
 // ---------------------------------------------------------------------------------------------
 // Palette (ref02 / ref09)
 // ---------------------------------------------------------------------------------------------
 
-// warm khaki-tan hide (ref09 belly #aa875c, chest #91764b) with olive blotches; the old pale
-// mint-cream set (0xb2ad84...) rendered at almost twice the reference luminance (finding 34)
-const SKIN = 0x8a7650;
-const SKIN_D = 0x5e4e32;
+// warm khaki-tan hide (ref09 belly #aa875c, chest #91764b) with olive blotches and dark creases;
+// the old pale mint-cream set (0xb2ad84...) rendered at almost twice the reference luminance and
+// with a third of its value range (finding 34). The darks matter as much as the base: ref09 is a
+// checker of tan, olive and deep shadowed voxels under dense, dark-rooted moss.
+const SKIN = 0x84704a;
+const SKIN_D = 0x4c3e28;
 const SKIN_L = 0xa48f62;
-const SKIN_G = 0x58622a;
-const MOSS = [0x6c7a24, 0x82902c, 0x505c1a, 0x949e36, 0x5e6c20] as const;
+const SKIN_G = 0x4e5824;
+/** shadowed hide in the creases and blotches */
+const SKIN_S = 0x5c4c32;
+const MOSS = [0x64721f, 0x7c8a2a, 0x46521a, 0x8e9a34, 0x343c12] as const;
 const FUNGUS = 0xd28a4e;
 const FUNGUS_D = 0x8a4a28;
 const DREAD = 0x302b22;
@@ -37,6 +41,8 @@ const NAIL = 0xd8ccb0;
 const AMETHYST = 0xa45ce0;
 
 const SCALE = 0.93;
+
+const REST: RestPose = { armSplay: 0.24, armFwd: -0.2, elbow: -0.25, legSplay: 0.06, hunch: 0.1, headPitch: 0, jawRest: 0.06, holdElbow: -0.95 };
 
 const HC: V3 = [0, 31.5, 7.5];
 const HR: V3 = [5.8, 5.4, 5.4];
@@ -98,10 +104,10 @@ function skin(seed: number): ColorFn {
   return (x, y, z) => {
     const h = hv(x, y, z, seed);
     const blot = hashVox(Math.floor(x / 3), Math.floor(y / 3), Math.floor(z / 3), seed + 5);
-    let c = h > 0.88 ? SKIN_L : h < 0.14 ? SKIN_D : SKIN;
+    let c = h > 0.88 ? SKIN_L : h < 0.26 ? SKIN_D : SKIN;
     if (blot > 0.72) c = mix(c, SKIN_G, 0.55);
-    else if (blot < 0.12) c = mix(c, 0x8a7a5a, 0.4);
-    return shade(c, 0.94 + (h - 0.5) * 0.1);
+    else if (blot < 0.16) c = mix(c, SKIN_S, 0.5);
+    return shade(c, 0.94 + (h - 0.5) * 0.2);
   };
 }
 
@@ -883,7 +889,7 @@ export function buildOgre(l: Look): FamilyBuild {
   return {
     family: 'ogre',
     sk,
-    rest: { armSplay: 0.24, armFwd: -0.2, elbow: -0.25, legSplay: 0.06, hunch: 0.1, headPitch: 0, jawRest: 0.06, holdElbow: -0.95 },
+    rest: REST,
     style: { kind: 'stomp', stride: 2.3, bounce: 0.11, legSwing: 0.6, armSwing: 0.55, roll: 0.16, sway: 0.06, lean: 0.16, stomp: 1, breath: 0.26 },
     hatMode: 'none',
     hatSpin: 0,
@@ -894,8 +900,9 @@ export function buildOgre(l: Look): FamilyBuild {
     scale: SCALE,
     hookDangles: false,
     hookMount: { pos: [0, -0.02, 0.06], rot: [1.45, 0, -Math.PI / 2] },
-    // vine-hung skins (croc jaw, root): the vine starts inside the fist so the head clears the ground
-    hangMount: { pos: [0, 0.05, 0], rot: [Math.PI / 2, 0, 0] },
+    // vine-hung skins (croc jaw, root): the vine starts inside the fist (7 cm above the socket in the
+    // hold pose, fixed in the forearm: hangPoint) so the head clears the ground, slumped at low HP too
+    hangMount: { pos: hangPoint(REST, 0.07), rot: [Math.PI / 2, 0, 0] },
     gripMount: { pos: [0, -0.02, 0.06], rot: [1.45, 0, -Math.PI / 2] },
     puffs: [],
     corpseLift: 0.62,

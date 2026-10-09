@@ -87,7 +87,8 @@ const decor: Decor[] = [
   ...scatter(partial, { kind: 'mushroom', count: 30, seed: 55, scale: [0.6, 1.1], accept: (x, z) => onGround(x, z) && !clearOf(obstacles, x, z, 2.2) }),
   ...scatter(partial, { kind: 'flower', count: 8, seed: 59, scale: [0.6, 1.0], accept: onGround }),
   ...scatter(partial, { kind: 'firefly_swarm', count: 14, seed: 56, scale: [1, 1], accept: (x, z) => Math.abs(x) < 22 && clearOf(obstacles, x, z, 0.5) }),
-  ...scatter(partial, { kind: 'mist', count: 18, seed: 57, scale: [1, 1.6], accept: (x, z) => depth(x, z) > 1.2 }),
+  // thin mist only: the reference's water stays dark and clear between the wisps
+  ...scatter(partial, { kind: 'mist', count: 8, seed: 57, scale: [1, 1.5], accept: (x, z) => depth(x, z) > 1.2 }),
   // set dressing: moored rowboats, lantern strings over the docks, a rope on each pier
   { kind: 'rowboat', x: -6.3, z: -9.4, rot: 0.35, scale: 1, seed: 1 },
   { kind: 'rowboat', x: 6.3, z: 9.4, rot: 0.35 + Math.PI, scale: 1, seed: 2 },
@@ -140,27 +141,31 @@ export const mirelight: MapDef = {
     timeOfDay: 'dusk',
     // the sun sets behind the far end of the marsh: long backlit shadows toward the camera
     sunDir: [-0.34, 0.36, -0.87],
-    sunColor: 0xffb878,
-    sunIntensity: 3.0,
-    skyTop: 0x262f5c,
+    // a lower, less orange sun and a bluer sky fill than Muckmire's: the moss stays green under it
+    sunColor: 0xffb486,
+    sunIntensity: 2.4,
+    // a deep blue zenith: it fills the shadows with the reference's lavender and darkens the water's mirror
+    skyTop: 0x22387c,
     skyHorizon: 0xff8a4e,
-    groundAmbient: 0x3e3c34,
-    ambientIntensity: 1.2,
-    // a warmer, thinner haze than v2's mauve one: the moss and the dark water read through it
-    fogColor: 0x6e5856,
-    fogDensity: 0.0082,
+    groundAmbient: 0x26341f,
+    ambientIntensity: 1.35,
+    // a dark, thin dusk haze: the moss, the dark water and the lanterns read through it
+    fogColor: 0x433c4c,
+    fogDensity: 0.0072,
     weather: 'fireflies',
     aurora: false,
-    waterShallow: 0x5e5a44,
-    waterDeep: 0x14201f,
+    // dark slate bayou water (the reference's), not Muckmire's olive: the sunset shows in it as glints
+    waterShallow: 0x34403e,
+    waterDeep: 0x0c1214,
     waterFoam: 0xf0d8c0,
     exposure: 1.06,
     saturation: 1.1,
     bloom: 0.75,
   },
   terrain: {
-    // moss mats (the ground and its tufts), wet peat, black shore mud (the reference's marsh, not a lawn)
-    grass: [0x3e5a22, 0x4a6828, 0x354f1d, 0x587a30, 0x426024, 0x628436],
+    // deep green moss mats (green-heavy so they stay green under the sunset), wet peat, black shore mud
+    // (the reference's marsh, not a lawn)
+    grass: [0x24581e, 0x2c6624, 0x1f4c1a, 0x36742a, 0x285e20, 0x3e7e30],
     dirt: [0x4a3826, 0x3e3020, 0x564230, 0x3a2c1e],
     bank: [0x2e2418, 0x3a2e1f, 0x261e14, 0x43352a],
     bed: [0x2a251b, 0x221e16, 0x332c21, 0x28221a],

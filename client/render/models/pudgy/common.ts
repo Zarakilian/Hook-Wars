@@ -3,7 +3,7 @@ import type * as THREE from 'three';
 import type { Quality } from '../../contracts.ts';
 import type { Loadout, Team } from '../../../../shared/types.ts';
 import { atRes, CH, hashVox, hv, meshPart, mix, P, RGrid, shade, teamTone, type ColorFn, type Paint, type Test } from './grid.ts';
-import type { PartDef, V3 } from './types.ts';
+import type { PartDef, RestPose, V3 } from './types.ts';
 
 /** Build context handed to every part builder. */
 export interface Look {
@@ -197,6 +197,18 @@ export function grime(base: ColorFn, dirt: number, amount: number, seed: number,
     if (b > 1 - amount) return mix(c, dirt, 0.35 + hv(x, y, z, seed + 1) * 0.35);
     return c;
   };
+}
+
+/**
+ * Hook mount offset (metres, forearm frame) of the point `up` metres straight above the hand socket
+ * while the hook arm is in its hold pose (shoulder armFwd + holdShoulder and elbow + holdElbow, all
+ * about x). A dangling hook hangs from its mount fixed in the forearm (anim.ts dangle), so in the
+ * idle hold pose its tether runs straight up into the fist or the crane pulley, and in raised or
+ * swinging poses the tether top stays inside the arm instead of poking out of it.
+ */
+export function hangPoint(rest: RestPose, up: number): V3 {
+  const tilt = -(rest.armFwd + (rest.holdShoulder ?? 0) + rest.elbow + rest.holdElbow);
+  return [0, up * Math.cos(tilt), up * Math.sin(tilt)];
 }
 
 export { mix, shade, hashVox, hv, teamTone };

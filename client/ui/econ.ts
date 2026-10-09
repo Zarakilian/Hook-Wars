@@ -3,7 +3,7 @@
 // say the same thing. Premium items are sold for real money in the Steam version only; the free
 // browser version shows them as "Available in the Steam version".
 import { COSMETICS, cosmeticById, type CosmeticDef, type CosmeticSlot, type Rarity } from '../../shared/cosmetics.ts';
-import { marketFee as sharedFee, MARKET_FEE_BPS, MAX_LIST_PEARLS, MIN_LIST_PEARLS, sellerProceeds, type AccountView, type OwnedItem } from '../../shared/economy.ts';
+import { canTradeForPearls, marketFee as sharedFee, MARKET_FEE_BPS, marketLockedText, MAX_LIST_PEARLS, MIN_LIST_PEARLS, sellerProceeds, type AccountView, type OwnedItem } from '../../shared/economy.ts';
 import type { FamilyId } from '../../shared/types.ts';
 import { isSteam } from '../platform.ts';
 import type { IconId } from './icons.ts';
@@ -64,7 +64,16 @@ export function suggestPrice(def: CosmeticDef): number {
 
 /** Can this item be listed on the Pearl market? Epic items only: Premium items trade on the Steam Community Market. */
 export function marketTradable(def: CosmeticDef | undefined): def is CosmeticDef {
-  return !!def && def.tradable && def.rarity !== 'premium';
+  return canTradeForPearls(def); // the server's own rule (shared/economy.ts)
+}
+
+/**
+ * Why this account cannot trade on the market yet, in words for the player, or null when it can (or
+ * there is nothing to say: offline, or still signing in). The server checks the same rule.
+ */
+export function marketLockNote(mode: 'local' | 'server', account: Pick<AccountView, 'created' | 'stats'> | null, now = Date.now()): string | null {
+  if (mode !== 'server' || !account) return null;
+  return marketLockedText(account, now);
 }
 
 /**

@@ -134,7 +134,8 @@ export const lanternwharf: MapDef = {
     // into a fixed glare patch at the top right of the screen
     sunDir: [0.3, 0.55, 0.62],
     sunColor: 0x9cb0f0,
-    sunIntensity: 1.2,
+    // a dimmer moon than Cogwater's: the lamps, not the moon, light the wharf
+    sunIntensity: 0.95,
     skyTop: 0x0a0d1a,
     skyHorizon: 0x34304c,
     groundAmbient: 0x3c2c22,
@@ -151,12 +152,13 @@ export const lanternwharf: MapDef = {
     bloom: 0.95,
   },
   terrain: {
-    // warm rain-soaked setts (the biome adds the granite quay edge, steps, rings and wharf timber)
-    grass: [0x7a6250, 0x6c5444, 0x86705c, 0x5e4a3a, 0x745c4a],
+    // rain-dark warm setts (the biome lays them in a running bond and adds the granite quay edge, steps,
+    // mooring rings and wharf timber), a silted harbour-canal bed with green weed, black mud when drained
+    grass: [0x5e5046, 0x6a5a4c, 0x54483e, 0x74624f, 0x5a4c40],
     dirt: [0x6e3c2c, 0x7a4432, 0x623628],
     bank: [0x8e8780, 0x837c74, 0x99928a],
-    bed: [0x2c2c30, 0x34343a, 0x26262a],
-    dryBed: [0x46413c, 0x3d3934, 0x514b44, 0x3a3632],
+    bed: [0x2a2a1e, 0x323224, 0x24241a],
+    dryBed: [0x3e3e2c, 0x484632, 0x34342a, 0x524e38],
     cliff: [0x6e3c2c, 0x7a4432, 0x5c3226],
     baseHeight: 1.45,
     noiseAmp: 0.04,

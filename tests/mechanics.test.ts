@@ -960,6 +960,98 @@ test('7: a mine dropped from the open bed that rolls in under a bridge lies on t
   assert.ok(boom, 'a bed unit walked under the bridge over a mine dropped from the bed, and it never went off');
 });
 
+test('6/7: a hook that breaks mid-drag drops the catch on its own layer: under a bridge stays on the bed, on the deck stays on top', () => {
+  const bad: string[] = [];
+  let breaks = 0;
+  // caster on the open bed beside the z = 10 bridge; catch under the bridge or on its deck
+  const cases: [number, number, number, number, boolean, string][] = [
+    [0, 14.5, 0, 9.2, true, 'bed caster north, catch under the bridge'],
+    [2, 14.5, 2, 9.0, true, 'bed caster north (x=2), catch under the bridge'],
+    [0, 5.0, 0, 10.8, true, 'bed caster south, catch under the bridge'],
+    [0, 5.0, 0, 9.4, false, 'bed caster south, catch on the deck'],
+  ];
+  for (const [ox, oz, tx, tz, under, label] of cases) {
+    const sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+    noMovers(sim);
+    const a = sim.unitById.get(1)!;
+    const t = sim.unitById.get(2)!;
+    place(a, ox, oz);
+    place(t, tx, tz, under);
+    for (let i = 0; i < 2; i++) {
+      input(sim, 1, 0, 0, t.x, t.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+    }
+    const tier0 = sim.tierOf(t);
+    assert.equal(tier0, under ? 2 : 1, `${label}: precondition: the catch starts ${under ? 'under the bridge' : 'on the deck'}`);
+    input(sim, 1, 0, 0, t.x, t.z, Btn.Hook);
+    let broke = false;
+    for (let i = 0; i < TICK_RATE * 3 && !broke; i++) {
+      input(sim, 1, 0, 0, t.x, t.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+      if (t.state !== UnitState.Hooked) continue;
+      // the caster is interrupted on the first drag tick, while the catch is still inside the footprint
+      assert.ok(platformAt(sim.map, t.x, t.z), `${label}: precondition: the catch is inside the footprint`);
+      sim.breakHook(sim.hooks.find((h) => h.tg === t.id && !h.dead)!);
+      input(sim, 1, 0, 0, t.x, t.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+      broke = true;
+      breaks++;
+      if (sim.tierOf(t) !== tier0) bad.push(`${label}: dropped at (${t.x.toFixed(2)},${t.z.toFixed(2)}) under=${t.under}, tier ${tier0} -> ${sim.tierOf(t)}`);
+    }
+    assert.ok(broke, `${label}: precondition: the hook caught and was broken`);
+  }
+  assert.equal(breaks, 4);
+  assert.deepEqual(bad, [], 'a hook broken mid-drag moved its catch between the deck and the bed below it');
+});
+
+test('6/7: a grapple broken mid-flight over a bridge drops the grappler on the layer it flew in on', () => {
+  const bad: string[] = [];
+  let breaks = 0;
+  // [grappler x, z, ally x, z, ally under]: bed take-offs fly in under the deck, a deck take-off stays on it
+  const cases: [number, number, number, number, boolean, string][] = [
+    [0, 15.5, 0, 8.9, true, 'from the bed north to an ally under the bridge'],
+    [0, 4.5, 0, 11.1, true, 'from the bed south to an ally under the bridge'],
+    [0, 4.5, 0, 11.1, false, 'from the bed south to an ally on the deck'],
+    [0, 10.0, 0, 3.0, false, 'from the deck to an ally on the open bed'],
+  ];
+  for (const [gx, gz, ax, az, aUnder, label] of cases) {
+    const sim = setup([0, 0], { mapId: 'lanternwharf', riverMode: 'dry' });
+    noMovers(sim);
+    const g = sim.unitById.get(1)!;
+    const a = sim.unitById.get(2)!;
+    place(g, gx, gz);
+    place(a, ax, az, aUnder);
+    for (let i = 0; i < 2; i++) {
+      input(sim, 1, 0, 0, a.x, a.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+    }
+    const tier0 = sim.tierOf(g);
+    let broke = false;
+    input(sim, 1, 0, 0, a.x, a.z, Btn.Grapple);
+    for (let i = 0; i < TICK_RATE * 2 && !broke; i++) {
+      input(sim, 1, 0, 0, a.x, a.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+      place(a, ax, az, aUnder);
+      if (g.state !== UnitState.Grappling || !platformAt(sim.map, g.x, g.z)) continue;
+      sim.breakHook(sim.hooks.find((h) => h.owner === g.id && !h.dead)!);
+      input(sim, 1, 0, 0, a.x, a.z);
+      input(sim, 2, 0, 0, 0, 0);
+      sim.step();
+      broke = true;
+      breaks++;
+      if (sim.tierOf(g) !== tier0) bad.push(`${label}: dropped at (${g.x.toFixed(2)},${g.z.toFixed(2)}) under=${g.under}, tier ${tier0} -> ${sim.tierOf(g)}`);
+    }
+    assert.ok(broke, `${label}: precondition: the grapple flew over the footprint and was broken there`);
+  }
+  assert.equal(breaks, 4);
+  assert.deepEqual(bad, [], 'a grapple broken mid-flight moved the grappler between the deck and the bed below it');
+});
+
 // --- 8 --------------------------------------------------------------------------------------
 test('8: a grapple rescue to a bank anchor lands the swimmer on dry ground, on every map', () => {
   const bad: string[] = [];

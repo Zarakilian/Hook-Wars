@@ -3,18 +3,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import fs, { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { Agent, createServer, request, type IncomingHttpHeaders } from 'node:http';
+import { Agent, createServer, request, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import WebSocket from 'ws';
 import { DEFAULT_CONFIG, PROTOCOL_VERSION, TICK_RATE } from '../shared/constants.ts';
 import { GameServer, ipKey, JOIN_MISS_LIMIT, MissCounter } from '../server/gameServer.ts';
 import { loadConfig, type ServerConfig } from '../server/config.ts';
-import { Room, type RoomClient } from '../server/room.ts';
+import { LAG_TICKS, Room, type RoomClient } from '../server/room.ts';
 import { acceptedEncodings, createStaticHandler } from '../server/static.ts';
 import { createNullEconomy } from '../server/economy/api.ts';
 import { REJOIN_GRACE_MS, SPECTATOR_DELAY_TICKS, type ServerMsg } from '../shared/protocol.ts';
@@ -273,7 +274,7 @@ test('a dropped player reclaims the same unit with its rejoin token: gold, upgra
   }
 });
 
-test('ack flow control: a client that stops acking gets only probes, then resumes with a full snapshot', async () => {
+test('ack flow control: a client that stops acking gets only probes, then resumes with a full snapshot', async (tc) => {
   const s = await startWith({});
   try {
     const a = await joined(s.port, 'Ann');
@@ -283,22 +284,57 @@ test('ack flow control: a client that stops acking gets only probes, then resume
     await a.c.until((m) => m.t === 'start');
     let seq = 0;
     const input = (ack: number) => a.c.send({ t: 'input', i: { seq: ++seq, mx: 0, mz: 0, ax: 0, az: 0, b: 0 }, a: ack });
+    const code = [...s.rooms.keys()][0];
+    const sim = () => s.rooms.get(code)!.sim!;
+    const flow = () => s.rooms.get(code)!.flowInfo(a.id)!;
+    // How late each frame reached this client, in ticks the server had run by then. Timing only: it
+    // never looks at what the pacing decided, so a pacing bug cannot hide behind it.
+    let maxArrival = 0;
+    a.c.ws.on('message', () => {
+      const m = a.c.inbox[a.c.inbox.length - 1]; // the inbox listener was added first and has run
+      if (m?.t === 's') maxArrival = Math.max(maxArrival, sim().tick - m.s.t);
+    });
     // acking every snapshot: the full 30 Hz stream
     for (let i = 0; i < 20; i++) {
       input(lastSnapTick(a.c));
       await sleep(33);
     }
-    const code = [...s.rooms.keys()][0];
-    const sim = () => s.rooms.get(code)!.sim!;
-    const n0 = snaps(a.c).length;
-    const tick0 = sim().tick;
-    for (let i = 0; i < 30; i++) {
-      input(lastSnapTick(a.c));
-      await sleep(33);
+    // A client that keeps up is never paused and gets every frame. An overloaded machine (other test
+    // files in parallel) delivers frames late or runs the 33 ms ack loop late; then more than the
+    // allowance is in flight and pausing is the server doing its job. Such a window is "starved":
+    // frames in flight can exceed LAG_TICKS (late arrival + ack-loop gap + 1 for the ack's own trip).
+    // Up to three windows; a non-starved one must be clean. A pacing bug fails every non-starved
+    // window (acks ignored: 3% delivered); load alone has delivered 7% in a starved one.
+    const windows: string[] = [];
+    let measured = false;
+    for (let w = 0; w < 3 && !measured; w++) {
+      maxArrival = 0;
+      let maxGap = 0;
+      let prev = performance.now();
+      const n0 = snaps(a.c).length;
+      const tick0 = sim().tick;
+      const pauses0 = flow().pauses;
+      for (let i = 0; i < 30; i++) {
+        input(lastSnapTick(a.c));
+        await sleep(33);
+        const now = performance.now();
+        maxGap = Math.max(maxGap, now - prev);
+        prev = now;
+      }
+      const ran = sim().tick - tick0;
+      // relative to the ticks the server actually ran (a loaded machine runs fewer)
+      const live = (snaps(a.c).length - n0) / Math.max(1, ran);
+      const pauses = flow().pauses - pauses0;
+      const gapTicks = Math.ceil(maxGap / (1000 / TICK_RATE));
+      const starved = maxArrival + gapTicks + 1 > LAG_TICKS;
+      const text = `${(live * 100).toFixed(0)}% of ${ran} frames, ${pauses} pauses, frames up to ${maxArrival} ticks late, ack loop gap up to ${maxGap.toFixed(0)} ms`;
+      windows.push(text);
+      if (starved) continue;
+      assert.ok(live >= 0.5, `only ${text} while acking on an unloaded window`);
+      assert.equal(pauses, 0, `a client that kept up was paused: ${text}`);
+      measured = true;
     }
-    // relative to the ticks the server actually ran (a loaded machine runs fewer)
-    const live = (snaps(a.c).length - n0) / Math.max(1, sim().tick - tick0);
-    assert.ok(live >= 0.5, `only ${(live * 100).toFixed(0)}% of frames delivered while acking`);
+    if (!measured) tc.diagnostic(`live stream not measured, process starved on every window: ${windows.join(' | ')}`);
     // the client is still alive (inputs keep coming) but its acks stop advancing: a backlog the server cannot see
     const frozen = lastSnapTick(a.c);
     const n1 = snaps(a.c).length;
@@ -321,16 +357,20 @@ test('ack flow control: a client that stops acking gets only probes, then resume
     const info = s.rooms.get(code)!.flowInfo(a.id)!;
     assert.ok(info.pauses >= 1, 'the stream never paused');
     assert.ok(info.skipped - skipped1 >= ran - bound, `skipped ${info.skipped - skipped1} of ${ran} frames`);
-    // acks catch up: the stream resumes at once, and the first frame carries the scoreboard
-    const n2 = snaps(a.c).length;
-    input(lastSnapTick(a.c));
-    for (let i = 0; i < 6; i++) {
-      await sleep(33);
+    // acks catch up: the stream resumes, and the first frame after the pause carries the scoreboard.
+    // Found by tick, not by arrival order: under load a frame sent before the pause can still arrive
+    // late. The client keeps acking while it waits (a newer probe may still be on its way to it).
+    // Resumed = two frames one tick apart: probes alone (a stream that never resumes) are 30 apart.
+    const paused = info.lastSent;
+    const after = () => snaps(a.c).filter((m) => m.s.t > paused);
+    const resumed = () => after().some((m, i, all) => i > 0 && m.s.t - all[i - 1].s.t === 1);
+    const tR = Date.now();
+    while (!resumed() && Date.now() - tR < 10_000) {
       input(lastSnapTick(a.c));
+      await sleep(33);
     }
-    await a.c.until(() => snaps(a.c).length > n2 + 3, 5000);
-    const resumed = snaps(a.c)[n2];
-    assert.ok(resumed.s.sb, 'the first frame after a pause must carry the scoreboard');
+    assert.ok(resumed(), `the stream did not resume within 10 s of the acks catching up (frames after the pause at tick ${paused}: ${after().map((m) => m.s.t).join(', ') || 'none'})`);
+    assert.ok(after()[0].s.sb, 'the first frame after a pause must carry the scoreboard');
     a.c.ws.close();
   } finally {
     await s.close();
@@ -914,6 +954,67 @@ test('the per-IP miss counter blocks at the limit, expires, stays bounded, and c
   assert.equal(ipKey('203.0.113.5'), '203.0.113.5');
 });
 
+test('ipKey: an IPv4-mapped address is its own IPv4 address (never one shared bucket), and a dotted tail is two groups', () => {
+  // A dual-stack socket or a proxy can hand over IPv4 clients as ::ffff:a.b.c.d. Its first 64 bits are
+  // all zero, so read as IPv6 every IPv4 player would share one /64 bucket: one guesser blocks them all.
+  assert.equal(ipKey('::ffff:1.2.3.4'), '1.2.3.4');
+  assert.equal(ipKey('::FFFF:1.2.3.4'), '1.2.3.4');
+  assert.equal(ipKey('0:0:0:0:0:ffff:5.6.7.8'), '5.6.7.8');
+  assert.equal(ipKey('::ffff:0102:0304'), '1.2.3.4');
+  assert.notEqual(ipKey('::ffff:1.2.3.4'), ipKey('::ffff:5.6.7.8'));
+  // an embedded IPv4 address is the last 32 bits, two groups: the short and the full form agree
+  assert.equal(ipKey('1::2:3:4:5:6.7.8.9'), ipKey('1:0:2:3:4:5:6.7.8.9'));
+  assert.equal(ipKey('1::2:3:4:5:6.7.8.9'), '1:0:2:3::/64');
+  // unchanged: plain IPv4, an IPv6 /64, a zone id
+  assert.equal(ipKey('203.0.113.5'), '203.0.113.5');
+  assert.equal(ipKey('2001:db8:1:2::5'), '2001:db8:1:2::/64');
+  assert.equal(ipKey('fe80::1%eth0'), 'fe80:0:0:0::/64');
+});
+
+test('a guesser behind a proxy that forwards mapped IPv4 addresses blocks only itself, not every IPv4 player', async () => {
+  const s = await startWith({ trustedProxies: ['127.0.0.1'] });
+  const from = (ip: string): WebSocket.ClientOptions => ({ headers: { 'x-forwarded-for': ip } });
+  try {
+    const ann = await joined(s.port, 'Ann', from('192.0.2.10'));
+    ann.c.send({ t: 'createRoom', name: 'friends', isPrivate: true, config: { ...DEFAULT_CONFIG, teamSize: 2 } });
+    const code = ((await ann.c.until((m) => m.t === 'room')) as RoomMsg).room.code;
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    let n = 0;
+    const wrongCode = () => {
+      let c = '';
+      do {
+        c = '';
+        for (let k = 0, x = ++n * 7919; k < 5; k++, x = Math.floor(x / 24)) c += letters[x % 24];
+      } while (s.rooms.has(c));
+      return c;
+    };
+    for (let sock = 0; sock < 8; sock++) {
+      const g = await joined(s.port, 'Guess', from('::FFFF:198.51.100.9'));
+      for (let k = 0; k < 3; k++) {
+        g.c.send({ t: 'joinRoom', code: wrongCode() });
+        await waitFor(() => g.c.inbox.filter((x) => x.t === 'error').length === k + 1);
+      }
+      g.c.ws.close();
+    }
+    // the guesser is blocked, however its address is spelled
+    for (const spelling of ['::ffff:198.51.100.9', '198.51.100.9']) {
+      const g = await joined(s.port, 'Guess', from(spelling));
+      g.c.send({ t: 'joinRoom', code });
+      const res = await g.c.until((m) => m.t === 'error' || m.t === 'room');
+      assert.equal(res.t === 'error' && res.code, 'join_limit', `the guesser got in as ${spelling}`);
+      g.c.ws.close();
+    }
+    // a different IPv4 player through the same proxy, spelled the same way, is not
+    const friend = await joined(s.port, 'Friend', from('::FFFF:198.51.100.10'));
+    friend.c.send({ t: 'joinRoom', code });
+    const res = await friend.c.until((m) => m.t === 'error' || m.t === 'room');
+    assert.equal(res.t, 'room', `another IPv4 player was blocked by the guesser: ${JSON.stringify(res)}`);
+    for (const x of [ann.c, friend.c]) x.ws.close();
+  } finally {
+    await s.close();
+  }
+});
+
 test('static files go out brotli or gzip encoded, with Vary, ETags and the right caching; a rebuild is picked up', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hw-static-'));
   const srv = createServer();
@@ -1074,6 +1175,78 @@ test('a file rewritten between the stat and the read never breaks its Content-Le
     syncBuiltinESMExports();
     agent.destroy();
     await new Promise<void>((r) => srv.close(() => r()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Call a static handler directly: headers are set synchronously, the body resolves when it ends. */
+function callStatic(handler: (q: IncomingMessage, s: ServerResponse) => void, path: string, acceptEncoding: string) {
+  const headers: Record<string, string | number> = {};
+  let status = 0;
+  const parts: Buffer[] = [];
+  const res = new Writable({
+    write(c: Buffer, _e, cb) {
+      parts.push(Buffer.from(c));
+      cb();
+    },
+  });
+  const done = new Promise<Buffer>((r) => res.on('finish', () => r(Buffer.concat(parts))));
+  Object.assign(res, {
+    setHeader: (k: string, v: string | number) => void (headers[k.toLowerCase()] = v),
+    writeHead: (s: number, h: Record<string, string | number> = {}) => {
+      status = s;
+      for (const [k, v] of Object.entries(h)) headers[k.toLowerCase()] = v;
+      return res;
+    },
+  });
+  const req = { method: 'GET', url: path, headers: { 'accept-encoding': acceptEncoding } };
+  handler(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+  return { status: () => status, headers, done };
+}
+
+test('a stand-in sent while a better compressed copy is still being made is never cached (a cache would keep it a year)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hw-static-'));
+  try {
+    mkdirSync(join(dir, 'assets'));
+    // about 500 KB of text: gzip takes milliseconds, brotli 11 about a second
+    const js = Buffer.from(Array.from({ length: 12000 }, (_, i) => `export const reel${i} = ${(i * 7919) % 104729}; // hook ${i % 97}\n`).join(''));
+    writeFileSync(join(dir, 'assets', 'index-Big123.js'), js);
+    writeFileSync(join(dir, 'index.html'), '<!doctype html><title>x</title>');
+    const file = '/assets/index-Big123.js';
+    const BR = 'gzip, deflate, br';
+    const LONG = 'public, max-age=31536000, immutable';
+    const handler = createStaticHandler(dir);
+    // straight after start-up nothing is compressed yet: the raw file goes out, and must not be stored
+    const first = callStatic(handler, file, BR);
+    assert.equal(first.status(), 200);
+    assert.equal(first.headers['content-encoding'], undefined);
+    assert.equal(first.headers['cache-control'], 'no-store', 'an uncompressed stand-in was cached for a year');
+    assert.deepEqual(await first.done, js);
+    // a client that takes no encoding gets its final copy: long-cached
+    const plain = callStatic(handler, file, 'identity');
+    assert.equal(plain.headers['cache-control'], LONG);
+    await plain.done;
+    // gzip lands first: final for a gzip-only client, a stand-in for a brotli client until brotli is done
+    const t0 = Date.now();
+    let gz = callStatic(handler, file, 'gzip');
+    while (gz.headers['content-encoding'] !== 'gzip' && Date.now() - t0 < 20_000) {
+      await gz.done;
+      await sleep(5);
+      gz = callStatic(handler, file, 'gzip');
+    }
+    assert.equal(gz.headers['content-encoding'], 'gzip');
+    assert.equal(gz.headers['cache-control'], LONG);
+    const mid = callStatic(handler, file, BR); // same turn of the event loop as the gzip one
+    const midBr = mid.headers['content-encoding'] === 'br';
+    assert.equal(mid.headers['cache-control'], midBr ? LONG : 'no-store', `${mid.headers['content-encoding']} for a brotli client`);
+    await Promise.all([gz.done, mid.done]);
+    // brotli ready: brotli, long-cached
+    await handler.ready;
+    const last = callStatic(handler, file, BR);
+    assert.equal(last.headers['content-encoding'], 'br');
+    assert.equal(last.headers['cache-control'], LONG);
+    assert.deepEqual(brotliDecompressSync(await last.done), js);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

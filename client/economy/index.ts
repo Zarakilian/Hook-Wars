@@ -131,6 +131,8 @@ export function createEconomy(): EconomyClient {
   let send: ((m: EconomyClientMsg) => void) | null = null;
   let serverKey: string | null = null;
   let signInTimer: ReturnType<typeof setTimeout> | null = null;
+  /** accountError came from the server's account-state message (the precise reason) */
+  let reasonFromServer = false;
   const inflight = new Set<string>(); // Pearl actions sent and not answered yet (stops double sends)
 
   const emit = () => {
@@ -160,6 +162,8 @@ export function createEconomy(): EconomyClient {
 
   /** Online with no account yet: the reason to show, or null when there is an account (or offline). */
   const noAccount = (): string | null => (st.mode === 'server' && !st.account ? (st.accountError ?? SIGNING_IN) : null);
+  /** Online, and the server has not said it gave this connection no account (it would only answer with an error). */
+  const canAskMarket = (): boolean => st.mode === 'server' && send !== null && !(st.account === null && st.accountError !== null);
 
   function sendAction(key: string, m: EconomyClientMsg): void {
     if (!send) return;
@@ -207,18 +211,21 @@ export function createEconomy(): EconomyClient {
       sendAction(`storeBuy:${itemId}`, { t: 'storeBuy', item: itemId }); // the server charges the catalog price
     },
     grantLocal(pearls) {
-      if (st.mode !== 'local' || !(pearls > 0)) return;
+      // solo always pays this browser's locker, even while an online server is attached (the end screen promises it)
+      if (!(pearls > 0)) return;
       local.pearls += Math.floor(pearls);
       local.stats = { ...local.stats, matches: local.stats.matches + 1 };
-      saveLocal();
+      // online, the screen shows the server account: keep it, only store the locker for when the player goes back offline
+      if (st.mode === 'server') writeLocker(local);
+      else saveLocal();
     },
     refreshMarket() {
-      if (st.mode === 'server' && send) send({ t: 'market' });
+      if (canAskMarket()) send!({ t: 'market' });
     },
     watchMarket() {
       let stopped = false;
       const renew = () => {
-        if (!stopped && st.mode === 'server' && send) send({ t: 'market' });
+        if (!stopped && canAskMarket()) send!({ t: 'market' });
       };
       renew();
       const timer = unref(setInterval(renew, MARKET_RENEW_MS));
@@ -260,6 +267,7 @@ export function createEconomy(): EconomyClient {
           if (msg.token && serverKey && TOKEN_RE.test(msg.token)) writeToken(serverKey, msg.token);
           inflight.clear(); // every Pearl action is answered with the account (or an error)
           stopSignInTimer();
+          reasonFromServer = false;
           set({ account: msg.a, busy: busyNow(), error: null, accountError: null });
           return;
         }
@@ -270,7 +278,18 @@ export function createEconomy(): EconomyClient {
           if (!msg.re && ACCOUNT_STATE_CODES.has(msg.code)) {
             // the server gave this connection no account, and says why
             stopSignInTimer();
+            reasonFromServer = true;
             set({ account: null, accountError: msg.message, busy: busyNow() });
+            return;
+          }
+          if (msg.re === 'market') {
+            // The Market screen's own background request (on open and every 25 s), not a click: never
+            // a toast. With no account its answer says why; on a slow line it can arrive before the
+            // account-state message above, which then replaces it with the precise reason.
+            if (!st.account) {
+              stopSignInTimer();
+              if (!reasonFromServer) set({ accountError: msg.message });
+            }
             return;
           }
           const re: Re | undefined = msg.re;
@@ -287,6 +306,7 @@ export function createEconomy(): EconomyClient {
       serverKey = key;
       inflight.clear();
       stopSignInTimer();
+      reasonFromServer = false;
       signInTimer = unref(
         setTimeout(() => {
           signInTimer = null;
@@ -301,6 +321,7 @@ export function createEconomy(): EconomyClient {
       serverKey = null;
       inflight.clear();
       stopSignInTimer();
+      reasonFromServer = false;
       set({ mode: 'local', account: { ...local }, listings: [], busy: false, error: null, accountError: null });
     },
     tokenFor(key) {

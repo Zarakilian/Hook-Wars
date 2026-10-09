@@ -142,8 +142,10 @@ export const maelstrom: MapDef = {
     grass: [0xd8b676, 0xceaa6a, 0xe2c286, 0xc6a062, 0xe6ca92],
     dirt: [0xc09a62, 0xb48e58, 0xcaa46c],
     bank: [0xe0c28a, 0xd6b67e, 0xead09c, 0xdcbc84],
-    bed: [0xd8c690, 0xc8b47e, 0xe2d29e],
-    dryBed: [0xe6d6aa, 0xd8c898, 0xf0e2bc, 0xccbc8e],
+    // a white-sand lagoon floor (the turquoise of the reference's water) with grey rock outcrops, and wet
+    // dark sand round rock pools when it drains
+    bed: [0xeee6cc, 0xe2d8b8, 0xf6f0dc],
+    dryBed: [0xbca878, 0xae9a6c, 0xc8b688, 0xa08e62],
     cliff: [0x8e8a80, 0x7e7a70, 0x9e9a8e, 0x6e6a62],
     baseHeight: 1.15,
     noiseAmp: 0.12,

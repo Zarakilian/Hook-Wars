@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -301,11 +302,48 @@ test('F21: the client shows why it has no account instead of "Still signing in" 
   t.mock.timers.tick(SIGN_IN_MS * 2);
   assert.equal(ok.state().accountError, null);
   // a server without accounts says so
+  const offSent: EconomyClientMsg[] = [];
   const off = createEconomy();
-  off.attachServer(() => {}, 'ws://v/ws');
+  off.attachServer((m) => offSent.push(m as EconomyClientMsg), 'ws://v/ws');
   off.receive({ t: 'econError', code: 'disabled', message: 'This server runs without accounts.' });
   assert.match(off.state().accountError ?? '', /without accounts/);
+  // and the Market screen does not ask it for listings, which would only answer with a second,
+  // vaguer error toast ("You are not signed in...") on top of the reason
+  const stop = off.watchMarket();
+  off.refreshMarket();
+  t.mock.timers.tick(MARKET_RENEW_MS * 2);
+  assert.deepEqual(offSent, [], 'no market requests to a server that gave no account');
+  assert.equal(off.state().error, null);
+  stop();
   for (const x of [e, quiet, ok, off]) x.detachServer();
+});
+
+test('F21: a Market request that crosses the sign-in answer on a slow line shows the reason, never a second error toast', () => {
+  fakeStorage();
+  const sent: EconomyClientMsg[] = [];
+  const reason = 'Accounts, the Store and the Market are unavailable on this server right now.';
+  // the Market screen opens while still "Signing in": its request goes out before the account-state message is back
+  const e = createEconomy();
+  e.attachServer((m) => sent.push(m as EconomyClientMsg), 'ws://slow/ws');
+  const stop = e.watchMarket();
+  assert.equal(sent.length, 1);
+  e.receive({ t: 'econError', code: 'disabled', message: reason, re: 'market' }); // the answer to that request
+  assert.equal(e.state().error, null, 'a background market request never raises an error toast');
+  assert.equal(e.state().accountError, reason, 'its answer says why there is no account');
+  e.receive({ t: 'econError', code: 'disabled', message: reason }); // the account-state message, arriving in any order
+  assert.equal(e.state().error, null);
+  assert.equal(e.state().accountError, reason);
+  stop();
+  // the same for a server that refused this connection an account
+  const r = createEconomy();
+  r.attachServer(() => {}, 'ws://slow2/ws');
+  r.watchMarket()();
+  r.receive({ t: 'econError', code: 'no_account', message: 'You are not signed in to this server.', re: 'market' });
+  assert.equal(r.state().error, null);
+  assert.match(r.state().accountError ?? '', /not signed in/);
+  r.receive({ t: 'econError', code: 'account_limit', message: 'Too many new accounts were made from your internet connection.' });
+  assert.match(r.state().accountError ?? '', /Too many new accounts/, 'the precise reason replaces the vague one');
+  for (const x of [e, r]) x.detachServer();
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -426,6 +464,106 @@ test('F16: data that cannot be read never starts an empty economy, and the file 
   assert.throws(() => new AccountStore({ dir: dir2, log: () => {} }), StoreUnreadableError);
   assert.ok(!(createEconomyFromConfig({ enabled: true, dataDir: dir2, problems: [] }, { log: () => {} }) instanceof EconomyService));
   assert.ok(readFileSync(join(dir2, DB_FILE)).equals(before), 'the database file was not changed');
+});
+
+/** A data folder with n accounts, started twice so economy.db.bak holds them all. */
+function seededFolder(t: { after: (fn: () => void) => void }, n: number): string {
+  const dir = tempDir(t);
+  const { svc, store } = makeEconomy(dir);
+  for (let i = 0; i < n; i++) {
+    const c = conn(`10.3.${i >> 8}.${i & 255}`);
+    c.profile = svc.onHello(c, undefined);
+    givePearls(svc, c, 100 + i);
+    store.dirtyAccount(c.accountId!);
+  }
+  svc.close();
+  new AccountStore({ dir, log: () => {} }).close();
+  return dir;
+}
+
+/**
+ * With page p zeroed: does the small meta / first-row reading still work (head), can every row
+ * still be read (rows), and does PRAGMA quick_check pass (check)?
+ */
+function probePage(src: Buffer, pageSize: number, p: number, scratch: string): { head: boolean; rows: boolean; check: boolean } {
+  const b = Buffer.from(src);
+  b.fill(0, p * pageSize, (p + 1) * pageSize);
+  writeFileSync(scratch, b);
+  const db: { d: DatabaseSync | null } = { d: null };
+  const ok = (qs: string[]) => {
+    try {
+      db.d ??= new DatabaseSync(scratch);
+      for (const q of qs) db.d.prepare(q).all();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const head = ok(["SELECT v FROM meta WHERE k = 'schema'", "SELECT v FROM meta WHERE k = 'imported'", 'SELECT k, v FROM meta', 'SELECT EXISTS(SELECT 1 FROM accounts) AS a, EXISTS(SELECT 1 FROM listings) AS l']);
+  const rows = head && ok(['SELECT id, data FROM accounts', 'SELECT id, data FROM listings']);
+  let check = true;
+  try {
+    const r = db.d!.prepare('PRAGMA quick_check').all() as { quick_check: string }[];
+    check = r.length === 1 && r[0].quick_check === 'ok';
+  } catch {
+    check = false;
+  }
+  db.d?.close();
+  return { head, rows, check };
+}
+
+test('E1: a damaged page inside economy.db gives the null economy (never a crash), and neither economy.db nor its backup is touched', async (t) => {
+  const dir = seededFolder(t, 1200);
+  const file = join(dir, DB_FILE);
+  const bakFile = join(dir, `${DB_FILE}.bak`);
+  const src = readFileSync(file);
+  const bak = readFileSync(bakFile);
+  const pageSize = src.readUInt16BE(16) === 1 ? 65536 : src.readUInt16BE(16);
+  const scratch = join(tempDir(t), 'probe.db');
+  let inRows = -1;
+  let onlyCheck = -1;
+  for (let p = 1; p < src.length / pageSize && (inRows < 0 || onlyCheck < 0); p++) {
+    const r = probePage(src, pageSize, p, scratch);
+    if (r.head && !r.rows && inRows < 0) inRows = p; // the full row scan at load is the first to see it
+    if (r.rows && !r.check && onlyCheck < 0) onlyCheck = p; // reading every row never sees it
+  }
+  assert.ok(inRows > 0 && onlyCheck > 0, `found both kinds of page (rows ${inRows}, check only ${onlyCheck})`);
+  const cases: [string, number][] = [['a page the account rows live on', inRows], ['a page that reading the rows never touches (an index)', onlyCheck]];
+  for (const [what, p] of cases) {
+    const b = Buffer.from(src);
+    b.fill(0, p * pageSize, (p + 1) * pageSize);
+    writeFileSync(file, b);
+    const lines: string[] = [];
+    let econ: ServerEconomy | undefined;
+    assert.doesNotThrow(() => {
+      econ = createEconomyFromConfig({ enabled: true, dataDir: dir, problems: [] }, { log: (s) => lines.push(s) });
+    }, `${what}: the server must still start`);
+    assert.ok(econ && !(econ instanceof EconomyService), `${what}: the null economy, not a service`);
+    assert.ok(lines.some((l) => /ERROR: .*economy\.db could not be (read|opened)/.test(l)), `${what}: ${lines.join(' | ')}`);
+    const c = conn();
+    await hello(econ, c, 'G'.repeat(43));
+    assert.equal(count(c, 'account'), 0, `${what}: no account and no new token`);
+    assert.deepEqual(errors(c), ['disabled']);
+    econ.close();
+    assert.ok(readFileSync(file).equals(b), `${what}: economy.db was not changed`);
+    assert.ok(readFileSync(bakFile).equals(bak), `${what}: the last good economy.db.bak is kept`);
+  }
+});
+
+test('E1: a data folder that cannot be created gives the null economy with a loud log, not a crash', async (t) => {
+  const dir = tempDir(t);
+  writeFileSync(join(dir, 'not-a-folder'), 'a file where the data folder should be');
+  const lines: string[] = [];
+  let econ: ServerEconomy | undefined;
+  assert.doesNotThrow(() => {
+    econ = createEconomyFromConfig({ enabled: true, dataDir: join(dir, 'not-a-folder', 'data'), problems: [] }, { log: (s) => lines.push(s) });
+  });
+  assert.ok(econ && !(econ instanceof EconomyService));
+  assert.ok(lines.some((l) => /ERROR: the economy data in .*not-a-folder.* could not be opened/.test(l)), lines.join(' | '));
+  const c = conn();
+  await hello(econ, c, 'H'.repeat(43));
+  assert.equal(count(c, 'account'), 0);
+  econ.close();
 });
 
 test('the old economy.json is imported once: newest complete file wins, no wallets, orders or empty guests', (t) => {
@@ -731,6 +869,52 @@ test('F20: throwaway accounts on two connections cannot beat the daily cap, and 
   const before = rec(svc, main).pearls;
   tryMove();
   assert.ok(rec(svc, main).pearls - before <= 2 * DAILY_PEARL_CAP_PER_IP, 'bounded by the per-connection cap');
+  svc.close();
+});
+
+test('F20: over five days a farm on two connections is bounded by its connections, not by how many accounts it makes', async () => {
+  const { svc, clock } = makeEconomy(null);
+  const main = conn('198.51.100.9');
+  const farms = [conn('198.51.100.9'), conn('198.51.100.9'), conn('198.51.100.9'), conn('2001:db8:9::1'), conn('2001:db8:9::2'), conn('2001:db8:9:0:1::3')];
+  const all = [main, ...farms];
+  for (const c of all) await hello(svc, c);
+  veteran(svc, main);
+  givePearls(svc, main, 2400);
+  send(svc, main, { t: 'storeBuy', item: EPIC });
+  const start = rec(svc, main).pearls;
+  const DAYS = 5;
+  const connections = new Set(all.map((c) => netKey(c.ip))).size;
+  assert.equal(connections, 2);
+  let minted = 0;
+  for (let d = 0; d < DAYS; d++) {
+    const before = all.reduce((s, c) => s + rec(svc, c).pearls, 0);
+    for (let m = 0; m < 24; m++) svc.onMatchEnd(all.map((c, k) => ({ connId: c.id, won: true, row: row(k, { k: 5, hh: 10, ht: 12, sv: 0 }) })));
+    minted += all.reduce((s, c) => s + rec(svc, c).pearls, 0) - before;
+    // the farms ship everything to main: main lists its Epic at a farm's balance, the farm buys it, relists it at 50, main buys it back
+    for (const f of farms) {
+      const price = Math.min(rec(svc, f).pearls, 1_000_000);
+      if (price < 50) continue;
+      const epic = rec(svc, main).owned.find((o) => o.item === EPIC && !o.listed);
+      if (!epic) break;
+      send(svc, main, { t: 'marketSell', instance: epic.instance, price: { cur: 'pearls', amount: price } });
+      const l1 = [...svc['store'].db.listings.values()].find((l: Listing) => l.seller === main.accountId);
+      if (!l1) continue;
+      send(svc, f, { t: 'marketBuy', listing: l1.id });
+      const got = rec(svc, f).owned.find((o) => o.item === EPIC);
+      if (!got) {
+        send(svc, main, { t: 'marketCancel', listing: l1.id });
+        continue;
+      }
+      send(svc, f, { t: 'marketSell', instance: got.instance, price: { cur: 'pearls', amount: 50 } });
+      const l2 = [...svc['store'].db.listings.values()].find((l: Listing) => l.seller === f.accountId);
+      if (l2) send(svc, main, { t: 'marketBuy', listing: l2.id });
+    }
+    clock.t += DAY;
+  }
+  const gained = rec(svc, main).pearls - start;
+  const bound = DAYS * connections * DAILY_PEARL_CAP_PER_IP;
+  assert.ok(minted <= bound, `${all.length} accounts minted ${minted} Pearls in ${DAYS} days, more than ${connections} connections may (${bound})`);
+  assert.ok(gained <= bound, `main gained ${gained} in ${DAYS} days (bound ${bound}; one honest account earns ${DAYS * DAILY_PEARL_CAP})`);
   svc.close();
 });
 

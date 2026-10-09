@@ -739,17 +739,6 @@ export const SFX: Record<SfxId, SfxDef> = {
       sparkle(s, s.t + 0.58, 0.035, 96, 3, 0.05);
     },
   },
-  walletLinked: {
-    // a wallet connects: a heavy lock bolt sliding home, a click, then a calm three-note chime
-    v: 1.8, prio: 2, cap: 1, rev: 0.12, vary: 0.0, gap: 0.3,
-    fn: (s) => {
-      noiseHit(s, { ft: 'bandpass', f: 900, f1: 1500, q: 1.6, a: 0.01, d: 0.09, v: 0.25 });
-      clicks(s, { t: s.t + 0.09, n: 1, i0: 0.02, i1: 0.02, f: 2600, q: 3, cd: 0.01, v: 0.5 });
-      thump(s, s.t + 0.09, 160, 0.22, 0.08);
-      [79, 83, 86].forEach((m, i) => bell(s, { t: s.t + 0.2 + i * 0.11, f: midiHz(m), d: 0.7 - i * 0.1, v: 0.12, partials: BELL }));
-      tone(s, { t: s.t + 0.42, f: midiHz(91), a: 0.05, d: 0.6, v: 0.04, vib: [5, 0.004] });
-    },
-  },
   powerHook: {
     // a hook power-up is armed or thrown: a watery bloop, a rising charged sweep, a bright ping
     v: 1.7, prio: 3, cap: 1, rev: 0.16, vary: 0.04, gap: 0.15,

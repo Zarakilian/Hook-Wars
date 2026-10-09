@@ -14,17 +14,22 @@ import { BaseBiome, LIP, h01, jit, mix, mosaic, pathSegs, pick, shade, smooth01,
 import type { Cell } from '../field.ts';
 import type { BackdropRule } from '../flora.ts';
 import type { MistDef } from '../mist.ts';
+import type { PoolDef } from './index.ts';
 import { MuckmireBiome } from './muckmire.ts';
 
 /** wet mud patches on the ground */
-const MUD = [0x3c2f20, 0x33281b, 0x463727, 0x2b2318];
+const MUD = [0x2e2a1a, 0x28251a, 0x353020, 0x24211a];
 /** black, glossy mud of the shore strip and the puddles */
-const BLACK_MUD = [0x2c2318, 0x34291c, 0x271f15, 0x3a2e20];
-const PAD = [0x4f7a2e, 0x5a8a34, 0x46702a, 0x62923a];
-const PETAL = [0xf6f2ee, 0xfbe8f0, 0xf2d6e4];
-const LITTER = [0x5a4a2a, 0x64532e, 0x4e4224];
+const BLACK_MUD = [0x1c1b14, 0x221f17, 0x181711, 0x272319];
+const LITTER = [0x4a3e22, 0x54462a, 0x3e3420];
 /** width of the lily-pad mud strip along every shore (m): visual only, the sim water starts at c = 0 */
 const SHALLOWS = 3.2;
+/** mireMud thresholds: wet peat, a puddle's raised rim, the puddle itself */
+const PEAT = 0.6;
+const PUDDLE_RIM = 0.64;
+const PUDDLE = 0.7;
+/** the dusk sky mirrored in the puddles */
+const PUDDLE_SKY = 0x4a3c6c;
 
 export class MirelightBiome extends MuckmireBiome {
   override readonly farColor = 0x1c2618;
@@ -50,9 +55,27 @@ export class MirelightBiome extends MuckmireBiome {
   }
 
   /**
+   * 0 dry ground, 1 the raised rim round a puddle, 2 a puddle (standing water over a mud floor). Visual
+   * only: the sim ground is flat here and a puddle is a few centimetres deep, well above the river's
+   * full water line. Puddles stay off the shore strips, paths, plazas and decks. On a Dry Bed there are
+   * none: the hollows have dried out to peat (no water sheet is built in that mode).
+   */
+  puddleAt(x: number, z: number): 0 | 1 | 2 {
+    if (this.dry) return 0;
+    const n = mireMud(x, z);
+    if (n <= PUDDLE_RIM) return 0;
+    if (Math.abs(x) > this.halfW - 0.6 || Math.abs(z) > this.halfD - 0.6 || this.plazaDist(x, z) < 1.2) return 0;
+    if (this.channel(x, z) > -SHALLOWS - 0.6) return 0;
+    if (n <= PUDDLE || this.pathAmount(x, z) > 0) return 1;
+    for (const p of this.map.platforms ?? []) if (Math.abs(x - p.x) < p.w / 2 + 0.6 && Math.abs(z - p.z) < p.d / 2 + 0.6) return 1;
+    return 2;
+  }
+
+  /**
    * Muckmire's shapes (river cut, plazas, paths, jungle) with Mirelight's own ground on top: moss mats
-   * broken by wet mud and puddles, and a strip of black lily-pad mud along every shore. Heights stay
-   * Muckmire's, apart from the puddles sitting a step lower (always well above the full water line).
+   * with standing puddles ringed by wet peat, and a strip of black lily-pad mud along every shore,
+   * glossiest at the water. Heights stay Muckmire's, apart from the puddle floors a step lower and their
+   * rims (always well above the full water line).
    */
   override sample(x: number, z: number, ix: number, iz: number, cs: number, out: Cell): void {
     super.sample(x, z, ix, iz, cs, out);
@@ -61,47 +84,67 @@ export class MirelightBiome extends MuckmireBiome {
     if (c > LIP) return; // the channel wall and bed stay mud (the map's palettes)
     const wet = c > -SHALLOWS ? smooth01((c + SHALLOWS) / (SHALLOWS + LIP)) : 0;
     const path = this.pathAmount(x, z);
-    // ground: moss mats with wet mud patches and standing puddles in the low spots
     const n = mireMud(x, z);
-    let col: number;
-    let rough = 0.95;
-    if (n > 0.58 && wet < 0.5) {
-      if (n > 0.71) {
-        col = shade(jit(pick(BLACK_MUD, ix, iz, 503), ix, iz, 0.05), 0.85);
-        rough = 0.55; // wet but not a mirror: glossy puddles flash white at the far edge of the screen
-        out.h -= 0.0625;
-      } else {
-        col = mosaic(MUD, valueNoise2(x * 0.4, z * 0.4, 504), ix, iz, 505, 0.06, 0.1);
-        rough = 0.4;
-      }
-    } else {
-      col = mosaic(this.moss, valueNoise2(x * 0.08, z * 0.08, 506) * 0.7 + valueNoise2(x * 0.3, z * 0.3, 507) * 0.3, ix, iz, 508, 0.07, 0.12);
-      const r = h01(ix, iz, 509);
-      if (r < 0.05) col = pick(LITTER, ix, iz, 510);
-      else if (r < 0.065) col = shade(pick(MUD, ix, iz, 511), 1.1);
+    // ground: deep green moss mats, darker clumps, the odd peat fleck
+    const clump = valueNoise2(x * 0.09, z * 0.09, 506) * 0.65 + valueNoise2(x * 0.42, z * 0.42, 507) * 0.35;
+    let col = mosaic(this.moss, clump, ix, iz, 508, 0.06, 0.08);
+    let rough = 0.92;
+    const r = h01(ix, iz, 509);
+    if (r < 0.025) col = pick(LITTER, ix, iz, 510);
+    else if (r < 0.04) col = shade(pick(MUD, ix, iz, 511), 1.1);
+    const pud = wet > 0 ? 0 : this.puddleAt(x, z);
+    if (pud === 2) {
+      // the puddle floor: black mud under the standing water (the water sheet comes from pools())
+      // seen through the water it takes the dusk sky's mauve, like the river beside it
+      col = jit(mix(pick(BLACK_MUD, ix, iz, 503), PUDDLE_SKY, 0.55), ix, iz, 0.05);
+      rough = 0.1;
+      out.h = this.puddleY - 0.0625 - 0.04 * smooth01((n - PUDDLE) / 0.06);
+    } else if (n > PEAT) {
+      // wet peat ringing the puddles, glossier toward the water
+      const k = smooth01((n - PEAT) / (PUDDLE - PEAT));
+      col = mix(col, shade(mosaic(MUD, valueNoise2(x * 0.4, z * 0.4, 504), ix, iz, 505, 0.05, 0.08), this.dry ? 1.12 : 0.95), Math.min(1, k * 1.5));
+      // wet peat round the water; on a Dry Bed the hollows are dry, cracked peat
+      rough = this.dry ? 0.9 : 0.92 - k * 0.6;
+      // the rim stands just proud of the water so the sheet's edge never shows
+      if (!this.dry && n > PUDDLE_RIM && wet === 0 && this.plazaDist(x, z) > 0.3) out.h = Math.max(out.h, this.puddleY + 0.035);
     }
     if (path > 0.2 && h01(ix, iz, 512) < (path - 0.2) / 0.5) {
       // a muddy track, wetter in the middle
       col = shade(mosaic(this.mud, valueNoise2(x * 0.5, z * 0.5, 513), ix, iz, 514, 0.07, 0.15), 0.85);
-      rough = path > 0.6 ? 0.3 : 0.6;
+      rough = path > 0.6 ? 0.35 : 0.6;
     }
     if (wet > 0) {
-      // the shore strip: wet dark mud, glossier toward the water, lily pads on its last metre
-      const k = Math.min(1, wet * 1.4);
-      const mud = mosaic(BLACK_MUD, valueNoise2(x * 0.35, z * 0.35, 522), ix, iz, 515, 0.05, 0.08);
-      col = mix(col, shade(mud, 1 - wet * 0.25), k);
-      rough = rough + (0.18 - rough) * k;
-      if (wet > 0.62) {
-        const v = this.voronoi(x, z, 1.4);
-        const id = this.cellId;
-        if (v > 0.14 && h01(id & 1023, id >> 10, 516) < 0.3) {
-          col = v > 0.36 && h01(id & 1023, id >> 10, 517) < 0.12 ? shade(pick(PETAL, ix, iz, 518), 0.85) : jit(pick(PAD, id & 255, 0, 519), ix, iz, 0.05);
-          rough = 0.55;
-        }
-      } else if (wet < 0.45 && h01(ix >> 1, iz >> 1, 520) < 0.3 * (1 - wet * 2)) col = mosaic(this.moss, 0.45, ix, iz, 521, 0.06, 0.1); // moss creeping onto the mud
+      // the shore strip: moss gives way to wet peat, then black lily-pad mud, glossiest at the water
+      const peat = mosaic(MUD, valueNoise2(x * 0.3, z * 0.3, 522), ix, iz, 515, 0.05, 0.08);
+      const black = mosaic(BLACK_MUD, valueNoise2(x * 0.35, z * 0.35, 523), ix, iz, 516, 0.05, 0.06);
+      const edge = (valueNoise2(x * 0.5, z * 0.5, 524) - 0.5) * 0.25;
+      const a = smooth01((wet + edge) / 0.35);
+      const b = smooth01((wet + edge - 0.35) / 0.3);
+      col = mix(mix(col, peat, a), shade(black, 1 - wet * 0.2), b);
+      // the last stretch is under a film of water: it takes on the dusk sky like the river does
+      col = mix(col, PUDDLE_SKY, smooth01((wet + edge - 0.72) / 0.28) * 0.4);
+      rough = rough + (0.14 - rough) * Math.min(1, wet * 1.3);
+      if (c > -0.3) {
+        // the wash line where the strip meets the river: black, mirror-wet
+        col = mix(shade(black, 0.7), PUDDLE_SKY, 0.3);
+        rough = 0.08;
+      }
     }
     out.top = col;
     out.rough = rough;
+  }
+
+  /** The level of the standing water in the puddles on the moss. */
+  get puddleY(): number {
+    return this.T - 0.1;
+  }
+
+  /** Standing water in the moss puddles: a flat sheet over each puddle floor, never over its rim. */
+  override pools(): PoolDef[] {
+    if (this.dry) return [];
+    const q = 0.125; // the 2 x 2 columns under each 0.5 m quad of the sheet
+    const all = (x: number, z: number) => this.puddleAt(x - q, z - q) === 2 && this.puddleAt(x + q, z - q) === 2 && this.puddleAt(x - q, z + q) === 2 && this.puddleAt(x + q, z + q) === 2;
+    return [{ x0: -this.halfW, x1: this.halfW, z0: -this.halfD, z1: this.halfD, level: this.puddleY, keep: all, wave: 0 }];
   }
 
   /** Signed distance outside the nearest hummock island in the far waterway (negative inside). */
@@ -219,7 +262,12 @@ export class MirelightBiome extends MuckmireBiome {
     const inPlay = (x: number, z: number) => Math.abs(x) < this.halfW - 0.3 && Math.abs(z) < this.halfD - 0.3 && this.plazaDist(x, z) > 0.3 && offDeck(x, z);
     const still = !this.tidal && !this.dry; // floating flowers only where the water level never changes
     return [
-      { model: 'cattails', spacing: rich ? 2.2 : 3, scale: [0.6, 1.0], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -SHALLOWS + 0.6 && c < -0.3 ? 0.22 : 0; } },
+      { model: 'cattails', spacing: rich ? 2.0 : 2.8, scale: [0.6, 1.0], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -SHALLOWS + 0.4 && c < -1.0 ? 0.3 : 0; } },
+      // the lily-pad mud: pads and flowering lilies lying on the black mud along every shore
+      { model: 'lilyflowers', spacing: rich ? 1.6 : 2.2, scale: [0.7, 1.1], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -1.5 && c < -0.1 && !this.nearIsland(x, z) ? 0.55 : 0; } },
+      { model: 'lilypads', spacing: rich ? 1.4 : 2.0, scale: [0.7, 1.0], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -2.1 && c < -0.1 ? 0.4 : 0; } },
+      // and floating on the standing water of the puddles
+      ...(this.dry ? [] : [{ model: 'lilypads' as const, spacing: rich ? 1.5 : 2.2, scale: [0.6, 0.9] as [number, number], density: (x: number, z: number) => (this.puddleAt(x, z) === 2 ? 0.45 : 0), yOffset: 0.07 }]),
       ...(still ? [{ model: 'lilyflowers' as const, spacing: rich ? 2.6 : 3.4, scale: [0.7, 1.1] as [number, number], density: (x: number, z: number) => { const c = this.channel(x, z); return inPlay(x, z) && c > 0.5 && c < 2.2 && !this.nearIsland(x, z) ? 0.3 : 0; }, onWater: true }] : []),
       { model: 'pebble', spacing: rich ? 1.1 : 1.6, scale: [0.7, 1.3], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -this.bankW && c < 0.1 ? 0.45 : 0; } },
       { model: 'root', spacing: rich ? 1.4 : 2.2, scale: [0.7, 1.2], density: (x, z) => { const c = this.channel(x, z); return inPlay(x, z) && c > -0.6 && c < 0.15 && !this.nearIsland(x, z) ? 0.6 : 0; }, yaw: (x, z) => this.faceRiver(x, z) },

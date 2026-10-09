@@ -5,11 +5,13 @@
 **Done when:** You can say which file owns a feature and which contract it must keep.
 **Last verified:** 2026-10-08
 
-Hook Wars is a voxel hook-brawler for the browser. Two teams of up to 5 Pudgies stand on either side of a river and drag each other across it with chain hooks. It is inspired by the classic "Pudge Wars" custom game, but every character, name and asset is original.
+Hook Wars is a voxel hook-brawler. Two teams of up to 5 Lunkers stand on either side of a river and drag each other across it with chain hooks. It is inspired by the classic "Pudge Wars" custom game, but every character, name and asset is original.
+
+**Editions.** This tree is the standard edition: no crypto of any kind. It ships as a free browser build (cosmetics earned with Pearls) and as a paid Steam build (US$4.99 Early Access; premium cosmetics sold through Steam's Item Store and traded on the Steam Community Market). Steam does not allow games that issue or exchange crypto or NFTs, so the Solana edition lives only on branch `edition/solana`. Code identifiers keep the old internal name `Pudgy`; players only ever see "Lunker".
 
 ## The one-line pitch
 
-Think of it as fishing for your friends. Your hook is the rod, the river is the danger, and the catch is an enemy Pudgy dragged onto your bank and beaten up.
+Think of it as fishing for your friends. Your hook is the rod, the river is the danger, and the catch is an enemy Lunker dragged onto your bank and beaten up.
 
 ## Rules
 
@@ -45,7 +47,7 @@ Tide cycle for `tide` and `locks`: low (walkable) → rising (wading, slow, horn
 | Jellyfish (Coral Cove) | slow 25%, 24 damage per second |
 | Steam Vents (Cogwater) | hiss warning, then blast every 4 s: 60 damage and big knockback |
 
-## Pudgies
+## Lunkers
 
 Three families, one shared kit, one small passive each. They must never look like Pudge: no stitched flesh, no exposed guts, no cleaver, no rot.
 
@@ -53,7 +55,7 @@ Three families, one shared kit, one small passive each. They must never look lik
 |---|---|---|
 | Harbour Brawler | big-bellied fishmonger, team-coloured rubber apron, wellies, hats, barbed fishing hook on a rope | Sea Legs: +8% move speed |
 | Swamp Ogre | mossy, warty, tusked bog troll, bone and vine hook | Mudskin: doubled regen out of combat |
-| Butcher-Bot | riveted barrel-bellied robot, steam vents, glowing visor, crane claw | Overclock: hook cooldown -8% |
+| Dredge-Bot | riveted barrel-bellied harbour robot, smokestacks, glowing visor, crane-arm hook | Overclock: hook cooldown -8% |
 
 Cosmetic option names live in `client/render/contracts.ts` as `COSMETIC_NAMES`: 8 hats, 8 accents and 6 faces per family.
 
@@ -87,7 +89,11 @@ You keep walking while your hook or grapple winds up and flies, at 85% speed. On
 
 Map data lives in `shared/maps/*.ts` (format: `shared/maps/types.ts`). One map definition drives collision, river, spawns and the visuals. The layout is 72 m by 48 m, with the main river along Z through x = 0. Maps may add side channels (`channels`), pools (`pools`) and walkable decks (`platforms`: docks, bridges, piers, floes). A mover with a `range` shuttles inside it instead of drifting the whole river.
 
-**Decks.** The sim is flat, so a deck is land for anyone who walks onto it from the bank, or climbs on from deep water or ice. Anyone who walks in from a dry bed or a low tide stays under it, on the bed, until they leave its footprint (`deckLayer` in `shared/sim/movement.ts`, snapshot flag `UFlag.UnderDeck`). Deck tops are at `platformDeckY(map, p)`.
+**Decks.** The sim is flat, so a deck is land for anyone who walks onto it from the bank. While the channel is dry or wading, anyone who walks in from the bed stays under the deck, on the bed, until they leave its footprint (`deckLayer` in `shared/sim/movement.ts`, snapshot flag `UFlag.UnderDeck`). Once the water is deep or frozen there is no "under": everyone inside a footprint is on top, and a unit under a deck at the flood climbs straight on. Grapple landings and hook deliveries always land on top. Deck tops are at `platformDeckY(map, p)`.
+
+Layers decide contact (`deckTier`, `sameLayer`, `hookCanCatch`): a unit on a deck over a dry or wading channel and a unit on the bed below never body-block, wallop, bash, set off each other's mines or share a hazard. A hook thrown from the bank or a deck flies over units under a deck (so a bridge is cover in Dry Bed and at low tide); a hook thrown along the bed still catches them.
+
+**Hazards and the whirlpool.** With Mixed hazards, a slot and its mirror always get the same kind and the same timing, as do mirrored periodic hazards in every mode. The whirlpool bends hooks only while its water shows: never in Dry Bed or frozen, fading out below water level 0.55. A grapple rescue to a bank anchor always lands on dry ground. Standing still in quicksand sinks you whatever the number of pits.
 
 ## Architecture
 
@@ -104,7 +110,8 @@ tests/    node --test: sim soak, mechanics, end-to-end websocket match.
 | Snapshots | JSON, per-team view at 30 Hz. Stealthed enemies and enemy mines are never sent |
 | Client netcode | Own walking is predicted with the same `stepMove` and reconciled on every snapshot. Others are interpolated about 2.5 ticks behind. Cast feedback plays instantly on key press |
 | Solo | `LocalSession` runs `GameSim` in the page. Same client code path, zero latency |
-| Server hardening | 4 KB max message, token-bucket rate limit, per-IP and total connection caps, strict validation in `shared/protocol.ts`, slow-consumer protection, same-origin check, CSP and security headers |
+| Server hardening | 4 KB max message, token-bucket rate limit, per-IP and total connection caps, strict validation in `shared/protocol.ts`, slow-consumer protection with snapshot acks, same-origin check, CSP and security headers. Wrong room codes are limited per IP (20 a minute, then a 60 s block; keyed on the `TRUST_PROXY` address, IPv6 by /64). Static files are served brotli or gzip compressed (2.0 MB bundle to about 0.6 MB) |
+| Rejoin | A dropped player's unit is driven by a stand-in bot for 90 s and keeps its gold, upgrades, items and score. The rejoin token comes with the match start. A match whose last human dropped is held for those 90 s too |
 
 ## Module ownership and contracts
 
@@ -121,7 +128,8 @@ Every render, audio and UI module implements an interface in `client/render/cont
 | Audio | `client/audio/**` | `AudioSystem`, `SfxId` |
 | UI and HUD | `client/ui/**` | `UI`, `Hud`, `HudFrame`, `AppActions` |
 | Bots | `shared/sim/bots.ts` (+ `bots/`: `nav.ts` runtime nav grid, A*, bank model and hold spots; `navigate.ts` path following and the per-tick search budget) | `updateBots(sim)`, `warmBots(map)` |
-| Economy (accounts, store, market, wallet link, devnet chain) | `server/economy/**`, `client/economy/**`, `shared/economy.ts` | `ServerEconomy`, `EconomyClient` (see `docs/economy.md`) |
+| Economy (accounts, Pearls, store, Pearl market) | `server/economy/**` (SQLite store), `client/economy/**`, `shared/economy.ts` | `ServerEconomy`, `EconomyClient` (see `docs/economy.md`) |
+| Platform | `client/platform.ts` | `isSteam()`: the Steam desktop build exposes a bridge before the page loads |
 | Glue | `client/game/*`, `client/app.ts`, `client/net/*` | owns the contracts |
 
 Vertical layout every module uses: the bank top is at `groundY(map)` (about 1.2 m), the river bed at `bedY(map)`, the water surface at `waterY(map, level)` and deck tops at `platformDeckY(map, p)`. Models face +Z at `rotation.y = 0`. The sim's facing angle `f` means direction `(sin f, cos f)`.

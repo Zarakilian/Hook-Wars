@@ -196,7 +196,7 @@ export class Connection {
         if (this.roomCode) this.rejoin.remove(this.url, this.roomCode); // nothing left to reclaim
         return;
       case 'error':
-        if (this.autoRejoining && (m.code === 'no_room' || m.code === 'room_full')) {
+        if (this.autoRejoining && (m.code === 'no_room' || m.code === 'room_full' || m.code === 'join_limit')) {
           this.rejoin.remove(this.url, this.autoRejoining);
           this.autoRejoining = null;
         }

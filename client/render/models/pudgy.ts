@@ -58,6 +58,16 @@ let seedCounter = 1;
  */
 export const TEAM_GLOW = { game: 0.45, showcase: 0.08 } as const;
 
+/**
+ * Share of the scene's environment light the body takes (material.ts uEnv; premium voxels always
+ * take all of it). In the Locker the bright studio room environment (preview.ts, intensity 0.55)
+ * laid an even grey veil over every character: median luminance 0.69 x the reference sheet + 81 for
+ * all three families, saturation about 0.6 x (finding 34 check). At 0.2 the Brawler, ogre and bot
+ * land at 1.1, 1.24 and 1.29 x their sheets' median and within 0.06 to 0.14 of their saturation.
+ * Game maps keep theirs (1). Thumbnails have no environment, so nothing changes there.
+ */
+export const ENV_LIGHT = { game: 1, showcase: 0.2 } as const;
+
 /** Transparent-queue order of the stealth depth pre-pass; the ghost parts draw right after it. */
 const GHOST_DEPTH_ORDER = 10;
 let ghostDepth: THREE.MeshBasicMaterial | null = null;
@@ -84,7 +94,7 @@ export function createPudgy(o: PudgyOptions): PudgyViewEx {
   const l = look(o.family, o.loadout, o.team, fine, o.quality);
   const fb = familyBuild(o.family, l);
   const tc = TEAM_COLORS[o.team];
-  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light, fine ? TEAM_GLOW.showcase : TEAM_GLOW.game);
+  const uniforms = makeUniforms(o.isLocal ? 0.38 : 0.26, tc.light, fine ? TEAM_GLOW.showcase : TEAM_GLOW.game, fine ? ENV_LIGHT.showcase : ENV_LIGHT.game);
   uniforms.uSparkle.value = fb.premium ? 1 : 0;
   const solid = makePudgyMaterial(uniforms, false);
   let ghost: THREE.MeshStandardMaterial | null = null;

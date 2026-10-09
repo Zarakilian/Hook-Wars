@@ -28,7 +28,7 @@ import { createWater, syncWaterMovers } from '../render/world/water.ts';
 import type { Settings } from '../settings.ts';
 import type { Hud, HudFrame } from '../ui/types.ts';
 import { CameraRig } from './camera.ts';
-import { ghostHookParams } from './ghost.ts';
+import { OwnHookPredictor, ghostHead } from './ghost.ts';
 import { InputController } from './input.ts';
 
 export interface GameClientDeps {
@@ -99,13 +99,11 @@ export class GameClient {
   private fps = 60;
   private lastCountdown = -1;
   private readonly predictedAt = { hook: -10, grapple: -10, bash: -10 };
-  /** Online only: a client-side hook drawn from the moment of release until the server's hook arrives. */
-  private ghost: {
-    start: number; deadline: number; speed: number; radius: number; range: number; fx: number;
-    aimX: number; aimZ: number; dx: number; dz: number; ox: number; oz: number; chain: ChainView | null;
-  } | null = null;
-  /** After the hand-over, the real head is drawn with a shrinking offset so it does not jump back. */
-  private ghostBlend: { id: number; ox: number; oz: number; t: number; dur: number } | null = null;
+  /** Online only: our hook from the moment of release until the server's hook is drawn on its own. */
+  private readonly ownHook = new OwnHookPredictor();
+  /** the ghost hook's chain, handed to the server's hook at the hand-over */
+  private ghostChain: ChainView | null = null;
+  private readonly headTmp = { x: 0, z: 0 };
   private lastBull = new Map<number, number>();
   private ended: MatchEnd | null = null;
   private frameRef: Frame | null = null;
@@ -251,24 +249,9 @@ export class GameClient {
   private startGhost(you: YouSnap): void {
     const aim = this.input.peekPressAim() ?? this.input.aim;
     // speed, range and look of the hook the server will launch (Long Line: +15% speed, +50% range)
-    const hook = ghostHookParams(you);
-    this.ghost?.chain?.dispose();
-    const start = this.time + BAL.hookWindup;
-    this.ghost = {
-      start,
-      deadline: start + this.session.rtt() / 1000 + (this.buffer.delay + 1) * TICK_DT + 0.1,
-      speed: hook.speed,
-      radius: hook.radius,
-      range: hook.range,
-      fx: hook.fx,
-      aimX: aim.x,
-      aimZ: aim.z,
-      dx: 0,
-      dz: 0,
-      ox: 0,
-      oz: 0,
-      chain: null,
-    };
+    this.ghostChain?.dispose();
+    this.ghostChain = null;
+    this.ownHook.press(you, this.time, aim, this.session.rtt(), this.buffer.delay, this.buffer.latest?.t ?? -1);
   }
 
   private localTick(): void {
@@ -282,6 +265,7 @@ export class GameClient {
     const az = pressed && pa ? pa.z : this.input.aim.z;
     const inp = { seq: ++this.seq, mx: mv.x, mz: mv.z, ax, az, b: pressed };
     this.session.sendInput(inp);
+    if (pressed & Btn.Hook && !this.session.local) this.ownHook.sent(this.buffer.latest?.t ?? -1, this.session.rtt());
     this.predictor.apply(inp);
   }
 
@@ -402,7 +386,7 @@ export class GameClient {
     for (const h of f.hooks) if (h.tg >= 0) hooked.add(h.tg);
     const hookOwners = new Set<number>();
     for (const h of f.hooks) hookOwners.add(h.o);
-    if (this.ghost?.chain) hookOwners.add(this.youId);
+    if (this.ghostChain) hookOwners.add(this.youId);
     const units = new Map(f.units);
     // the local unit is drawn where prediction says it is
     const meSnap = this.me;
@@ -524,55 +508,39 @@ export class GameClient {
 
   /** Online: draw our own hook from the moment of release until the server's hook shows up. */
   private updateGhost(f: Frame, y: number): void {
-    const g = this.ghost;
+    const g = this.ownHook.ghost;
     if (!g) return;
-    const own = f.hooks.find((h) => h.o === this.youId && h.k === 0);
     const st = this.me?.st;
-    if (own) {
-      if (g.chain) {
-        const t = Math.max(0, this.time - g.start);
-        const travel = Math.min(g.range, g.speed * t);
-        const gx = g.ox + g.dx * travel;
-        const gz = g.oz + g.dz * travel;
-        if (own.p === 0 && own.tg < 0 && own.ru < 0) {
-          const ox = gx - own.x;
-          const oz = gz - own.z;
-          this.ghostBlend = { id: own.i, ox, oz, t: 0, dur: 0.06 + Math.hypot(ox, oz) / g.speed };
-        }
-        this.chains.get(own.i)?.dispose();
-        this.chains.set(own.i, g.chain); // hand the same chain over: no flicker
-        g.chain.setFx?.(own.fx, own.r);
+    const step = this.ownHook.frame(f, this.youId, this.time, this.predictor.body, st === UnitState.Knocked || st === UnitState.Hooked || st === UnitState.Dead);
+    const chain = this.ghostChain;
+    if (step.act === 'take') {
+      if (chain && step.own) {
+        this.chains.get(step.own.i)?.dispose();
+        this.chains.set(step.own.i, chain); // hand the same chain over: no flicker
+        chain.setFx?.(step.own.fx, step.own.r);
       }
-      this.ghost = null;
+      this.ghostChain = null;
       return;
     }
-    if (this.time > g.deadline || st === UnitState.Knocked || st === UnitState.Hooked || st === UnitState.Dead) {
-      g.chain?.dispose();
-      this.ghost = null;
+    if (step.act === 'drop') {
+      chain?.dispose();
+      this.ghostChain = null;
       return;
     }
-    if (this.time < g.start) return;
-    if (!g.chain) {
-      const b = this.predictor.body;
-      let dx = g.aimX - b.x;
-      let dz = g.aimZ - b.z;
-      const l = Math.hypot(dx, dz) || 1;
-      dx /= l;
-      dz /= l;
-      g.dx = dx;
-      g.dz = dz;
-      g.ox = b.x + dx * BAL.hookHand;
-      g.oz = b.z + dz * BAL.hookHand;
+    if (step.act !== 'fly') return;
+    let c = chain;
+    if (!c) {
       const info = this.players.get(this.youId);
-      g.chain = this.fx.createChain(0, info?.family ?? 'brawler', info?.team ?? 0, g.fx, g.radius, info?.loadout.hands);
+      c = this.fx.createChain(0, info?.family ?? 'brawler', info?.team ?? 0, g.fx, g.radius, info?.loadout.hands);
+      this.ghostChain = c;
     }
-    const travel = Math.min(g.range, g.speed * (this.time - g.start));
+    const head = ghostHead(g, this.time, this.headTmp);
     const v = this.views.get(this.youId);
     const hand = v ? v.pudgy.getHandWorld(this.tmpV2) : this.tmpV2.set(g.ox, y, g.oz);
     this.ghostPts[0].copy(hand);
-    this.ghostPts[1].set(g.ox + g.dx * travel, y, g.oz + g.dz * travel);
-    g.chain.setVisible(true);
-    g.chain.update(this.ghostPts, 1 / 60, { retracting: false, carrying: false, time: this.time });
+    this.ghostPts[1].set(head.x, y, head.z);
+    c.setVisible(true);
+    c.update(this.ghostPts, 1 / 60, { retracting: false, carrying: false, time: this.time });
   }
 
   private readonly ghostPts = [new THREE.Vector3(), new THREE.Vector3()];
@@ -613,6 +581,9 @@ export class GameClient {
     this.updateGhost(f, y);
     for (const h of f.hooks) {
       seen.add(h.i);
+      // the head; null for our hook while the ghost still draws it (it is not interpolated yet)
+      const head = this.ownHook.head(h, this.youId, vdt, this.headTmp);
+      if (!head) continue;
       let c = this.chains.get(h.i);
       const owner = this.players.get(h.o);
       if (!c) {
@@ -633,16 +604,9 @@ export class GameClient {
       if (ov && ov.visible) ov.pudgy.getHandWorld(next());
       for (let i = 0; i + 1 < h.pts.length; i += 2) next().set(h.pts[i], y, h.pts[i + 1]);
       // the head; a latched grapple (phase 2) sits on whatever it hit
-      let hx = h.x;
-      let hz = h.z;
-      const bl = this.ghostBlend;
-      if (bl && bl.id === h.i) {
-        bl.t += vdt;
-        const k = Math.max(0, 1 - bl.t / bl.dur);
-        hx += bl.ox * k;
-        hz += bl.oz * k;
-        if (k <= 0) this.ghostBlend = null;
-      }
+      // (after the hand-over our head carries a shrinking offset from the ghost: see OwnHookPredictor)
+      const hx = head.x;
+      const hz = head.z;
       // a carried body rides the bed or the water, so the chain end drops onto it
       const carrying = h.tg >= 0 || h.ru >= 0;
       const hy = carrying ? this.baseY(hx, hz) + HOOK_Y : y;
@@ -1089,7 +1053,7 @@ export class GameClient {
       m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     }
-    this.ghost?.chain?.dispose();
+    this.ghostChain?.dispose();
     this.world.dispose();
     this.water.dispose();
     this.fx.dispose();

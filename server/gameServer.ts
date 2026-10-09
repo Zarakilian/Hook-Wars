@@ -28,20 +28,47 @@ export const JOIN_MISS_WINDOW_MS = 60_000;
 export const JOIN_BLOCK_MS = 60_000;
 const JOIN_MISS_MAX_ENTRIES = 10_000;
 
+/** The groups of an IPv6 address, '::' filled in; an embedded dotted IPv4 tail is its last two. Null if malformed. */
+function ipv6Groups(a: string): number[] | null {
+  const halves = a.split('::');
+  if (halves.length > 2) return null;
+  const expand = (s: string): number[] => {
+    const out: number[] = [];
+    for (const g of s ? s.split(':') : []) {
+      if (g.includes('.')) {
+        const o = g.split('.').map((x) => (Number.parseInt(x, 10) || 0) & 255);
+        out.push((o[0] << 8) | o[1], ((o[2] ?? 0) << 8) | (o[3] ?? 0));
+      } else out.push(Number.parseInt(g, 16) || 0);
+    }
+    return out;
+  };
+  const head = expand(halves[0]);
+  const tail = halves.length === 2 ? expand(halves[1]) : [];
+  const fill = halves.length === 2 ? Math.max(0, 8 - head.length - tail.length) : 0;
+  return [...head, ...new Array<number>(fill).fill(0), ...tail];
+}
+
+/** An IPv4-mapped IPv6 address (::ffff:a.b.c.d, in any spelling) as plain IPv4; anything else as is. */
+function unmapIPv4(ip: string): string {
+  const a = ip.trim();
+  if (!a.includes(':') || !/ffff/i.test(a)) return a;
+  const g = ipv6Groups(a.split('%')[0].toLowerCase());
+  if (!g || g.length !== 8 || g[5] !== 0xffff || g.slice(0, 5).some((x) => x !== 0)) return a;
+  return `${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`;
+}
+
 /**
  * The address a per-IP limit counts against: IPv4 as is, IPv6 by its /64 (one household or one
- * server gets a whole /64, so counting single v6 addresses would be no limit at all).
+ * server gets a whole /64, so counting single v6 addresses would be no limit at all). An IPv4-mapped
+ * address counts as its IPv4 address: its first 64 bits are zero, so as IPv6 every IPv4 client would
+ * share one key.
  */
 export function ipKey(ip: string): string {
-  const a = ip.split('%')[0].toLowerCase();
+  const a = unmapIPv4(ip).split('%')[0].toLowerCase();
   if (!a.includes(':')) return a;
-  const halves = a.split('::');
-  if (halves.length > 2) return a;
-  const head = halves[0] ? halves[0].split(':') : [];
-  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
-  const fill = halves.length === 2 ? Math.max(0, 8 - head.length - tail.length) : 0;
-  const groups = [...head, ...new Array<string>(fill).fill('0'), ...tail];
-  return `${groups.slice(0, 4).map((g) => (Number.parseInt(g, 16) || 0).toString(16)).join(':')}::/64`;
+  const g = ipv6Groups(a);
+  if (!g) return a;
+  return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
 }
 
 /** Failed attempts per key in a fixed window; at the limit the key is blocked for a while. Bounded. */
@@ -198,13 +225,13 @@ export class GameServer {
   }
 
   private clientIp(req: IncomingMessage): string {
-    const peer = (req.socket.remoteAddress ?? 'unknown').replace(/^::ffff:/, '');
+    const peer = unmapIPv4(req.socket.remoteAddress ?? 'unknown');
     if (this.cfg.trustedProxies.includes(peer)) {
       // only our own proxy may tell us the client address; it appends the real peer at the end
       const xf = req.headers['x-forwarded-for'];
       const parts = (Array.isArray(xf) ? xf.join(',') : (xf ?? '')).split(',');
       const last = parts[parts.length - 1]?.trim();
-      if (last) return last.replace(/^::ffff:/, '').slice(0, 64);
+      if (last) return unmapIPv4(last).slice(0, 64);
     }
     return peer.slice(0, 64);
   }

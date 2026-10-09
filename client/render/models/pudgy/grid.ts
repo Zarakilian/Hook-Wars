@@ -37,8 +37,10 @@ const SURF: readonly (readonly [number, number, number, number])[] = [
   [0.92, 0, 0, 0],
   [0.62, 0, 0, 0],
   [0.3, 0, 0, 0],
-  // iron: rough enough that the Locker's bright studio panels do not mirror off forearms as white
-  [0.56, 0.6, 0, 0],
+  // iron: weathered, satin steel. Voxel faces are flat, so a glossier iron mirrors the key light and
+  // the Locker's bright room environment across a whole co-planar face and a dark forearm reads white
+  // (finding 34: the bot's left arm read pale grey at roughness 0.42 to 0.56; 0.72 keeps a soft sheen)
+  [0.72, 0.5, 0, 0],
   [0.3, 0.85, 0, 0],
   [0.14, 0, 0, 0],
   [0.5, 0, 1, 0],

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { COSMETICS, cosmeticById, type CosmeticDef } from '../../../shared/cosmetics.ts';
 import { createPudgy } from '../../render/models/pudgy.ts';
-import { ItemLocator, meshGeometries, newMeshes, pinPose, visibleMeshes } from '../thumbFrame.ts';
+import { buildThumbView, ItemLocator, meshGeometries, newMeshes, pinPose, visibleMeshes } from '../thumbFrame.ts';
 
 const HOOKS = COSMETICS.filter((c) => c.slot === 'hands');
 const YAW = -0.6;
@@ -75,17 +75,31 @@ test('framing is identical across builds, whatever else was built in between', (
   assert.deepEqual(b, a);
 });
 
-test('pose is pinned: two thumbnail builds of one look stand exactly alike', () => {
-  const box = () => {
-    const v = createPudgy({ family: 'brawler', loadout: {}, team: 0, name: 't', isLocal: false, quality: 'high', detail: 'showcase' });
-    assert.ok(pinPose(v), 'the animator seed can be pinned');
-    v.update(1 / 60, { state: 0 as never, speed: 0, hpFrac: 1, flags: 0, hookOut: false, stateTime: 0.5, time: 0.5 });
-    v.root.updateMatrixWorld(true);
-    const s = new THREE.Box3().setFromObject(v.root);
-    v.dispose();
-    return [...s.min.toArray(), ...s.max.toArray()].map((x) => x.toFixed(5)).join(' ');
+test('pose is pinned: thumbnail builds of one look stand exactly alike, node for node', () => {
+  // every node's world matrix, in tree order
+  const pose = (v: { root: THREE.Object3D }) => {
+    const out: string[] = [];
+    v.root.traverse((o) => out.push(`${o.name}:${o.matrixWorld.elements.map((x) => x.toFixed(6)).join(',')}`));
+    return out;
   };
-  assert.equal(box(), box());
+  for (const family of ['brawler', 'ogre', 'bot'] as const) {
+    const a = buildThumbView(family, {});
+    const pa = pose(a);
+    a.dispose();
+    // other models built in between move the global animator seed on
+    for (let i = 0; i < 3; i++) createPudgy({ family, loadout: {}, team: 1, name: 'x', isLocal: false, quality: 'high', detail: 'showcase' }).dispose();
+    const b = buildThumbView(family, {});
+    const pb = pose(b);
+    b.dispose();
+    assert.equal(pb.length, pa.length, family);
+    assert.deepEqual(pb, pa, `${family}: every node stands the same`);
+  }
+});
+
+test('pinPose finds the animator (the characters module still exposes it)', () => {
+  const v = createPudgy({ family: 'brawler', loadout: {}, team: 0, name: 't', isLocal: false, quality: 'high', detail: 'showcase' });
+  assert.ok(pinPose(v), 'the animator seed can be pinned');
+  v.dispose();
 });
 
 test('two views alive together share geometry for every part they have in common', () => {

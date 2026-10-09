@@ -1120,7 +1120,23 @@ export class PudgyAnimator {
     n.elR.getWorldQuaternion(_q0);
     _e.set(sx, yaw, sz, 'YXZ');
     _q1.setFromEuler(_e);
-    n.handR.quaternion.copy(_q0.invert().multiply(_q1));
+    // normalised: under the rig's non-uniform squash the decomposed world quaternion is not unit
+    // length, and invert() (a conjugate) assumes it is
+    n.handR.quaternion.copy(_q0.normalize().invert().multiply(_q1)).normalize();
+    // the tether hangs from a point fixed in the forearm (the crane pulley, the fist), so the hook
+    // swings about that point: undo the socket's turn on the grip offset. With the Dredge-Bot's
+    // mount 15 cm above the socket, a grip that turned with the socket swept 5 to 14 cm out of the
+    // crane arm as the arm tilted and the hook swung (finding 35 check)
+    this.placeGrip(true);
+  }
+
+  /** Grip at its mount, fixed in the forearm frame (dangling: whatever the hand socket's swing). */
+  private placeGrip(swinging: boolean): void {
+    const n = this.n;
+    const mp = this.fb.hookMount.pos;
+    const inv = 1 / this.fb.scale;
+    n.grip.position.set(mp[0] * inv, mp[1] * inv, mp[2] * inv);
+    if (swinging) n.grip.position.applyQuaternion(_q2.copy(n.handR.quaternion).invert());
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1211,6 +1227,7 @@ export class PudgyAnimator {
     if (fb.hookDangles && n.grip.visible) this.dangle(dt);
     else if (this.hasHand) {
       n.handR.quaternion.identity();
+      this.placeGrip(false);
       this.hasHand = false;
     }
 
@@ -1238,6 +1255,7 @@ export class PudgyAnimator {
 
 const _q0 = new THREE.Quaternion();
 const _q1 = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
 const _e = new THREE.Euler(0, 0, 0, 'YXZ');
 const _v = new THREE.Vector3();
 

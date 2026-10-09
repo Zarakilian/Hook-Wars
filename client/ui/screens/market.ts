@@ -11,7 +11,7 @@ import { FAMILIES, type FamilyId } from '../../../shared/types.ts';
 import type { EconomyState } from '../../economy/types.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
-import { FEE_PCT, fmtPearls, fmtPrice, LIST_LIMITS, marketFee, marketTradable, sellerReceives, SLOT_ICON, suggestPrice } from '../econ.ts';
+import { FEE_PCT, fmtPearls, fmtPrice, LIST_LIMITS, marketFee, marketLockNote, marketTradable, sellerReceives, SLOT_ICON, suggestPrice } from '../econ.ts';
 import { icon } from '../icons.ts';
 import { itemArt, itemCard, rarityPill, type ItemCard } from '../items.ts';
 import { econUnavailable, hubShell } from '../shell.ts';
@@ -111,11 +111,14 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     button('Play Online', () => a.go('online'), { cls: 'primary', icon: 'globe' }));
   const signingText = h('span', { text: 'Signing in to your account on this server...' });
   const signing = h('div', { class: 'info-note hidden' }, icon('clock'), signingText);
+  // a new account can look but not trade yet: say so before the player tries
+  const lockText = h('span');
+  const locked = h('div', { class: 'info-note mk-locked hidden' }, icon('clock'), lockText);
   const count = h('span', { class: 'mk-count' });
   const bar = h('div', { class: 'mk-bar' }, tabs.el, count, h('span', { class: 'head-spacer' }), sortSeg.el, refresh);
   const grid = h('div', { class: 'mk-grid', role: 'list' });
   const empty = h('div', { class: 'empty-state hidden' });
-  const main = h('section', { class: 'mk-main' }, bar, offline, signing, grid, empty);
+  const main = h('section', { class: 'mk-main' }, bar, offline, signing, locked, grid, empty);
   shell.body.append(h('div', { class: 'mk-layout' }, filters, main));
 
   // ---------------------------------------------------------------- helpers
@@ -150,6 +153,9 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
     offline.classList.toggle('hidden', !local);
     signing.classList.toggle('hidden', local || !!e.account);
     signingText.textContent = e.accountError ?? 'Signing in to your account on this server...';
+    const lock = marketLockNote(e.mode, e.account);
+    locked.classList.toggle('hidden', !lock);
+    lockText.textContent = lock ?? '';
     const key = `${tab}|${fam}|${slot}|${sort}|${e.mode}|${e.listings.map((l) => l.id).join(',')}|${(e.account?.owned ?? []).map((o) => `${o.instance}${o.listed ?? ''}`).join(',')}`;
     if (!force && key === lastKey) {
       paintCards(e);
@@ -184,6 +190,8 @@ export function buildMarket(ctx: UiCtx, s0: AppState): ScreenView {
       empty.classList.toggle('hidden', copies.length > 0);
       empty.replaceChildren(icon('pearl'), h('span', { text: `No tradable items. Epic items from the Store can be sold here; Common, Rare and starter items cannot.${isSteam() ? ' Premium items trade on the Steam Community Market.' : ''}` }));
     }
+    // an empty grid would take the space and push the empty-state note to the bottom
+    grid.classList.toggle('hidden', cards.length === 0);
     grid.scrollTop = 0;
     paintCards(e);
   }

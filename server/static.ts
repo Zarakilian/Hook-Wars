@@ -213,19 +213,24 @@ export function createStaticHandler(dir: string): StaticHandler {
   }
   const ready = chain.then(() => startup);
 
-  /** The best compressed copy of this exact file version the client takes, if one is ready (queues one if not). */
-  const packedFor = (file: string, st: Stats, accepted: Encoding[]): { enc: Encoding; body: Buffer } | null => {
-    if (accepted.length === 0 || !compressible(file, st.size)) return null;
+  /**
+   * The best compressed copy of this exact file version the client takes, if one is ready (queues one
+   * if not). standIn: a copy the client prefers is still being made, so what goes out now (the raw
+   * file, or gzip while brotli runs) must not be cached: a shared cache would keep it for a year.
+   */
+  const packedFor = (file: string, st: Stats, accepted: Encoding[]): { enc: Encoding | null; body: Buffer | null; standIn: boolean } => {
+    if (accepted.length === 0 || !compressible(file, st.size)) return { enc: null, body: null, standIn: false };
     const p = cache.get(file);
     if (!p || p.size !== st.size || p.mtimeMs !== st.mtimeMs) {
       void compress(file, st);
-      return null;
+      return { enc: null, body: null, standIn: true };
     }
     for (const enc of accepted) {
       const body = enc === 'br' ? p.br : p.gz;
-      if (body) return { enc, body }; // brotli may still be on its way while gzip is ready
+      // brotli may still be on its way while gzip is ready
+      if (body) return { enc, body, standIn: enc !== accepted[0] && pending.has(file) };
     }
-    return null;
+    return { enc: null, body: null, standIn: pending.has(file) };
   };
 
   // ---- requests -----------------------------------------------------------------------------
@@ -298,7 +303,8 @@ export function createStaticHandler(dir: string): StaticHandler {
       return;
     }
     const packed = packedFor(file, st, acceptedEncodings(req.headers['accept-encoding']));
-    if (packed) {
+    if (packed.standIn) headers['Cache-Control'] = 'no-store';
+    if (packed.enc && packed.body) {
       headers['Content-Encoding'] = packed.enc;
       headers['Content-Length'] = packed.body.length;
       res.writeHead(200, headers);

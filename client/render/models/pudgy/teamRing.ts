@@ -34,11 +34,13 @@ function ringTexture(): THREE.DataTexture {
     for (let i = 0; i < TEX; i++) {
       const r = Math.hypot((i + 0.5) / TEX * 2 - 1, (j + 0.5) / TEX * 2 - 1);
       const core = smooth(CORE - 0.06, CORE - 0.035, r) * (1 - smooth(CORE + 0.025, CORE + 0.045, r));
-      const glow = smooth(CORE - 0.3, CORE - 0.04, r) * (1 - smooth(CORE - 0.04, CORE, r)) * 0.32;
-      const edge = smooth(CORE + 0.03, CORE + 0.05, r) * (1 - smooth(CORE + 0.075, CORE + 0.1, r)) * 0.5;
+      const glow = smooth(CORE - 0.3, CORE - 0.04, r) * (1 - smooth(CORE - 0.04, CORE, r)) * 0.24;
+      // the dark outline carries the ring on bright and same-hue ground (Maelstrom's sand, Aurora's
+      // blue snow), where the core alone has little luminance contrast
+      const edge = smooth(CORE + 0.025, CORE + 0.045, r) * (1 - smooth(CORE + 0.09, CORE + 0.12, r)) * 0.78;
       const a = Math.min(1, core + glow + edge);
       // brightness: full in the core and the glow, dark in the outline
-      const lum = a > 0 ? (core + glow + edge * 0.18) / a : 0;
+      const lum = a > 0 ? (core + glow + edge * 0.12) / a : 0;
       const o = (j * TEX + i) * 4;
       data[o] = data[o + 1] = data[o + 2] = Math.round(Math.min(1, lum) * 255);
       data[o + 3] = Math.round(a * 255);
@@ -94,7 +96,14 @@ export function createTeamRing(team: Team, local: boolean): THREE.Mesh {
   return ring;
 }
 
-/** Shown while the unit is alive and fully visible: hidden on corpses, drowning and see-through units. */
+/**
+ * Shown while the unit stands on the ground under its own control and fully visible: hidden on
+ * corpses, drowning and see-through units, and while it is off the ground. The game client lifts
+ * the whole root by the sim's height (dragged on a hook 0.35 m, knocked or grappling on an arc up to
+ * about 1.4 m), so a ring shown then would float in the air under the unit's feet.
+ */
 export function teamRingShown(a: PudgyAnimInput, opacity: number): boolean {
-  return opacity >= 1 && a.hpFrac > 0 && a.state !== UnitState.Dead && a.state !== UnitState.Drowning;
+  if (opacity < 1 || a.hpFrac <= 0) return false;
+  const s = a.state;
+  return s !== UnitState.Dead && s !== UnitState.Drowning && s !== UnitState.Hooked && s !== UnitState.Knocked && s !== UnitState.Grappling;
 }

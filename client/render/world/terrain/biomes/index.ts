@@ -23,6 +23,8 @@ export interface PoolDef {
   /** fixed water level (not tied to the river) */
   level: number;
   keep?: (x: number, z: number) => boolean;
+  /** ripple and shore-foam strength (default 0.7); 0 = a still, mirror-flat sheet (puddles) */
+  wave?: number;
 }
 
 export interface MapBiome extends Biome {
@@ -55,6 +57,9 @@ export interface MapBiome extends Biome {
   /** strength of the warm lamp-light pools baked round lanterns and gas lamps (night maps), and their colour */
   readonly lampLight?: number;
   readonly lampColor?: number;
+  /** strength and colour of the self-lit glow the biome paints into Cell.glow (glowing ice) */
+  readonly glowLight?: number;
+  readonly glowColor?: number;
   /** extra lamp-light pools the biome's own backdrop lamps throw (x, z, radius, strength) */
   lamps?(): { x: number; z: number; r: number; k: number }[];
 }

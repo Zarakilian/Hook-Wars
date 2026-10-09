@@ -54,7 +54,9 @@ No item has stats. Cosmetics never change gameplay.
 
 Each player gets `{t:'reward', pearls, reason}` and an updated account. The reason names the limit that stopped them. Match Pearls are committed to disk at once, every player of the match in one transaction.
 
-The per-connection cap is why throwaway accounts do not help: five accounts on two connections earn at most 8,000 a day between them, not 10,000, and none of it can reach a main account through the market on day one (next section).
+The per-connection cap is why making more throwaway accounts does not help: everything earned on one connection counts toward its 4,000 a day, however many accounts share it, and an account cannot trade on the market until it is a day old (next section).
+
+What is still possible: one person with two connections (home internet plus phone data, say) can earn up to 2 × 4,000 a day across throwaway accounts and, from the second day, move most of it to one main account through the market. Measured over five days with six throwaway accounts: about 7,600 a day into the main account, against 2,000 for an honest single account (before this rule: 14,000 a day with those accounts, and more with every extra account). Setting `DAILY_PEARL_CAP_PER_IP` equal to `DAILY_PEARL_CAP` would halve that, at the cost of two people at one address sharing one 2,000 cap. No rule based on addresses can tell one person on two connections from two people.
 
 ## Store and market rules
 
@@ -66,7 +68,7 @@ The per-connection cap is why throwaway accounts do not help: five accounts on t
 | While listed | Held in escrow: still in the inventory, cannot be worn |
 | Buy | Buyer pays the price. Seller gets the price minus 5% (`MARKET_FEE_BPS` = 500, rounded up, at least 1). The fee leaves the economy. Both sides and the listing are saved in one transaction |
 | Cancel | Seller only. The item becomes wearable again |
-| Live updates | A `{t:'market'}` request sends the list and live updates for 60 s (`MARKET_WATCH_MS`). The Market screen is meant to call `econ.watchMarket()` on open (it renews every 25 s) and the returned stop function on close. The game server calls `economy.unwatchMarket(c)` when a match starts |
+| Live updates | A `{t:'market'}` request sends the list and live updates for 60 s (`MARKET_WATCH_MS`). The Market screen calls `econ.watchMarket()` when it opens (it renews every 25 s, `MARKET_RENEW_MS`) and the returned stop function when it closes. A match always closes it, and the game server also calls `economy.unwatchMarket(c)` when a match starts. A client the server gave no account does not ask |
 
 Listing and instance ids carry a prefix (`lst_`, `itm_`) and every id lookup uses a `Map`, so ids like `__proto__` find nothing and cost nothing.
 
@@ -83,9 +85,10 @@ server/gameServer.ts --> server/economy/service.ts (EconomyService)
 - **One row per account and per listing.** A save writes only the rows that changed, in one transaction. A purchase on a server with 20,000 accounts took p50 1.1 ms, p99 5.7 ms on this machine (the old whole-file save took about 222 ms there).
 - **Durable.** WAL journal with `synchronous=FULL`: a committed purchase, trade or match payout survives a crash or a power cut. Loadouts and names are batched for up to 500 ms.
 - **One server per folder.** The database opens in EXCLUSIVE locking mode and takes its write lock at once. The operating system releases that lock when the process ends, however it ends, so a killed server never leaves a stale lock.
-- **Never runs from memory, never starts empty.** If the folder is held by another server, or the data cannot be read, the server logs `[economy] ERROR: ...` and runs with no economy: no accounts, no tokens handed out, and players keep their saved tokens. The file is not touched.
-- **One backup per start:** `economy.db.bak`.
-- **Upgrade from the old JSON store:** on the first start, `economy.json` (or a newer complete temp file a crash left behind) is imported once and renamed to `economy.json.imported-<time>`. Wallet addresses, USDC orders, edition serials and empty guests are not imported. Delete the `.imported-` file once you are happy, because it still holds old wallet addresses. Stop any older server before this first start.
+- **Checked at every start.** After taking the lock, the server runs `PRAGMA quick_check`, which reads every page of every table and index (about 60 ms at 20,000 accounts). A damaged page anywhere stops the economy before anything is written.
+- **Never runs from memory, never starts empty, never stops the game.** If the folder is held by another server, cannot be opened, or its data cannot be read, the server logs `[economy] ERROR: ...` and runs with no economy: the game still works, no accounts, no tokens handed out, and players keep their saved tokens. Neither `economy.db` nor `economy.db.bak` is touched.
+- **One backup per start:** `economy.db.bak`, written only after the check passes. The new copy is written beside it, flushed to disk, then renamed over the old one, so a failed or interrupted backup keeps the previous one.
+- **Upgrade from the old JSON store:** on the first start, `economy.json` (or a newer complete temp file a crash left behind) is imported once and renamed to `economy.json.imported-<time>`. Wallet addresses, USDC orders, edition serials and empty guests are not imported. Stop any older server before this first start. Once you are happy, delete every file the old store left in the folder, because they can still hold wallet addresses: `economy.json.imported-*`, `economy.json.bak`, and any `economy.json.corrupt-*` or `economy.lock`.
 
 ## Environment variables
 
@@ -110,7 +113,9 @@ Settings from the Solana build (`ECONOMY_NETWORK`, `SOLANA_RPC_URL`, `ECONOMY_KE
 |---|---|---|
 | `[economy] ERROR: ...economy.db is in use by another Hook Wars server` | Another server, or a program like DB Browser, has `economy.db` open | Stop it, then restart this server. **Never point the live server at a new folder: returning players would get empty accounts** |
 | `[economy] ERROR: ...economy.json could not be read` | The old JSON file is damaged | Repair it, or replace it with `economy.json.bak` (accounts made after that backup are lost), then restart |
-| `[economy] ERROR: ...economy.db could not be opened` | Disk fault or a hand edit | Stop the server, copy `economy.db.bak` over `economy.db`, restart |
+| `[economy] ERROR: ...economy.db could not be opened` or `could not be read (damaged: ...)` | Disk fault, a bad copy or a hand edit | Stop the server. Keep the damaged file (rename it), copy `economy.db.bak` over `economy.db`, restart. Changes since the last start are lost |
+| `[economy] ERROR: the economy data in ... could not be opened` | `ECONOMY_DATA_DIR` points somewhere that cannot be created or written | Fix the path or the folder permissions, restart |
+| `[economy] could not save to ...economy.db ... Will retry` | Disk full, or the disk failed while running | Free space. Purchases made since the first such line are lost if the server stops before a retry succeeds; both sides of every trade are always saved or lost together |
 | Players see "Too many new accounts..." | Many players behind one address (a class, a LAN party, carrier NAT) | Expected. It clears after an hour. The limit is `NEW_ACCOUNTS_PER_IP_HOUR` in `server/economy/service.ts` |
 | Players see "This server did not sign you in" | The server log around their connect time | Usually the economy is off on that run: see the rows above |
 | Everyone is paid half rate, or "daily limit of 4000 for your internet connection" comes early | Whether the server sees real player addresses. Behind a reverse proxy every player looks like the proxy | Set `TRUST_PROXY` (see `server/config.ts`) |
@@ -132,4 +137,6 @@ Settings from the Solana build (`ECONOMY_NETWORK`, `SOLANA_RPC_URL`, `ECONOMY_KE
 - Closing the server's console window on Windows: `server/index.ts` handles `SIGINT` and `SIGTERM` only, so up to 500 ms of batched loadout and name changes can be lost. Committed purchases, trades and payouts are not affected.
 - The Steam phase (Item Store, Community Market, Steam inventory checks) is not designed or built.
 - Match payouts are covered by tests, not by a real online match. The live check on 2026-10-09 covered the import of an old `economy.json`, a purchase, an equip, a hard kill and restart, a held folder and a fresh browser.
-- The screens do not use `accountError` or `watchMarket()` yet (that is UI work in `client/ui/screens/market.ts` and `store.ts`). Until they do, the Market stops getting live updates 60 s after it opens, and the screens still say "Signing in..." where the reason should be. The economy state itself was checked in the browser.
+- A Market renewal that is already on its way when a match starts subscribes that connection again for up to 60 s. The window is one round trip in every 25 s, so about one match start in a hundred at a 250 ms round trip. It only matters if the market changes during those 60 s. Not seen in testing; worked out from the code.
+- Only zeroed and scrambled pages were tested for the start-up check (`tests/economy.test.ts`, E1). Damage that keeps every page well formed (a wrong number inside a row) passes `quick_check`, and is caught only if the row no longer parses.
+- A disk that fails while the server runs: saves are retried every 2 s and logged, but the game keeps running and answering purchases from memory.

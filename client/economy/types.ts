@@ -18,7 +18,8 @@ export interface EconomyState {
   /**
    * Online only: why this server gave you no account, in words for the player. Set when the server
    * refused one (too many new accounts from your internet connection this hour), runs without
-   * accounts, or did not sign you in within a few seconds. null while signing in and once signed in.
+   * accounts (also when that is the answer to the Market's request), or did not sign you in within
+   * a few seconds. null while signing in and once signed in.
    * Show it where the screens would otherwise say "Signing in...".
    */
   accountError: string | null;
@@ -33,7 +34,7 @@ export interface EconomyClient {
   buyWithPearls(itemId: string): void;
   /** Pearls earned locally (solo match end); ignored in server mode, where the server pays out */
   grantLocal(pearls: number, reason: string): void;
-  /** ask the server for the market list once (it also sends live updates for about two minutes) */
+  /** ask the server for the market list once (it also sends live updates for the next 60 s) */
   refreshMarket(): void;
   /**
    * Call when the Market screen opens: asks for the list and keeps live updates coming while the

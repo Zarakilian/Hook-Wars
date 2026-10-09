@@ -275,19 +275,23 @@ function lab(c: number): [number, number, number] {
   return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
 }
 
-/** Mean Lab of the drawn ground tops in a band of sim channel offsets (c), inside the play area, off decks and plazas. */
-function meanGround(id: MapId, cLo: number, cHi: number): [number, number, number] {
+/**
+ * Mean Lab of the drawn column tops in a band of sim channel offsets (c), inside the play area, off decks
+ * and plazas. `bed` measures the river bed (under the docks too, away from the islands).
+ */
+function meanGround(id: MapId, cLo: number, cHi: number, mode: RiverMode = 'deep', bed = false): [number, number, number] {
   const map = getMap(id);
-  const { near } = fields(id, 'deep');
+  const { near } = fields(id, mode);
   const acc = [0, 0, 0];
   let n = 0;
   for (let j = 0; j < near.nz; j += 2)
     for (let i = 0; i < near.nx; i += 2) {
       const x = near.x0 + (i + 0.5) * near.s;
       const z = near.z0 + (j + 0.5) * near.s;
-      if (Math.abs(x) > map.w / 2 - 0.5 || Math.abs(z) > map.d / 2 - 0.5 || platformAt(map, x, z)) continue;
+      if (Math.abs(x) > map.w / 2 - 0.5 || Math.abs(z) > map.d / 2 - 0.5) continue;
+      if (bed ? map.islands.some((q) => Math.hypot(x - q.x, z - q.z) < q.r + 1.5) : platformAt(map, x, z)) continue;
       if (map.fountains.some((f) => Math.hypot(x - f.x, z - f.z) < f.r + 1.4)) continue;
-      const c = channelDepthAt(map, x, z);
+      const c = bed ? waterDepthAt(map, x, z) : channelDepthAt(map, x, z);
       if (c < cLo || c > cHi) continue;
       const t = (i + j * (near.nx + 1)) * 4;
       const L = lab((near.colorData[t] << 16) | (near.colorData[t + 1] << 8) | near.colorData[t + 2]);
@@ -300,16 +304,61 @@ function meanGround(id: MapId, cLo: number, cHi: number): [number, number, numbe
 }
 const dE = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
+// Before the fix (v2 as delivered) the copied bands measured: Aurora ground 0.9, shore 0.7, bed 1.4,
+// dry bed 2.3; Maelstrom 3.1 / 3.9 / 1.0 / 2.2; Lanternwharf 6.2 / 6.6 / 0.5 / 0.6; Mirelight shore 9.4,
+// bed 2.9 (its moss ground, 11.3, was already its own). A copy reads under about 4; a material of its
+// own is 10 or more on the land, 6 or more on the dark river bed.
 for (const id of NEW_MAPS) {
-  test(`${id}: its ground and its shore strip are not a recolour of ${SIBLING[id]}`, () => {
+  test(`${id}: its ground, shore strip and river bed are not a recolour of ${SIBLING[id]}`, () => {
     const mine = getMap(id);
-    const sib = getMap(SIBLING[id]);
-    const ground = dE(meanGround(id, -40, -mine.river.bank - 0.5), meanGround(SIBLING[id], -40, -sib.river.bank - 0.5));
-    const shore = dE(meanGround(id, -3.5, 0), meanGround(SIBLING[id], -3.5, 0));
-    assert.ok(ground >= 15, `open ground only dE ${ground.toFixed(1)} from ${SIBLING[id]}`);
-    assert.ok(shore >= 15, `shore strip only dE ${shore.toFixed(1)} from ${SIBLING[id]}`);
+    const s = SIBLING[id];
+    const sib = getMap(s);
+    const ground = dE(meanGround(id, -40, -mine.river.bank - 0.5), meanGround(s, -40, -sib.river.bank - 0.5));
+    const shore = dE(meanGround(id, -3.5, 0), meanGround(s, -3.5, 0));
+    const bed = dE(meanGround(id, 2.6, 40, 'deep', true), meanGround(s, 2.6, 40, 'deep', true));
+    const dryBed = dE(meanGround(id, 2.6, 40, 'dry', true), meanGround(s, 2.6, 40, 'dry', true));
+    assert.ok(ground >= 10, `open ground only dE ${ground.toFixed(1)} from ${s}`);
+    assert.ok(shore >= 10, `shore strip only dE ${shore.toFixed(1)} from ${s}`);
+    assert.ok(bed >= 6, `river bed only dE ${bed.toFixed(1)} from ${s}`);
+    assert.ok(dryBed >= 6, `dry river bed only dE ${dryBed.toFixed(1)} from ${s}`);
   });
 }
+
+/**
+ * Share of the drawn column tops in the river channel (off the islands) with a saturated colour (Lab chroma > 40).
+ * With `above`, only the columns standing above that water height count as saturated (what a low tide uncovers).
+ */
+function channelChroma(id: MapId, mode: RiverMode, above = -1e9): number {
+  const map = getMap(id);
+  const { near } = fields(id, mode);
+  let n = 0;
+  let sat = 0;
+  for (let j = 0; j < near.nz; j++)
+    for (let i = 0; i < near.nx; i++) {
+      const x = near.x0 + (i + 0.5) * near.s;
+      const z = near.z0 + (j + 0.5) * near.s;
+      if (Math.abs(x) > map.w / 2 - 0.5 || Math.abs(z) > map.d / 2 - 0.5) continue;
+      if (map.islands.some((q) => Math.hypot(x - q.x, z - q.z) < q.r + 1.5) || waterDepthAt(map, x, z) <= 0) continue;
+      const t = (i + j * (near.nx + 1)) * 4;
+      const L = lab((near.colorData[t] << 16) | (near.colorData[t + 1] << 8) | near.colorData[t + 2]);
+      n++;
+      if (Math.hypot(L[1], L[2]) > 40 && near.heightAt(x, z) > above) sat++;
+    }
+  return sat / n;
+}
+
+// Maelstrom's lagoon floor carries a coral reef under the water. Drained, that reef in its live colours
+// read as confetti (13% of the channel; Coral Cove's floor is 0.5%), so on a Dry Bed, and on Tidal (the
+// terrain is baked once and the low tide uncovers 95% of the reef for about half of every cycle), it is
+// sparse, sun-bleached bone. Only Deep Water, which never drains, keeps the live reef.
+test('Maelstrom: the lagoon floor a Dry Bed or a low tide uncovers is calm, the Deep Water reef keeps its colour', () => {
+  const dry = channelChroma('maelstrom', 'dry');
+  const lowTide = channelChroma('maelstrom', 'tidal', waterY(getMap('maelstrom'), 0.04));
+  const deep = channelChroma('maelstrom', 'deep');
+  assert.ok(dry <= 0.03, `Dry Bed: ${(dry * 100).toFixed(1)}% of the drained lagoon floor is coral-coloured`);
+  assert.ok(lowTide <= 0.03, `Tidal: the low tide uncovers coral colour on ${(lowTide * 100).toFixed(1)}% of the lagoon floor`);
+  assert.ok(deep >= 0.08, `Deep Water: only ${(deep * 100).toFixed(1)}% of the lagoon floor is reef`);
+});
 
 test('v2 maps: dry land is always drawn above the full water line (units never stand in drawn water)', () => {
   for (const id of NEW_MAPS) {
@@ -332,4 +381,48 @@ test('v2 maps: dry land is always drawn above the full water line (units never s
       assert.ok(low >= full + 0.02, `${id}/${mode}: land at ${at} drawn ${(full - low).toFixed(2)} m under the full water line`);
     }
   }
+});
+
+test('Mirelight: the puddles hold standing water, and its sheet never floats over drier ground', () => {
+  const { biome, near } = fields('mirelight', 'deep');
+  const pools = biome.pools();
+  assert.equal(pools.length, 1);
+  const pool = pools[0];
+  assert.equal(pool.wave, 0);
+  let quads = 0;
+  for (let z = pool.z0 + 0.25; z < pool.z1; z += 0.5)
+    for (let x = pool.x0 + 0.25; x < pool.x1; x += 0.5) {
+      if (!pool.keep?.(x, z)) continue;
+      quads++;
+      // every column under the quad is a puddle floor below the water...
+      for (const [dx, dz] of [[-0.125, -0.125], [0.125, -0.125], [-0.125, 0.125], [0.125, 0.125]]) assert.ok(near.columnAt(x + dx, z + dz) <= pool.level - 0.04, `puddle floor at ${x + dx},${z + dz} not under the water`);
+      // ...and every column round the quad's edge is either puddle floor or a rim above the water
+      for (let k = -0.375; k <= 0.376; k += 0.25)
+        for (const [px, pz] of [[x + k, z - 0.375], [x + k, z + 0.375], [x - 0.375, z + k], [x + 0.375, z + k]]) {
+          const h = near.columnAt(px, pz);
+          const floor = (biome as unknown as { puddleAt(x: number, z: number): number }).puddleAt(px, pz) === 2 && h <= pool.level - 0.04;
+          assert.ok(floor || h >= pool.level + 0.02, `the water's edge shows over ${px.toFixed(3)},${pz.toFixed(3)} (ground ${(h - pool.level).toFixed(3)} m from the water)`);
+        }
+    }
+  assert.ok(quads > 300, `only ${quads} puddle quads`);
+  // dry land everywhere else stays above the full water line (checked for all maps above); the puddle
+  // water itself sits well above the river's full line
+  assert.ok(pool.level > waterY(getMap('mirelight'), 1) + 0.15);
+  // on a Dry Bed there is no water sheet, so there must be no empty, glossy puddle pits either
+  const dry = fields('mirelight', 'dry');
+  assert.equal(dry.biome.pools().length, 0);
+  const wetDeep = fields('mirelight', 'deep');
+  let pits = 0;
+  let glossy = 0;
+  for (let z = pool.z0 + 0.125; z < pool.z1; z += 0.25)
+    for (let x = pool.x0 + 0.125; x < pool.x1; x += 0.25) {
+      if (!pool.keep?.(x, z)) continue;
+      // where Deep Water has a puddle, Dry Bed has plain ground at the moss height, matt
+      if (dry.near.columnAt(x, z) < wetDeep.near.columnAt(x, z) + 0.05) pits++;
+      const i = Math.floor((x - dry.near.x0) / dry.near.s);
+      const j = Math.floor((z - dry.near.z0) / dry.near.s);
+      if (dry.near.roughData[(i + j * (dry.near.nx + 1)) * 4 + 1] < 0.6 * 255) glossy++;
+    }
+  assert.equal(pits, 0, `${pits} dry puddle pits`);
+  assert.equal(glossy, 0, `${glossy} glossy columns where the dried puddles were`);
 });
