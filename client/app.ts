@@ -1,14 +1,22 @@
 // App controller: owns state, the engine, audio, the online connection and the running match.
+// In the Steam build (client/platform.ts) it also owns the Steam lobbies (client/net/steamPlay.ts):
+// a Steam connection is the same websocket as any other, to the url the Steam bridge hands out.
+import { DEFAULT_CONFIG } from '../shared/constants.ts';
 import type { Profile, ServerMsg } from '../shared/protocol.ts';
 import type { ItemId, MatchConfig, Team, UpgradeStat } from '../shared/types.ts';
 import { createAudio } from './audio/audio.ts';
+import { installFakeSteamFromUrl } from './dev/fakeSteamBridge.ts';
 import { createEconomy } from './economy/index.ts';
+import { matchKey, trustPayout } from './economy/payout.ts';
 import type { EconomyClient } from './economy/types.ts';
 import { soloPearls } from './ui/hud/endscreen.ts';
 import { GameClient } from './game/GameClient.ts';
 import { AutoRejoin } from './net/autorejoin.ts';
 import { Connection, normaliseServerUrl } from './net/connection.ts';
 import { LocalSession, OnlineSession, type MatchSession } from './net/session.ts';
+import { teamSizeFor } from './net/steamLobby.ts';
+import { SteamPlay, type SteamPlayState } from './net/steamPlay.ts';
+import { steamBridge, type SteamBridge } from './platform.ts';
 import type { AudioSystem, Engine, Quality, SfxId } from './render/contracts.ts';
 import { createEngine } from './render/engine.ts';
 import { autoQuality, loadProfile, loadSettings, saveProfile, saveSettings, type Settings } from './settings.ts';
@@ -42,9 +50,15 @@ export class App {
   private menuOpen = false;
   private readonly act: AppActions;
   readonly economy: EconomyClient;
+  /** Steam build only: lobbies (null in the browser build) */
+  private steam: SteamPlay | null = null;
+  /** the open connection (this.conn) goes to a Steam lobby's server, not a dedicated one */
+  private steamConn = false;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.canvas = canvas;
+    // debug builds only (?debug&fakesteam): a stand-in Steam bridge against this page's own server
+    installFakeSteamFromUrl();
     const settings = loadSettings();
     this.state = {
       screen: 'menu',
@@ -61,6 +75,8 @@ export class App {
     this.audio.setVolumes(settings.master, settings.sfx, settings.music);
     this.act = this.actions();
     this.economy = createEconomy();
+    const bridge = steamBridge();
+    if (bridge) this.initSteam(bridge);
     this.ui = createUI(uiRoot, this.act, this.economy);
     const unlock = () => this.audio.unlock();
     window.addEventListener('pointerdown', unlock, { once: false });
@@ -71,6 +87,115 @@ export class App {
     this.audio.setMusic('menu');
     requestAnimationFrame((t) => this.loop(t));
     if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) this.installDebugHook();
+    if (bridge && this.steam) this.startSteam(bridge, this.steam);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Steam build
+  // ------------------------------------------------------------------------------------------
+
+  /** Steam lobbies and the Epic option: state only, before the UI exists. Never runs in the browser build. */
+  private initSteam(bridge: SteamBridge): void {
+    const steam = new SteamPlay(bridge, {
+      connect: (url) => this.openSteamConnection(url),
+      disconnect: () => this.closeSteamConnection(),
+      send: (m) => this.conn?.send(m),
+      roomConfig: (max) => ({ ...DEFAULT_CONFIG, ...this.state.settings.soloConfig, botFill: true, teamSize: teamSizeFor(max) }),
+      inLiveMatch: () => this.game !== null && !this.state.match?.ended,
+      changed: (st) => this.onSteamChange(st),
+      toast: (text, kind) => this.toast(text, kind),
+    });
+    this.steam = steam;
+    const epic = typeof this.engine.setCinematic === 'function';
+    this.state = { ...this.state, steam: steam.state(), epicAvailable: epic };
+    if (epic && this.state.settings.cinematic) this.engine.setCinematic!(true);
+  }
+
+  /** Once the UI is up: Steam callbacks, the first lobby list, fullscreen and the Steam Cloud locker. */
+  private startSteam(bridge: SteamBridge, steam: SteamPlay): void {
+    steam.start();
+    void steam.refresh();
+    // the window's fullscreen: the saved choice at start, and changes made outside the game (F11) are kept
+    const wanted = this.state.settings.fullscreen;
+    void steam.syncFullscreen().then((on) => {
+      if (wanted !== undefined && wanted !== on) steam.setFullscreen(wanted);
+    });
+    let resizeTimer = 0;
+    window.addEventListener('resize', () => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        void steam.syncFullscreen().then((on) => {
+          if (this.state.settings.fullscreen !== undefined && this.state.settings.fullscreen !== on) {
+            const s2 = { ...this.state.settings, fullscreen: on };
+            saveSettings(s2);
+            this.set({ settings: s2 });
+          }
+        });
+      }, 400);
+    });
+    // the offline locker also lives in Steam Cloud (localStorage stays the first copy)
+    void this.economy.useCloud({ read: (n) => bridge.cloudRead(n), write: (n, d) => bridge.cloudWrite(n, d) }).catch((err) => console.warn('[cloud]', err));
+  }
+
+  private onSteamChange(st: SteamPlayState): void {
+    const prev = this.state.steam;
+    let screen = this.state.screen;
+    // a host or a join just started (the Steam screen, an invite from a menu): show its progress
+    if ((st.phase === 'hosting' || st.phase === 'joining') && prev?.phase !== st.phase && !this.game) screen = 'steam';
+    if (this.state.steam === st && screen === this.state.screen) return;
+    this.set({ steam: st, screen });
+  }
+
+  /** Connect the page to a Steam lobby's server (the url from the bridge). Never saved, never auto-rejoined. */
+  private openSteamConnection(url: string): void {
+    this.rejoin.stop();
+    this.retryConn = null;
+    if (this.game) {
+      // the match is over (or the player said yes to an invite): the new lobby replaces it
+      this.endGame();
+      this.menuOpen = false;
+    }
+    const old = this.conn;
+    this.conn = null;
+    if (old) {
+      this.economy.detachServer();
+      old.close();
+    }
+    // no account token: a lobby's server keeps no accounts (ECONOMY=trust)
+    const conn = new Connection(url, this.state.profile, null, { autoRejoin: false });
+    this.conn = conn;
+    this.steamConn = true;
+    this.economy.attachServer((m) => conn.send(m as Parameters<Connection['send']>[0]), url);
+    conn.onMessage = (m) => this.onServer(m);
+    conn.onStatus = (st, reason) => {
+      if (this.conn !== conn || st !== 'closed') return;
+      // the host left, its server stopped, or the relay broke: back to the Steam screen
+      this.economy.detachServer();
+      const inMatch = !!this.game && !this.session?.local;
+      if (inMatch) this.endGame();
+      this.conn = null;
+      this.steamConn = false;
+      const away = inMatch || this.state.screen === 'lobby' || this.state.screen === 'steam';
+      this.set({ online: { status: 'idle', url: '', youId: -1, rooms: [] }, room: null, chat: [], match: inMatch ? null : this.state.match, screen: away ? 'steam' : this.state.screen });
+      this.steam?.onClosed(reason);
+    };
+    // the player just asked to host or join: the Steam screen shows the progress until the room arrives
+    this.set({ online: { status: 'connecting', url, youId: -1, rooms: [], error: undefined }, room: null, chat: [], match: null, screen: 'steam' });
+  }
+
+  /** Close the Steam connection on purpose (leaving the lobby). The caller picks the screen. */
+  private closeSteamConnection(): void {
+    if (!this.steamConn) return;
+    const c = this.conn;
+    this.conn = null;
+    this.steamConn = false;
+    this.economy.detachServer();
+    // a clean Leave first (so a running match frees the unit at once instead of holding it for a rejoin)
+    if (this.state.room) c?.send({ t: 'leaveRoom' });
+    c?.close();
+    const inMatch = !!this.game && !this.session?.local;
+    if (inMatch) this.endGame();
+    this.set({ online: { status: 'idle', url: '', youId: -1, rooms: [] }, room: null, chat: [], match: inMatch ? null : this.state.match });
   }
 
   /** Dev only: drive frames from the console or automated checks, even when the tab is hidden. */
@@ -105,6 +230,7 @@ export class App {
         }
       },
       menu: () => this.act.leaveMatch(),
+      steam: () => this.steam,
     };
   }
 
@@ -158,6 +284,11 @@ export class App {
    */
   private leaveOnlineForSolo(): void {
     this.rejoin.cancel();
+    if (this.steamConn || this.steam?.active) {
+      // a Steam lobby's room cannot wait for us: leave the lobby (no screen change, the solo match starts)
+      void this.steam?.leave();
+      return;
+    }
     const c = this.conn;
     // a retry socket is unfinished until 'welcome' (online status 'connected') and its auto-rejoin answer
     if (c && c === this.retryConn && (this.state.online.status !== 'connected' || c.autoRejoining)) {
@@ -201,6 +332,11 @@ export class App {
           // one rule for the payout and for the end screen's figure
           const pearls = soloPearls(e, session.start.you);
           if (pearls > 0) this.economy.grantLocal(pearls, 'solo match');
+        } else if (this.economy.state().localOnly) {
+          // a server with no accounts (a Steam lobby): this client pays its own locker, once per match
+          const pay = trustPayout(e, session.start.you);
+          const key = matchKey(session.start.room ?? this.state.room?.code, session.start.seed);
+          if (this.economy.payLocalMatch(key, pay.pearls) && pay.pearls > 0) this.toast(`+${pay.pearls} Pearls (${pay.reason})`);
         }
         this.set({ match: { local: session.local, ended: e } });
         const g = this.game;
@@ -237,6 +373,7 @@ export class App {
   // ------------------------------------------------------------------------------------------
 
   private onServer(m: ServerMsg): void {
+    if (this.steamConn) this.steam?.onServer(m);
     switch (m.t) {
       case 'welcome':
         this.set({ online: { ...this.state.online, status: 'connected', youId: m.id, serverName: m.serverName, motd: m.motd } });
@@ -257,6 +394,14 @@ export class App {
         break;
       }
       case 'leftRoom':
+        if (this.steamConn) {
+          // out of the Steam lobby's room (Leave, or the room closed): that is leaving the lobby
+          const solo = !!this.session?.local;
+          if (!solo) this.endGame();
+          void this.steam?.leave();
+          this.set(solo ? { room: null } : { room: null, chat: [], match: null, screen: 'steam' });
+          break;
+        }
         if (this.session?.local) {
           // out of the online room (left it for solo, or the server closed it): the solo match carries on
           this.set({ room: null });
@@ -350,6 +495,7 @@ export class App {
     return {
       go(screen: Screen) {
         if (screen === 'match' && !app.game) return;
+        if (screen === 'steam' && !app.steam) return; // the browser build has no Steam screen
         if (app.game && screen !== 'match' && screen !== 'settings') return;
         app.set({ screen });
         if (screen === 'match') app.toggleMenu(true);
@@ -363,6 +509,8 @@ export class App {
         saveSettings(s);
         const prev = app.state.settings;
         if (s.quality !== prev.quality) app.engine.setQuality(app.resolveQuality(s.quality));
+        // Epic (Steam build): the engine's cinematic mode on top of the quality tier
+        if (app.state.epicAvailable && !!s.cinematic !== !!prev.cinematic) app.engine.setCinematic?.(!!s.cinematic);
         app.audio.setVolumes(s.master, s.sfx, s.music);
         app.game?.setSettings(s);
         app.set({ settings: s });
@@ -373,11 +521,14 @@ export class App {
         app.beginMatch(new LocalSession(config, app.state.profile, team));
       },
       connect(url: string) {
+        // a dedicated server replaces a Steam lobby we are in
+        if (app.steamConn) void app.steam?.leave();
         // connecting by hand replaces a pending retry (a dropped match on this server still rejoins at 'welcome')
         app.rejoin.stop();
         app.openConnection(url);
       },
       disconnect() {
+        if (app.steamConn) void app.steam?.leave();
         app.rejoin.stop();
         app.retryConn = null;
         app.economy.detachServer();
@@ -440,7 +591,15 @@ export class App {
         app.endGame();
         app.menuOpen = false;
         if (local) app.set({ screen: 'solo', match: null });
-        else {
+        else if (app.steamConn || app.steam?.active) {
+          // a Steam lobby: out of a running match is out of the lobby; after the match, its room waits
+          const room = app.state.room;
+          if (room && room.phase === 'lobby' && app.steamConn) app.set({ screen: 'lobby', match: null });
+          else {
+            void app.steam?.leave();
+            app.set({ screen: 'steam', match: null, room: null });
+          }
+        } else {
           const room = app.state.room;
           if (room && room.phase === 'match') app.conn?.send({ t: 'leaveRoom' });
           app.set({ screen: room && room.phase === 'lobby' ? 'lobby' : 'online', match: null });
@@ -453,12 +612,47 @@ export class App {
         if (!app.game || app.session?.local) return;
         app.endGame();
         app.menuOpen = false;
-        app.set({ screen: app.state.room ? 'lobby' : 'online', match: null });
+        app.set({ screen: app.state.room ? 'lobby' : app.steam?.active ? 'steam' : 'online', match: null });
       },
       uiSound(kind) {
         app.audio.unlock();
         const id = UI_SOUNDS[kind];
         if (id) app.audio.play(id);
+      },
+      steamRefresh() {
+        void app.steam?.refresh();
+      },
+      steamHost(o) {
+        if (!app.steam) return;
+        app.audio.unlock();
+        void app.steam.host(o);
+      },
+      steamJoin(lobbyId) {
+        if (!app.steam) return;
+        app.audio.unlock();
+        void app.steam.join(lobbyId);
+      },
+      steamLeave() {
+        if (!app.steam) return;
+        const solo = !!app.session?.local;
+        void app.steam.leave();
+        if (!solo) app.set({ screen: 'steam', room: null, match: null });
+      },
+      steamInvite() {
+        app.steam?.inviteFriends();
+      },
+      steamAcceptInvite() {
+        app.steam?.acceptInvite();
+      },
+      steamDismissInvite() {
+        app.steam?.dismissInvite();
+      },
+      setFullscreen(on: boolean) {
+        if (!app.steam) return;
+        app.steam.setFullscreen(on);
+        const s2 = { ...app.state.settings, fullscreen: on };
+        saveSettings(s2);
+        app.set({ settings: s2 });
       },
     };
   }

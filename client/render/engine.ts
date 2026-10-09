@@ -11,13 +11,19 @@ import * as THREE from 'three';
 import { channelDepthAt } from '../../shared/maps/helpers.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
 import type { MatchConfig } from '../../shared/types.ts';
+import { cinematicConfig, cinematicEnabled, onCinematicChange, setCinematic as setCinematicMode, setCinematicConfig, type CinematicConfig } from './cinematic.ts';
 import { WATER_LAYER, bedY, groundY, type Engine, type Quality, type SceneCapture } from './contracts.ts';
 import { MENU_ATMOSPHERE, resolveAtmosphere, type ResolvedAtmosphere } from './engine/atmosphere.ts';
+import { CinematicPass, LookGradeEffect } from './engine/cinema.ts';
 import { MenuBackdrop } from './engine/menu.ts';
 import { CaptureTargets, OVERLAY_BIT, OVERLAY_LAYER, PostPipeline, WATER_BIT } from './engine/post.ts';
+import { GpuProfiler } from './engine/profiler.ts';
 import { ShadowRig, type ShadowBounds } from './engine/shadows.ts';
 import { SkyDome, skyDefines } from './engine/sky.ts';
 import { WeatherSystem } from './engine/weather.ts';
+import { cinematicLook, type CineLook } from './look/grade.ts';
+import { LANTERN_UNIFORMS, LanternRig, lanternSources, type LanternSource } from './look/lanterns.ts';
+import { LOOK_UNIFORMS, applyVoxelLook, removeVoxelLook, type VoxelLookOptions } from './look/voxelLook.ts';
 
 export { OVERLAY_LAYER } from './engine/post.ts';
 
@@ -43,6 +49,9 @@ const PIXEL_CAP: Record<Quality, number> = { low: 2.1e6, medium: 3.7e6, high: 5.
 const MIN_DYN_SCALE = 0.65;
 const MENU_FAR = 900;
 const PLAY_FAR = 400;
+/** debugVoxelLook() preview numbers: the values the adoption notes recommend for wave 2 */
+const PREVIEW_TERRAIN: VoxelLookOptions = { voxelSize: 0.25, space: 'world', seam: 0.22, bevel: 0.13, glint: 0.55 };
+const PREVIEW_PUDGY: VoxelLookOptions = { voxelSize: 0.05, space: 'local', rim: 0.8, glint: 0.6 };
 
 class HookEngine implements Engine {
   readonly renderer: THREE.WebGLRenderer;
@@ -91,6 +100,22 @@ class HookEngine implements Engine {
    */
   dynamicResolution = typeof location === 'undefined' || !new URLSearchParams(location.search).has('debug');
   private envKey = '';
+  // cinematic mode (client/render/cinematic.ts): everything below stays null / unused while it is off
+  /** the tier asked for by setQuality (cinematic renders 'ultra' on top of it) */
+  private requested: Quality;
+  private cine = false;
+  private cineCfg: CinematicConfig | null = null;
+  private cineLook: CineLook | null = null;
+  private cinePass: CinematicPass | null = null;
+  private cineGrade: LookGradeEffect | null = null;
+  private lanterns: LanternRig | null = null;
+  private lanternOverride: LanternSource[] | null = null;
+  private readonly unsubCine: () => void;
+  private profiler: GpuProfiler | null = null;
+  /** cinematic: ambient scale so lantern pools read (1 = off) */
+  private hemiScale = 1;
+  /** materials adopted by debugVoxelLook() */
+  private readonly previewLook = new Set<THREE.Material>();
 
   constructor(canvas: HTMLCanvasElement, quality: Quality) {
     this.renderer = new THREE.WebGLRenderer({
@@ -128,17 +153,205 @@ class HookEngine implements Engine {
     this.scene.add(this.sun.target);
     this.shadows = new ShadowRig(this.sun);
 
+    this.requested = quality;
+    this.cine = cinematicEnabled();
+    if (this.cine) {
+      quality = 'ultra';
+      this.enterCinematic();
+    }
     this.q = quality;
     this.sky = new SkyDome(quality);
     this.scene.add(this.sky.mesh);
     this.atmo = resolveAtmosphere(MENU_ATMOSPHERE, true);
 
-    this.setQuality(quality);
+    this.setQuality(this.requested);
     this.setAtmosphere(null, null);
+    this.unsubCine = onCinematicChange((on) => this.onCinematic(on));
   }
 
+  /** the effective tier: 'ultra' while cinematic mode is on */
   get quality(): Quality {
     return this.q;
+  }
+
+  /** true while cinematic mode is on */
+  get cinematic(): boolean {
+    return this.cine;
+  }
+
+  /** Turn cinematic mode on or off (it owns its state in client/render/cinematic.ts). */
+  setCinematic(on: boolean): void {
+    setCinematicMode(on);
+  }
+
+  /**
+   * Replace the lantern lights derived from the map (props can report exact lamp positions here).
+   * null goes back to the derived list. Only used while cinematic mode is on.
+   */
+  setLanternSources(list: LanternSource[] | null): void {
+    this.lanternOverride = list;
+    if (this.lanterns) this.lanterns.setSources(list ?? (this.map ? lanternSources(this.map) : []));
+  }
+
+  /**
+   * Cinematic effect switches for profiling and weaker GPUs, e.g. configureCinematic({ dof: false }).
+   * Same as setCinematicConfig() in client/render/cinematic.ts; returns the current switches.
+   */
+  configureCinematic(patch: Partial<CinematicConfig> = {}): Readonly<CinematicConfig> {
+    setCinematicConfig(patch);
+    return cinematicConfig();
+  }
+
+  /** Debug: GPU timer queries around every pass (null = off). Returns the profiler. */
+  profileGpu(on: boolean): GpuProfiler | null {
+    if (this.profiler) {
+      this.profiler.dispose();
+      this.profiler = null;
+    }
+    if (on) this.profiler = new GpuProfiler(this.renderer);
+    this.wrapPasses();
+    return this.profiler;
+  }
+
+  /**
+   * Debug preview of wave-2 adoption (under ?debug&cinematic): give the voxel look to materials other
+   * modules own, at runtime and without touching their files. Terrain chunks (vertex colours + colour
+   * map, 0.25 m world-aligned columns) and the Lunkers ('pudgy', 0.05 m local voxels, plus the fresnel
+   * rim). Props are BatchedMesh buckets that mix voxel sizes, so they need the attribute mode in their
+   * own mesher and are left out here. Returns how many materials were adopted. Optional options override
+   * the preview defaults (for tuning the wave-2 numbers live). The preview ends at the next map change.
+   */
+  debugVoxelLook(on: boolean, opts: { terrain?: VoxelLookOptions; pudgy?: VoxelLookOptions } = {}): number {
+    for (const m of this.previewLook) removeVoxelLook(m);
+    this.previewLook.clear();
+    if (!on) return 0;
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || (o as THREE.BatchedMesh).isBatchedMesh) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of list) {
+        const m = mat as THREE.MeshStandardMaterial;
+        if (!m || !m.isMeshStandardMaterial || m.transparent || this.previewLook.has(m)) continue;
+        if (m.name === 'pudgy') {
+          applyVoxelLook(m, { ...PREVIEW_PUDGY, ...opts.pudgy });
+          this.previewLook.add(m);
+        } else if (m.vertexColors && m.map && !(o as THREE.InstancedMesh).isInstancedMesh) {
+          applyVoxelLook(m, { ...PREVIEW_TERRAIN, ...opts.terrain });
+          this.previewLook.add(m);
+        }
+      }
+    });
+    return this.previewLook.size;
+  }
+
+  private enterCinematic(): void {
+    this.cineCfg = { ...cinematicConfig() };
+    // the lantern pool is sized per map in applyCinematicAtmosphere (light count is part of every program)
+    this.setLanternPool(0);
+  }
+
+  /** Resize the lantern light pool (0 = none). Changing the size recompiles lit materials: map changes only. */
+  private setLanternPool(n: number): void {
+    if ((this.lanterns ? this.lanterns.budget : 0) === n) return;
+    if (this.lanterns) {
+      this.scene.remove(this.lanterns.group);
+      this.lanterns.dispose();
+      this.lanterns = null;
+    }
+    if (n > 0) {
+      this.lanterns = new LanternRig(n);
+      this.scene.add(this.lanterns.group);
+    }
+    if (this.cinePass) this.cinePass.setLanterns(this.lanterns);
+  }
+
+  private leaveCinematic(): void {
+    this.setLanternPool(0);
+    LANTERN_UNIFORMS.hwLanternCount.value = 0;
+    this.cinePass = null;
+    this.cineGrade = null;
+    this.cineLook = null;
+    this.cineCfg = null;
+  }
+
+  private onCinematic(on: boolean): void {
+    if (this.disposed) return;
+    if (!on && !this.cine) return;
+    this.cine = on;
+    if (on) this.enterCinematic();
+    else this.leaveCinematic();
+    // the atmosphere values the cinematic look scaled go back to the map's own
+    this.fog.density = this.atmo.fogDensity;
+    this.hemiScale = 1;
+    this.hemi.intensity = this.atmo.hemiIntensity;
+    // rebuild the post pipeline (cinematic passes or none); applyCinematicAtmosphere runs in there
+    this.setQuality(this.requested);
+  }
+
+  private buildCinematicPost(): { pass: CinematicPass; grade: LookGradeEffect } {
+    const cfg = this.cineCfg ?? { ...cinematicConfig() };
+    this.cinePass = new CinematicPass(this.camera, this.targets as CaptureTargets, this.sun, cfg, this.lanterns);
+    this.cineGrade = new LookGradeEffect();
+    return { pass: this.cinePass, grade: this.cineGrade };
+  }
+
+  /** Per-map cinematic look: grade, mist, rim, bloom, lights. */
+  private applyCinematicAtmosphere(): void {
+    const cfg = this.cineCfg;
+    if (!cfg) return;
+    const map = this.map;
+    const look = cinematicLook(map, this.atmo.src);
+    this.cineLook = look;
+    this.fog.density = this.atmo.fogDensity * (map ? look.fogScale : 1);
+    this.hemiScale = map ? look.ambient : 1;
+    this.hemi.intensity = this.atmo.hemiIntensity * this.hemiScale;
+    LOOK_UNIFORMS.hwLookRim.value.copy(look.fresnelRim);
+    if (this.post && cfg.bloom) this.post.applyCinematicBloom(look.bloomIntensity, look.bloomThreshold, look.bloomRadius);
+    if (this.post && cfg.grade && map) this.post.applyCinematicLift(look.grade.lift);
+    if (this.cinePass) this.cinePass.apply(look, map !== null);
+    if (this.cineGrade) this.cineGrade.set(look, cfg.grade);
+    // lantern lights: as many as the map needs, up to the budget (day maps few, night maps many, menu none)
+    const sources = map ? (this.lanternOverride ?? lanternSources(map)) : [];
+    const want = cfg.lights ? Math.min(cfg.lightBudget, look.lightBudget, sources.length) : 0;
+    // the light count is part of every lit program, so the pool size is quantised to two sizes: map
+    // changes then reuse the same few program variants instead of compiling one per light count
+    this.setLanternPool(want === 0 ? 0 : want <= 4 ? Math.min(4, cfg.lightBudget) : cfg.lightBudget);
+    if (this.lanterns) {
+      this.lanterns.strength = look.lanterns;
+      this.lanterns.active = want;
+      this.lanterns.setSources(sources);
+    }
+  }
+
+  /** Debug profiling: time each composer pass (and N8AO) with GPU queries. */
+  private wrapPasses(): void {
+    const prof = this.profiler;
+    if (!this.post) return;
+    const passes = this.post.composer.passes as unknown as { name: string; render: (...a: unknown[]) => void; hwOrig?: (...a: unknown[]) => void }[];
+    const ao = this.post.scenePass.ao as unknown as { render: (...a: unknown[]) => void; hwOrig?: (...a: unknown[]) => void } | null;
+    const list = ao ? [...passes, Object.assign(ao, { name: 'N8AO' })] : passes;
+    for (const p of list) {
+      const orig = p.hwOrig ?? p.render;
+      p.hwOrig = orig;
+      if (!prof) {
+        p.render = orig;
+        continue;
+      }
+      // queries cannot nest: N8AO runs inside the scene pass, so it splits it into opaque | AO | water+overlay
+      const isAo = p === (ao as unknown);
+      const label = p.name === 'HW.ScenePass' ? 'scene.opaque+shadow' : p.name;
+      p.render = function (this: unknown, ...a: unknown[]) {
+        prof.begin(label);
+        try {
+          orig.apply(this, a);
+        } finally {
+          if (isAo) prof.begin('scene.water+overlay');
+          else prof.end();
+        }
+      };
+    }
+    if (prof && this.cinePass) this.cinePass.timer = prof;
+    else if (this.cinePass) this.cinePass.timer = null;
   }
 
   /** null on 'low' (water renders directly, no refraction source). Same object on every other tier. */
@@ -157,6 +370,9 @@ class HookEngine implements Engine {
   }
 
   setQuality(q: Quality): void {
+    this.requested = q;
+    // cinematic mode always renders the ultra tier
+    if (this.cine) q = 'ultra';
     this.q = q;
     // direct-to-screen materials tone map themselves on 'low'; render targets never tone map
     this.renderer.toneMapping = q === 'low' ? THREE.CustomToneMapping : THREE.AgXToneMapping;
@@ -173,8 +389,12 @@ class HookEngine implements Engine {
       const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
       if (!this.targets) this.targets = new CaptureTargets(size.x, size.y);
       this.targets.setSize(size.x, size.y);
-      this.post = new PostPipeline(this.renderer, this.scene, this.camera, this.targets, q);
+      this.post = this.cine
+        ? new PostPipeline(this.renderer, this.scene, this.camera, this.targets, q, this.buildCinematicPost())
+        : new PostPipeline(this.renderer, this.scene, this.camera, this.targets, q);
       this.post.apply(this.atmo);
+      if (this.cine) this.applyCinematicAtmosphere();
+      if (this.profiler) this.wrapPasses();
       this.post.scenePass.sun = this.sun;
       this.baseShadowEvery = q === 'medium' ? 2 : 1;
       this.setShadowEvery(this.baseShadowEvery);
@@ -187,6 +407,8 @@ class HookEngine implements Engine {
   }
 
   setAtmosphere(map: MapDef | null, _config: MatchConfig | null): void {
+    // the debug voxel-look preview holds the previous map's materials: let them go
+    if (this.previewLook.size) this.debugVoxelLook(false);
     this.map = map;
     const a = resolveAtmosphere(map ? map.atmosphere : MENU_ATMOSPHERE, !map);
     this.atmo = a;
@@ -247,6 +469,7 @@ class HookEngine implements Engine {
     }
     this.scene.environmentIntensity = a.envIntensity;
     if (this.post) this.post.apply(a);
+    if (this.cine) this.applyCinematicAtmosphere();
     this.flash = 0;
     this.nextFlash = this.clock + 12 + Math.random() * 10;
     this.rebuildWeather();
@@ -304,6 +527,7 @@ class HookEngine implements Engine {
       maskRect: this.maskRect,
       overlayLayer: OVERLAY_LAYER,
       seed: this.map.id.length * 977 + 13,
+      cinematic: this.cine,
     });
     this.scene.add(this.weather.group);
     this.updateWeatherView();
@@ -337,6 +561,14 @@ class HookEngine implements Engine {
     if (this.weather) this.weather.update(t, focusX, focusZ);
     this.animateAmbient(t, d);
     this.adaptResolution(d);
+    if (this.cine) {
+      if (this.lanterns) {
+        this.lanterns.update(d, t, focusX, focusZ);
+        // the same pool for materials that light themselves (water): see LANTERN_UNIFORMS
+        LANTERN_UNIFORMS.hwLanternCount.value = this.lanterns.fill(LANTERN_UNIFORMS.hwLanternPos.value, LANTERN_UNIFORMS.hwLanternCol.value);
+      } else LANTERN_UNIFORMS.hwLanternCount.value = 0;
+      if (this.cinePass) this.cinePass.update(t, focusX, this.map ? groundY(this.map) : 0, focusZ);
+    }
   }
 
   private animateAmbient(t: number, d: number): void {
@@ -357,7 +589,7 @@ class HookEngine implements Engine {
       if (this.flash > 0) this.flash = Math.max(0, this.flash - d);
       const f = this.flash;
       const pulse = f > 0 ? Math.max(0, Math.sin(((0.42 - f) / 0.42) * Math.PI * 3)) * (f / 0.42) : 0;
-      this.hemi.intensity = a.hemiIntensity * (1 + pulse * 0.55);
+      this.hemi.intensity = a.hemiIntensity * this.hemiScale * (1 + pulse * 0.55);
       this.sky.uniforms.uCloudLit.value.copy(a.sky.cloudLit).multiplyScalar(1 + pulse * 5);
     }
   }
@@ -489,6 +721,10 @@ class HookEngine implements Engine {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubCine();
+    if (this.profiler) this.profiler.dispose();
+    this.profiler = null;
+    this.leaveCinematic();
     if (this.post) this.post.dispose();
     this.post = null;
     if (this.targets) this.targets.dispose();

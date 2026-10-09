@@ -7,9 +7,13 @@ import type {
 import type { MapDef } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
 import type { Settings } from '../settings.ts';
+import type { SteamPlayState } from '../net/steamPlay.ts';
 
-/** 'locker' | 'store' | 'market' | 'career' are the cosmetic economy screens (v2). app.go() routes them generically. */
-export type Screen = 'menu' | 'solo' | 'online' | 'lobby' | 'match' | 'settings' | 'profile' | 'locker' | 'store' | 'market' | 'career';
+/**
+ * 'locker' | 'store' | 'market' | 'career' are the cosmetic economy screens (v2). app.go() routes them generically.
+ * 'steam' is the Steam lobby screen, only in the Steam build (AppState.steam is set there).
+ */
+export type Screen = 'menu' | 'solo' | 'online' | 'lobby' | 'match' | 'settings' | 'profile' | 'locker' | 'store' | 'market' | 'career' | 'steam';
 
 export interface ChatLine {
   from: string;
@@ -41,6 +45,10 @@ export interface AppState {
   match: { local: boolean; ended: MatchEnd | null } | null;
   chat: ChatLine[];
   toast: { text: string; kind: 'info' | 'error'; id: number } | null;
+  /** Steam build only (client/platform.ts isSteam()): Steam lobbies. Absent in the browser build. */
+  steam?: SteamPlayState;
+  /** Steam build only: the engine has the cinematic mode behind the Epic graphics option. */
+  epicAvailable?: boolean;
 }
 
 export interface AppActions {
@@ -73,6 +81,23 @@ export interface AppActions {
   backToLobby(): void;
   /** UI sound hooks */
   uiSound(kind: 'click' | 'hover' | 'open' | 'purchase' | 'equip' | 'listingSold'): void;
+
+  // ------------------------------------------------------------------ Steam build only (AppState.steam)
+  /** Ask Steam for the lobby list again. */
+  steamRefresh?(): void;
+  /** Start a lobby: the local game server, the Steam lobby and its room. */
+  steamHost?(o: { name: string; maxPlayers: number; isPrivate: boolean }): void;
+  /** Join a lobby from the browser. */
+  steamJoin?(lobbyId: string): void;
+  /** Leave the Steam lobby, back to the Steam screen. */
+  steamLeave?(): void;
+  /** Open the Steam overlay's invite dialog. */
+  steamInvite?(): void;
+  /** A friend's invite that arrived during a live match: join it now (leaving the match), or not. */
+  steamAcceptInvite?(): void;
+  steamDismissInvite?(): void;
+  /** The desktop window's fullscreen. */
+  setFullscreen?(on: boolean): void;
 }
 
 /** Everything the HUD needs for one frame. */

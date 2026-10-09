@@ -3,6 +3,7 @@
 // islands with a lighthouse sweep a soft beam across the dusk. Built and disposed by the engine.
 import * as THREE from 'three';
 import { VoxelGrid, meshVoxels, hashVox, shade } from '../voxel/voxel.ts';
+import { applyVoxelLook } from '../look/voxelLook.ts';
 import type { SkyUniforms } from './sky.ts';
 import { NOISE_GLSL, SKY_FN_GLSL, SKY_UNIFORMS_GLSL } from './glsl.ts';
 
@@ -261,6 +262,8 @@ export class MenuBackdrop {
     // islands
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 });
     this.disposables.push(mat);
+    // cinematic: bevelled cubes (per-vertex voxel size from meshVoxels); a no-op while cinematic is off
+    applyVoxelLook(mat, { voxelSize: 'attribute', fallbackSize: 0.7 });
     const islands: { nx: number; nz: number; h: number; x: number; z: number; s: number; palms: number; seed: number; rot: number }[] = [
       { nx: 46, nz: 30, h: 9, x: -70, z: -150, s: 0.7, palms: 2, seed: 3, rot: 0.3 },
       { nx: 70, nz: 40, h: 14, x: 95, z: -230, s: 0.9, palms: 4, seed: 11, rot: -0.2 },

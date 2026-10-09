@@ -1,4 +1,6 @@
 // Settings: control scheme with a key reference, graphics quality, volumes and gameplay toggles.
+// The Steam build adds the Epic graphics option (the engine's cinematic mode, when the engine has it)
+// and a Fullscreen switch for the desktop window; the browser build shows neither.
 import type { ControlScheme } from '../../../shared/types.ts';
 import type { Quality } from '../../render/contracts.ts';
 import type { Settings } from '../../settings.ts';
@@ -8,13 +10,21 @@ import { keyTable } from '../howto.ts';
 import type { AppState } from '../types.ts';
 import { button, sectionTitle, segmented, slider, toggle } from '../widgets.ts';
 
-const QUALITY_HINT: Record<Quality | 'auto', string> = {
+type QualityChoice = Quality | 'auto' | 'epic';
+
+const QUALITY_HINT: Record<QualityChoice, string> = {
   auto: 'Picks a tier from your hardware.',
   low: 'Fastest. No shadows, fewer effects.',
   medium: 'Balanced for laptops.',
   high: 'Soft shadows and richer water.',
   ultra: 'Everything on. For strong GPUs.',
+  epic: 'Cinematic lighting and colour on top of Ultra. For strong GPUs.',
 };
+
+/** What the quality picker shows: Epic while the cinematic mode is on (Steam build only). */
+function qualityChoice(s: Settings, epic: boolean): QualityChoice {
+  return epic && s.cinematic ? 'epic' : s.quality;
+}
 
 export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
   const a = ctx.actions;
@@ -37,14 +47,18 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
   });
   const keysHolder = h('div', { class: 'keys-holder' }, keyTable(s0.settings.controls));
 
-  const quality = segmented<Quality | 'auto'>({
+  // Epic only in the Steam build, and only when the engine has the cinematic mode
+  const epic = !!s0.steam && s0.epicAvailable === true;
+  const choices: QualityChoice[] = epic ? ['auto', 'low', 'medium', 'high', 'ultra', 'epic'] : ['auto', 'low', 'medium', 'high', 'ultra'];
+  const quality = segmented<QualityChoice>({
     label: 'Graphics quality',
     cls: 'seg-small',
-    value: s0.settings.quality,
-    options: (['auto', 'low', 'medium', 'high', 'ultra'] as const).map((q) => ({ value: q, label: q[0].toUpperCase() + q.slice(1), title: QUALITY_HINT[q] })),
-    onChange: (v) => patch({ quality: v }),
+    value: qualityChoice(s0.settings, epic),
+    options: choices.map((q) => ({ value: q, label: q[0].toUpperCase() + q.slice(1), title: QUALITY_HINT[q] })),
+    onChange: (v) => (v === 'epic' ? patch({ cinematic: true }) : patch({ quality: v, cinematic: false })),
   });
   const qHint = h('div', { class: 'rule-hint' });
+  const fullscreen = s0.steam ? toggle('Fullscreen', s0.steam.fullscreen, (v) => a.setFullscreen?.(v), 'Fill the whole screen with the game window') : null;
 
   const master = slider('Master volume', s0.settings.master, (v) => patch({ master: v }), (v) => live({ master: v }));
   const sfx = slider('Effects', s0.settings.sfx, (v) => patch({ sfx: v }), (v) => live({ sfx: v }));
@@ -61,7 +75,7 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
       h('div', { class: 'panel-body settings-body' },
         h('section', { class: 'set-col' }, sectionTitle('Controls', 'gear'), controls.el, keysHolder),
         h('section', { class: 'set-col' },
-          sectionTitle('Graphics', 'eye'), quality.el, qHint,
+          sectionTitle('Graphics', 'eye'), quality.el, qHint, fullscreen?.el ?? null,
           sectionTitle('Sound', 'chat'), master.el, sfx.el, music.el,
           sectionTitle('Gameplay', 'target'), shake.el, range.el, fps.el)),
     ));
@@ -83,8 +97,9 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
       shownScheme = s.controls;
       keysHolder.replaceChildren(keyTable(s.controls));
     }
-    quality.set(s.quality);
-    qHint.textContent = QUALITY_HINT[s.quality];
+    const q = qualityChoice(s, epic);
+    quality.set(q);
+    qHint.textContent = QUALITY_HINT[q];
     master.set(s.master);
     sfx.set(s.sfx);
     music.set(s.music);
@@ -93,11 +108,13 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
     fps.set(s.showFps);
   };
   paint(s0.settings);
+  const paintSteam = (s: AppState) => fullscreen?.set(s.steam?.fullscreen ?? false);
 
   return {
     el,
     update(s: AppState, prev: AppState) {
       if (s.settings !== prev.settings) paint(s.settings);
+      if (s.steam !== prev.steam) paintSteam(s);
     },
     destroy() {
       window.clearTimeout(liveTimer);

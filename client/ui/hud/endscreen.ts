@@ -44,7 +44,7 @@ export function soloPearls(e: MatchEnd, youId: number): number {
   return me && row ? Math.round(matchPearls(e.winner === me.team, row.k, row.hh, row.sv) * SOLO_PEARL_RATE) : 0;
 }
 
-export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null, onLobby: (() => void) | null = null, pearls: number | null = null): HTMLElement {
+export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: () => void, onRematch: (() => void) | null, onLobby: (() => void) | null = null, pearls: number | null = null, pearlNote: string | null = null): HTMLElement {
   const you = e.players.find((p) => p.id === youId);
   const myTeam = you?.team;
   const won = myTeam !== undefined && e.winner === myTeam;
@@ -97,7 +97,7 @@ export function buildEnd(e: MatchEnd, youId: number, local: boolean, onLeave: ()
       h('div', { class: 'end-banner' }, h('span', { class: 'eb-ico' }, icon(draw ? 'anchor' : won ? 'trophy' : myTeam === undefined ? 'crown' : 'drown')), h('span', { class: 'eb-text', text: title })),
       h('div', { class: 'end-sub', text: sub }),
       scoreRow,
-      pearls ? h('div', { class: 'end-pearls' }, icon('pearl', 'ep-ico'), h('span', { class: 'ep-num', text: `+${pearls}` }), h('span', { class: 'ep-text', text: local ? 'Pearls for your locker (solo pays half)' : 'Pearls' })) : null,
+      pearls ? h('div', { class: 'end-pearls' }, icon('pearl', 'ep-ico'), h('span', { class: 'ep-num', text: `+${pearls}` }), h('span', { class: 'ep-text', text: pearlNote ?? (local ? 'Pearls for your locker (solo pays half)' : 'Pearls') })) : null,
       awards,
       h('div', { class: 'end-tables' }, statsTable(e.rows, e.players, 0, youId, 'end'), statsTable(e.rows, e.players, 1, youId, 'end')),
       note,

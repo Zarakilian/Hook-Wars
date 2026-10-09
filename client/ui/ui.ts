@@ -19,11 +19,12 @@ import { buildMenu } from './screens/menu.ts';
 import { buildOnline } from './screens/online.ts';
 import { buildSettings } from './screens/settings.ts';
 import { buildSolo } from './screens/solo.ts';
+import { buildSteam } from './screens/steam.ts';
 import { buildStore } from './screens/store.ts';
 import { ItemThumbs } from './thumbs.ts';
 import type { AppActions, AppState, Screen, UI } from './types.ts';
 import './v2.css';
-import { setUiSound } from './widgets.ts';
+import { button, setUiSound } from './widgets.ts';
 
 const HOWTO_KEY = 'hookwars.howto.seen.v1';
 
@@ -238,9 +239,46 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
         return s.room ? buildLobby(ctx, s) : buildOnline(ctx, s);
       case 'settings':
         return buildSettings(ctx, s);
+      case 'steam':
+        return s.steam ? buildSteam(ctx, s) : buildMenu(ctx, s);
       default:
         return null;
     }
+  }
+
+  // ------------------------------------------------------------------------------------ Steam invite
+  // A friend's invite that arrived during a live match (Steam build only): join now, or not now.
+  let inviteShown: string | null = null;
+  let inviteClose: (() => void) | null = null;
+  function paintInvite(s: AppState): void {
+    const id = s.steam?.invite ?? null;
+    if (id === inviteShown) return;
+    inviteShown = id;
+    if (inviteClose) {
+      const c = inviteClose;
+      inviteClose = null; // closed by us, not a "not now"
+      c();
+    }
+    if (!id) return;
+    const answer = (join: boolean) => {
+      const c = inviteClose;
+      inviteClose = null;
+      c?.();
+      if (join) actions.steamAcceptInvite?.();
+      else actions.steamDismissInvite?.();
+    };
+    const box = h('div', { class: 'panel stm-invite' },
+      h('header', { class: 'panel-head' }, h('h2', { class: 'panel-title', text: 'Steam invite' }), h('span', { class: 'head-spacer' })),
+      h('div', { class: 'panel-body' }, h('p', { text: 'A friend invited you to their Hook Wars lobby.' }), h('p', { class: 'muted', text: 'Joining now leaves this match.' })),
+      h('footer', { class: 'panel-foot' }, button('Not now', () => answer(false), { cls: 'ghost' }), h('span', { class: 'head-spacer' }), button('Join lobby', () => answer(true), { cls: 'primary', icon: 'people' })));
+    inviteClose = modal(box, {
+      label: 'Steam invite',
+      onClose: () => {
+        if (!inviteClose) return;
+        inviteClose = null;
+        actions.steamDismissInvite?.(); // Esc or a click outside
+      },
+    });
   }
 
   function render(s: AppState): void {
@@ -251,12 +289,13 @@ export function createUI(root: HTMLElement, actions: AppActions, economy?: Econo
       lastToast = s.toast.id;
       showToast(s.toast.text, s.toast.kind);
     }
+    if (s.steam) paintInvite(s);
     hud.settings(s.settings);
     const inMatch = s.match !== null && (s.screen === 'match' || s.screen === 'settings');
     root.classList.toggle('in-match', inMatch);
     backdrop.classList.toggle('hidden', inMatch);
     let scr: Screen = s.screen === 'profile' ? 'locker' : s.screen;
-    if (scr === 'lobby' && !s.room) scr = 'online';
+    if (scr === 'lobby' && !s.room) scr = s.steam && s.steam.phase !== 'idle' ? 'steam' : 'online';
     root.dataset.screen = scr;
     if (scr === 'match') {
       if (view) {

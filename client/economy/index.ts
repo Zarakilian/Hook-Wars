@@ -4,6 +4,11 @@
 //            gets its own auth token, kept in hookwars.tokens.v1 keyed by server address. A token
 //            is never thrown away: when a server hands out a different one, the old one moves to
 //            hookwars.tokens.prev.v1, so an account can still be recovered by hand.
+//   cloud  : the Steam build also keeps the offline locker in Steam Cloud (useCloud, ./cloudLocker.ts).
+//            localStorage stays the first copy; the newer of the two (savedAt) wins at start.
+//   local_only: a server that keeps no accounts (ECONOMY=trust, a lobby a player hosts in the Steam
+//            build) says so after hello; this client then keeps using its own locker while connected
+//            and pays itself at match end (payLocalMatch, ./payout.ts).
 // Premium items are sold in the Steam version only; here they are never owned, bought or worn.
 import { COSMETICS, cosmeticById, DEFAULT_ITEM_IDS, DEFAULT_LOADOUT, ownedLoadout, type Loadout } from '../../shared/cosmetics.ts';
 import {
@@ -12,6 +17,7 @@ import {
 } from '../../shared/economy.ts';
 import type { ServerMsg } from '../../shared/protocol.ts';
 import { FAMILIES, type FamilyId } from '../../shared/types.ts';
+import { CLOUD_LOCKER_FILE, CLOUD_MAX_BYTES, CloudSaver, type CloudSaverOptions, type CloudStore } from './cloudLocker.ts';
 import type { EconomyClient, EconomyState } from './types.ts';
 
 const LOCKER_KEY = 'hookwars.locker.v1';
@@ -28,6 +34,11 @@ export const MARKET_RENEW_MS = 25_000;
 const SIGNING_IN = 'Still signing in to the server. Try again in a moment.';
 const SIGN_IN_TIMEOUT = 'This server did not sign you in. You can still play, but Pearls, the Store and the Market need an account. Reconnect to try again.';
 const STEAM_ONLY = 'Premium items are sold in the Steam version of Hook Wars.';
+const LOCAL_ONLY_MARKET = 'This lobby is hosted by a player, so it has no Market. The Market is on dedicated servers: connect to one from Play Online.';
+/** econError code (no re) a server that keeps no accounts sends after hello (server/economy/trust.ts) */
+export const LOCAL_ONLY_CODE = 'local_only';
+/** Matches remembered for payLocalMatch's once-per-match guard. */
+const PAID_KEEP = 50;
 
 type Re = EconomyClientMsg['t'];
 
@@ -41,29 +52,43 @@ function unref<T>(t: T): T {
 // Storage (every access may throw: private mode, blocked storage, full quota)
 // ---------------------------------------------------------------------------------------------
 
-function readLocker(): AccountView | null {
+/** A saved locker (localStorage or Steam Cloud text) checked field by field; null if it is not one. */
+export function parseLocker(raw: string | null | undefined): { account: AccountView; savedAt: number } | null {
+  if (!raw || raw.length > CLOUD_MAX_BYTES) return null;
   try {
-    const raw = localStorage.getItem(LOCKER_KEY);
-    if (!raw) return null;
-    const a = JSON.parse(raw) as AccountView & { wallet?: unknown; network?: unknown };
-    if (typeof a !== 'object' || a === null || typeof a.pearls !== 'number' || !Array.isArray(a.owned)) return null;
+    const a = JSON.parse(raw) as AccountView & { wallet?: unknown; network?: unknown; savedAt?: unknown };
+    if (typeof a !== 'object' || a === null || typeof a.pearls !== 'number' || !Number.isFinite(a.pearls) || a.pearls < 0 || !Array.isArray(a.owned)) return null;
     const loadouts = {} as Record<FamilyId, Loadout>;
     for (const f of FAMILIES) loadouts[f] = a.loadouts && typeof a.loadouts[f] === 'object' ? a.loadouts[f] : { ...DEFAULT_LOADOUT[f] };
     const owned = a.owned
       .filter((o) => o && typeof o.item === 'string' && typeof o.instance === 'string' && cosmeticById(o.item) && !isPremium(o.item))
       .map((o): OwnedItem => ({ instance: o.instance, item: o.item }));
     const stats = a.stats && typeof a.stats === 'object' ? a.stats : { matches: 0, wins: 0, kills: 0, hooksHit: 0 };
-    return { id: 'local', pearls: a.pearls, owned, loadouts, stats };
+    const savedAt = typeof a.savedAt === 'number' && Number.isFinite(a.savedAt) && a.savedAt > 0 ? a.savedAt : 0;
+    return { account: { id: 'local', pearls: Math.floor(a.pearls), owned, loadouts, stats }, savedAt };
   } catch {
     return null;
   }
 }
 
-function writeLocker(a: AccountView): void {
+function readLocker(): { account: AccountView; savedAt: number } | null {
   try {
-    localStorage.setItem(LOCKER_KEY, JSON.stringify(a));
+    return parseLocker(localStorage.getItem(LOCKER_KEY));
   } catch {
-    // storage unavailable: the locker lasts for this session only
+    return null;
+  }
+}
+
+/** The locker as saved text (localStorage and Steam Cloud use the same format). */
+function lockerText(a: AccountView, savedAt: number): string {
+  return JSON.stringify({ ...a, savedAt });
+}
+
+function writeLocker(text: string): void {
+  try {
+    localStorage.setItem(LOCKER_KEY, text);
+  } catch {
+    // storage unavailable: the locker lasts for this session only (and in Steam Cloud, in the Steam build)
   }
 }
 
@@ -125,9 +150,14 @@ function freshLocal(): AccountView {
 // ---------------------------------------------------------------------------------------------
 
 export function createEconomy(): EconomyClient {
-  const local = readLocker() ?? freshLocal();
+  const saved = readLocker();
+  const local = saved?.account ?? freshLocal();
+  /** when the locker was last saved (ms); the newer of this browser's copy and the Cloud's wins */
+  let localSavedAt = saved?.savedAt ?? 0;
+  let cloud: CloudSaver | null = null;
+  const paid: string[] = []; // matches already paid by payLocalMatch, newest last
   const subs = new Set<(s: EconomyState) => void>();
-  let st: EconomyState = { mode: 'local', account: local, listings: [], busy: false, error: null, accountError: null };
+  let st: EconomyState = { mode: 'local', account: local, listings: [], busy: false, error: null, accountError: null, localOnly: false };
   let send: ((m: EconomyClientMsg) => void) | null = null;
   let serverKey: string | null = null;
   let signInTimer: ReturnType<typeof setTimeout> | null = null;
@@ -153,9 +183,24 @@ export function createEconomy(): EconomyClient {
     if (signInTimer) clearTimeout(signInTimer);
     signInTimer = null;
   };
+  const copyLocal = (): AccountView => ({ ...local, owned: [...local.owned], loadouts: { ...local.loadouts } });
+  /** Store the locker: localStorage now, Steam Cloud a moment later (Steam build). */
+  const persist = () => {
+    localSavedAt = Math.max(Date.now(), localSavedAt + 1);
+    const text = lockerText(local, localSavedAt);
+    writeLocker(text);
+    cloud?.schedule(text);
+  };
   const saveLocal = () => {
-    writeLocker(local);
-    set({ account: { ...local, owned: [...local.owned], loadouts: { ...local.loadouts } }, error: null });
+    persist();
+    set({ account: copyLocal(), error: null });
+  };
+  const grant = (pearls: number) => {
+    local.pearls += Math.floor(pearls);
+    local.stats = { ...local.stats, matches: local.stats.matches + 1 };
+    // online, the screen shows the server account: keep it, only store the locker for when the player goes back offline
+    if (st.mode === 'server') persist();
+    else saveLocal();
   };
   const owns = (id: string) => DEFAULT_ITEM_IDS.includes(id) || (!isPremium(id) && (st.account?.owned.some((o) => o.item === id) ?? false));
   const canWear = (id: string) => DEFAULT_ITEM_IDS.includes(id) || (!isPremium(id) && (st.account?.owned.some((o) => o.item === id && !o.listed) ?? false));
@@ -213,11 +258,14 @@ export function createEconomy(): EconomyClient {
     grantLocal(pearls) {
       // solo always pays this browser's locker, even while an online server is attached (the end screen promises it)
       if (!(pearls > 0)) return;
-      local.pearls += Math.floor(pearls);
-      local.stats = { ...local.stats, matches: local.stats.matches + 1 };
-      // online, the screen shows the server account: keep it, only store the locker for when the player goes back offline
-      if (st.mode === 'server') writeLocker(local);
-      else saveLocal();
+      grant(pearls);
+    },
+    payLocalMatch(key, pearls) {
+      if (paid.includes(key)) return false; // this match was paid already
+      paid.push(key);
+      if (paid.length > PAID_KEEP) paid.splice(0, paid.length - PAID_KEEP);
+      if (pearls > 0) grant(pearls);
+      return true;
     },
     refreshMarket() {
       if (canAskMarket()) send!({ t: 'market' });
@@ -236,6 +284,7 @@ export function createEconomy(): EconomyClient {
       };
     },
     listForSale(instance, pearls) {
+      if (st.localOnly) return set({ error: LOCAL_ONLY_MARKET });
       if (st.mode !== 'server' || !send) return set({ error: 'The marketplace needs an online server. Connect to one from Play Online first.' });
       const missing = noAccount();
       if (missing) return set({ error: missing });
@@ -247,6 +296,7 @@ export function createEconomy(): EconomyClient {
       sendAction(`marketSell:${instance}`, { t: 'marketSell', instance, price: { cur: 'pearls', amount: pearls } });
     },
     buyListing(listing) {
+      if (st.localOnly) return set({ error: LOCAL_ONLY_MARKET });
       if (st.mode !== 'server' || !send) return set({ error: 'The marketplace needs an online server.' });
       const missing = noAccount();
       if (missing) return set({ error: missing });
@@ -275,6 +325,15 @@ export function createEconomy(): EconomyClient {
           set({ listings: msg.listings });
           return;
         case 'econError': {
+          if (!msg.re && msg.code === LOCAL_ONLY_CODE) {
+            // a server with no accounts (a lobby a player hosts): this client keeps its own locker,
+            // wears it there, and pays itself at match end
+            stopSignInTimer();
+            inflight.clear();
+            reasonFromServer = false;
+            set({ mode: 'local', localOnly: true, account: copyLocal(), listings: [], busy: false, error: null, accountError: null });
+            return;
+          }
           if (!msg.re && ACCOUNT_STATE_CODES.has(msg.code)) {
             // the server gave this connection no account, and says why
             stopSignInTimer();
@@ -313,7 +372,7 @@ export function createEconomy(): EconomyClient {
           if (st.mode === 'server' && !st.account && !st.accountError) set({ accountError: SIGN_IN_TIMEOUT });
         }, SIGN_IN_MS),
       );
-      set({ mode: 'server', account: null, listings: [], busy: false, error: null, accountError: null });
+      set({ mode: 'server', account: null, listings: [], busy: false, error: null, accountError: null, localOnly: false });
     },
     detachServer() {
       if (st.mode === 'local' && !send) return;
@@ -322,10 +381,60 @@ export function createEconomy(): EconomyClient {
       inflight.clear();
       stopSignInTimer();
       reasonFromServer = false;
-      set({ mode: 'local', account: { ...local }, listings: [], busy: false, error: null, accountError: null });
+      set({ mode: 'local', account: { ...local }, listings: [], busy: false, error: null, accountError: null, localOnly: false });
     },
     tokenFor(key) {
       return readTokens()[key] ?? null;
+    },
+    async useCloud(store: CloudStore, o: CloudSaverOptions & { readTries?: number } = {}) {
+      if (cloud) return 'local';
+      const saver = new CloudSaver(store, o);
+      cloud = saver;
+      saver.hold(true); // nothing goes to the Cloud before its copy has been read
+      const file = o.file ?? CLOUD_LOCKER_FILE;
+      const tries = Math.max(1, o.readTries ?? 3);
+      const wait = (ms: number) => new Promise<void>((r) => (o.timers ?? { setTimeout: (fn: () => void, t: number) => globalThis.setTimeout(fn, t) }).setTimeout(() => r(), ms));
+      let raw: string | null = null;
+      let readOk = false;
+      for (let i = 0; i < tries && !readOk; i++) {
+        try {
+          raw = await store.read(file);
+          readOk = true;
+        } catch {
+          if (i + 1 < tries) await wait((o.retryMs ?? 1000) * (i + 1));
+        }
+      }
+      const fromCloud = readOk ? parseLocker(raw) : null;
+      let used: 'cloud' | 'local' | 'failed' = readOk ? 'local' : 'failed';
+      // A computer with no locker of its own at start (a new install, or storage that cannot be kept)
+      // always takes the Cloud copy: losing a click made in the first moment beats losing the locker.
+      if (fromCloud && (fromCloud.savedAt > localSavedAt || saved === null)) {
+        // the Cloud has the newer locker (played on another computer, or this computer's storage was cleared)
+        local.pearls = fromCloud.account.pearls;
+        local.owned = fromCloud.account.owned;
+        local.loadouts = fromCloud.account.loadouts;
+        local.stats = fromCloud.account.stats;
+        localSavedAt = fromCloud.savedAt;
+        writeLocker(lockerText(local, localSavedAt));
+        if (st.mode === 'local') set({ account: copyLocal() });
+        used = 'cloud';
+      } else if (readOk && (!fromCloud || fromCloud.savedAt < localSavedAt)) {
+        // this computer has the newer copy, or the Cloud has none yet: send it up
+        if (localSavedAt === 0) localSavedAt = Math.max(1, Date.now());
+        saver.schedule(lockerText(local, localSavedAt));
+      }
+      // A Cloud that could not be read is not written over with this copy now; anything the player
+      // changes from here on still goes up (and every copy is in localStorage too).
+      saver.hold(false);
+      const g = globalThis as { addEventListener?: (t: string, fn: () => void) => void; document?: { visibilityState?: string } };
+      g.addEventListener?.('pagehide', () => void saver.flush());
+      g.addEventListener?.('visibilitychange', () => {
+        if (g.document?.visibilityState === 'hidden') void saver.flush();
+      });
+      return used;
+    },
+    flushCloud() {
+      return cloud ? cloud.flush() : Promise.resolve(true);
     },
   };
 }

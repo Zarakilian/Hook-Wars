@@ -204,7 +204,7 @@ export function buildStore(ctx: UiCtx, s0: AppState): ScreenView {
         }, { cls: 'ghost', icon: 'pearl' }));
         return;
       }
-      reason('Steam Item Store purchases open in a later update.');
+      reason('Opens when the Steam item store goes live');
       dActions.append(button(`Buy for ${offer.text}`, () => {}, { cls: 'primary premium-btn', icon: 'sparkle', disabled: true }));
       return;
     }

@@ -2,6 +2,8 @@
 // occlusion (per-vertex, Minecraft-style) and optional per-voxel colour jitter.
 // Every voxel model in the game (characters, props, terrain chunks) is built with this.
 import * as THREE from 'three';
+import { cinematicEnabled } from '../cinematic.ts';
+import { applyVoxelLook } from '../look/voxelLook.ts';
 
 const EMPTY = -1;
 
@@ -321,6 +323,9 @@ export function meshVoxels(grid: VoxelGrid, opts: MeshOptions): THREE.BufferGeom
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  // cinematic only: the voxel size per vertex, so the shared voxelMaterial() bevels any model correctly
+  // (and BatchedMesh buckets that mix voxel sizes). Off the attribute is never created.
+  if (cinematicEnabled()) geo.setAttribute('hwVoxelSize', new THREE.Float32BufferAttribute(new Float32Array(positions.length / 3).fill(size), 1));
   if (positions.length / 3 > 65535) geo.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
   else geo.setIndex(new THREE.Uint16BufferAttribute(indices, 1));
   geo.computeBoundingBox();
@@ -330,8 +335,13 @@ export function meshVoxels(grid: VoxelGrid, opts: MeshOptions): THREE.BufferGeom
 
 const materialCache = new Map<string, THREE.MeshStandardMaterial>();
 
-/** Shared vertex-coloured standard material. Variants are cached by key. */
-export function voxelMaterial(o: { roughness?: number; metalness?: number; emissive?: number; emissiveIntensity?: number; transparent?: boolean; opacity?: number } = {}): THREE.MeshStandardMaterial {
+/**
+ * Shared vertex-coloured standard material. Variants are cached by key.
+ * Every variant adopts the cinematic voxel look (a no-op while cinematic is off). Without `voxelSize`
+ * the look reads the per-vertex size meshVoxels emits in cinematic mode; pass `voxelSize` (metres) to
+ * use a fixed size instead (it then becomes part of the cache key).
+ */
+export function voxelMaterial(o: { roughness?: number; metalness?: number; emissive?: number; emissiveIntensity?: number; transparent?: boolean; opacity?: number; voxelSize?: number } = {}): THREE.MeshStandardMaterial {
   const key = JSON.stringify(o);
   let m = materialCache.get(key);
   if (!m) {
@@ -345,6 +355,7 @@ export function voxelMaterial(o: { roughness?: number; metalness?: number; emiss
       opacity: o.opacity ?? 1,
     });
     materialCache.set(key, m);
+    if (!m.transparent) applyVoxelLook(m, o.voxelSize ? { voxelSize: o.voxelSize } : { voxelSize: 'attribute', fallbackSize: 0.1 });
   }
   return m;
 }

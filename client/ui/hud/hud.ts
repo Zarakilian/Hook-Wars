@@ -10,6 +10,7 @@ import { button, setButtonLabel } from '../widgets.ts';
 import { Announcer } from './announcer.ts';
 import { BottomBar } from './bottombar.ts';
 import { HudChat } from './chat.ts';
+import { trustPayout } from '../../economy/payout.ts';
 import { buildEnd, soloPearls } from './endscreen.ts';
 import { KillFeed } from './feed.ts';
 import './hud.css';
@@ -239,7 +240,11 @@ export function createHud(root: HTMLElement, ctx: UiCtx): HudWithSettings {
             actions.startSolo(s.soloConfig, s.soloTeam);
           }
         : null;
-      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch, local ? null : () => actions.backToLobby(), local && ctx.economy ? soloPearls(e, youId) : null));
+      // a server with no accounts (a Steam lobby): this client pays its own locker (app.ts), the same figure
+      const selfPaid = !local && ctx.economy?.state().localOnly ? trustPayout(e, youId) : null;
+      const pearls = local && ctx.economy ? soloPearls(e, youId) : selfPaid ? selfPaid.pearls : null;
+      const note = selfPaid ? (selfPaid.reason.includes('half') ? 'Pearls for your locker (half rate: no other players)' : 'Pearls for your locker') : null;
+      endHolder.replaceChildren(buildEnd(e, youId, local, () => actions.leaveMatch(), rematch, local ? null : () => actions.backToLobby(), pearls, note));
     },
     toggleMenu(open?: boolean) {
       setMenu(open ?? !menuVisible);

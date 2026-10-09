@@ -1,5 +1,6 @@
 // Entry point the game server calls: builds the economy from environment variables.
 //   ECONOMY=off            -> the null economy (default items only, economy messages refused)
+//   ECONOMY=trust          -> a Steam player-hosted lobby: no accounts, no database (./trust.ts)
 //   otherwise              -> accounts, Pearls, the Pearl store and the Pearl market, kept in
 //                             <ECONOMY_DATA_DIR>/economy.db (./store.ts)
 // If the data folder is held by another server, or cannot be opened, or its data cannot be read
@@ -11,6 +12,7 @@ import { createNullEconomy, type ServerEconomy } from './api.ts';
 import { loadEconomyConfig, type EconomyConfig } from './config.ts';
 import { EconomyService } from './service.ts';
 import { AccountStore, StoreLockedError, StoreUnreadableError, StoreVersionError } from './store.ts';
+import { createTrustEconomy } from './trust.ts';
 
 export interface EconomyDeps {
   env?: NodeJS.ProcessEnv;
@@ -22,6 +24,11 @@ const UNAVAILABLE = 'Accounts, the Store and the Market are unavailable on this 
 
 export function createEconomyFromConfig(ec: EconomyConfig, deps: EconomyDeps = {}): ServerEconomy {
   const log = deps.log ?? ((s: string) => console.log(s));
+  if (ec.mode === 'trust') {
+    // a lobby hosted by the Steam desktop app: never opens a data folder
+    log('[economy] ECONOMY=trust: no accounts; players wear their own lockers (non-premium catalog items only), no payouts.');
+    return createTrustEconomy();
+  }
   if (!ec.enabled) {
     log('[economy] ECONOMY=off: no accounts; everyone wears the default sets.');
     return createNullEconomy();

@@ -1,4 +1,4 @@
-// Main menu: the animated logo, Play (Solo, Online), the hub (Locker, Store, Market, Career),
+// Main menu: the animated logo, Play (Solo, Online, and Steam lobbies in the Steam build), the hub (Locker, Store, Market, Career),
 // Settings and How to Play, the profile chip, and your character on its dock post over the live scene.
 import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN, UNIT_NOUN } from '../../../shared/constants.ts';
 import { cleanName } from '../../../shared/protocol.ts';
@@ -39,6 +39,16 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
       button('Settings', () => a.go('settings'), { cls: 'ghost', icon: 'gear' }),
       button('How to Play', () => ctx.openHowTo(), { cls: 'ghost', icon: 'book' })),
   );
+  // Steam build only: Steam lobbies next to Play Online (added once the Steam state exists, so the
+  // browser build's menu is exactly as before)
+  let steamBtn: HTMLButtonElement | null = null;
+  const addSteam = (s: AppState) => {
+    if (steamBtn || !s.steam) return;
+    steamBtn = navBtn('Play with Steam', 'Host or join your friends’ lobbies', 'people', () => a.go('steam'), 'steam-nav');
+    const play = nav.querySelector('.mn-play');
+    play?.insertBefore(steamBtn, play.lastElementChild);
+  };
+  addSteam(s0);
   const tipText = h('span', { class: 'tip-text' });
   let tipIdx = Math.floor(Math.random() * TIPS.length);
   const showTip = () => {
@@ -127,6 +137,7 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     el,
     update(s: AppState, prev: AppState) {
       if (s.profile !== prev.profile || s.settings.soloTeam !== prev.settings.soloTeam) paint(s);
+      if (s.steam && !steamBtn) addSteam(s);
     },
     destroy() {
       window.clearInterval(tipTimer);

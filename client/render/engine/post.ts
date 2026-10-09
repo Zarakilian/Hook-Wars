@@ -291,6 +291,14 @@ const TIERS: Record<Exclude<Quality, 'low'>, TierPost> = {
   ultra: { aa: { kind: 'smaa', preset: SMAAPreset.ULTRA, edges: EdgeDetectionMode.COLOR }, bloomLumScale: 1, bloomLevels: 7, bloomScale: 1, ao: { samples: 16, denoise: 8, halfRes: false }, grade: true },
 };
 
+/** Cinematic extras (client/render/engine/cinema.ts). Never passed while cinematic mode is off. */
+export interface CinematicPost {
+  /** HDR pass between the scene pass and the EffectPass (mist, shafts, depth of field, rim) */
+  pass: Pass;
+  /** display-referred grade appended after GradeEffect */
+  grade: Effect;
+}
+
 export class PostPipeline {
   readonly composer: EffectComposer;
   readonly scenePass: ScenePass;
@@ -300,7 +308,7 @@ export class PostPipeline {
   private readonly tier: TierPost;
   private readonly renderer: THREE.WebGLRenderer;
 
-  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera, targets: CaptureTargets, quality: Exclude<Quality, 'low'>) {
+  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera, targets: CaptureTargets, quality: Exclude<Quality, 'low'>, cine: CinematicPost | null = null) {
     this.renderer = renderer;
     this.tier = TIERS[quality];
     this.composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: false, multisampling: 0 });
@@ -337,8 +345,9 @@ export class PostPipeline {
     this.bloom.luminancePass.resolution.scale = this.tier.bloomLumScale;
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
     this.grade = new GradeEffect();
-    this.effectPass = new EffectPass(camera, smaa, this.bloom, tone, this.grade);
+    this.effectPass = cine ? new EffectPass(camera, smaa, this.bloom, tone, this.grade, cine.grade) : new EffectPass(camera, smaa, this.bloom, tone, this.grade);
     this.composer.addPass(this.scenePass);
+    if (cine) this.composer.addPass(cine.pass);
     this.composer.addPass(this.effectPass);
     // the composer turns autoClear off for the whole renderer; we only need it off while we render
     renderer.autoClear = true;
@@ -361,6 +370,18 @@ export class PostPipeline {
       // night maps get a slightly softer AO so dark scenes do not go muddy
       ao.configuration.intensity = a.src.timeOfDay === 'night' ? 2.1 : 2.6;
     }
+  }
+
+  /** Cinematic only: replace the map's grade lift (the cinematic grade sets its own black level). */
+  applyCinematicLift(lift: THREE.Vector3): void {
+    if (this.tier.grade) ((this.grade.uniforms.get('hwgLift') as THREE.Uniform).value as THREE.Vector3).copy(lift);
+  }
+
+  /** Cinematic only: scale the bloom set by apply() (stronger, wider bloom for lanterns). */
+  applyCinematicBloom(intensityMul: number, thresholdMul: number, radius: number): void {
+    this.bloom.intensity *= intensityMul;
+    this.bloom.luminanceMaterial.threshold *= thresholdMul;
+    this.bloom.mipmapBlurPass.radius = radius;
   }
 
   setSize(w: number, h: number): void {

@@ -18,6 +18,14 @@ export interface Settings {
   serverUrl: string; // last online server as typed ('' = the default server: in the browser, the host that served the page)
   soloConfig: MatchConfig;
   soloTeam: 0 | 1;
+  /**
+   * Steam build only: the Epic graphics option (the engine's cinematic mode, Engine.setCinematic). It
+   * sits on top of quality, which stays what the player picked for when Epic is off. Never offered in
+   * the browser, and ignored there.
+   */
+  cinematic?: boolean;
+  /** Steam build only: the desktop window is fullscreen (through the Steam bridge). */
+  fullscreen?: boolean;
 }
 
 const KEY_PROFILE = 'hookwars.profile.v1';
@@ -85,6 +93,9 @@ export function loadSettings(): Settings {
     serverUrl: typeof raw.serverUrl === 'string' ? raw.serverUrl.slice(0, 200) : '',
     soloConfig: parseConfig(raw.soloConfig) ?? { ...DEFAULT_SETTINGS.soloConfig },
     soloTeam: raw.soloTeam === 1 ? 1 : 0,
+    cinematic: raw.cinematic === true,
+    // undefined = never chosen: the desktop app's own window state stands
+    fullscreen: typeof raw.fullscreen === 'boolean' ? raw.fullscreen : undefined,
   };
 }
 

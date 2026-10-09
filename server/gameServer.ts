@@ -3,13 +3,14 @@
 // strict validation (shared/protocol.ts), hello and idle deadlines, slow-consumer protection,
 // and per-message compression for the snapshot stream. Snapshot pacing by client acks lives in
 // room.ts; this file keeps the byte-level guard for clients that do not ack.
-import type { IncomingMessage, Server } from 'node:http';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import type { IncomingHttpHeaders, IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { DEFAULT_CONFIG, PROTOCOL_VERSION, TICK_DT } from '../shared/constants.ts';
 import { defaultProfile, parseClientMessage, type ClientMsg, type Profile, type ServerMsg } from '../shared/protocol.ts';
 import type { MatchConfig } from '../shared/types.ts';
-import type { ServerConfig } from './config.ts';
+import { RELAY_PEER_HEADER, RELAY_PEER_RE, RELAY_SECRET_HEADER, type ServerConfig } from './config.ts';
 import { makeRoomCode, Room, type RoomClient } from './room.ts';
 import { createServerEconomy, type ServerEconomy } from './economy/index.ts';
 import { ECONOMY_MSG_TYPES, type EconomyClientMsg } from '../shared/economy.ts';
@@ -64,11 +65,32 @@ function unmapIPv4(ip: string): string {
  * share one key.
  */
 export function ipKey(ip: string): string {
+  if (RELAY_PEER_RE.test(ip)) return ip; // a relayed Steam player (relayPeer below) is its own key
   const a = unmapIPv4(ip).split('%')[0].toLowerCase();
   if (!a.includes(':')) return a;
   const g = ipv6Groups(a);
   if (!g) return a;
   return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
+}
+
+const sha256 = (s: string): Buffer => createHash('sha256').update(s, 'utf8').digest();
+
+/**
+ * The Steam player a websocket upgrade speaks for, when the Steam desktop app relays it, else null.
+ * Trusted only when all of these hold: RELAY_SECRET is set, the socket itself comes from 127.0.0.1
+ * (the app's main process on this machine; a proxy's X-Forwarded-For never counts), each header is
+ * sent exactly once, x-hookwars-relay equals the secret (compared in constant time, on hashes, so
+ * neither the secret nor its length leaks), and x-hookwars-peer is "steam:" plus 1 to 20 digits.
+ * Anything else: the headers are ignored and the socket is keyed on its address as usual.
+ */
+export function relayPeer(remoteAddress: string | undefined, headers: IncomingHttpHeaders, secret: string | null | undefined): string | null {
+  if (!secret) return null;
+  if (unmapIPv4(remoteAddress ?? '') !== '127.0.0.1') return null;
+  const given = headers[RELAY_SECRET_HEADER];
+  const peer = headers[RELAY_PEER_HEADER];
+  if (typeof given !== 'string' || typeof peer !== 'string') return null; // missing, or sent twice (an array)
+  if (!timingSafeEqual(sha256(given), sha256(secret))) return null;
+  return RELAY_PEER_RE.test(peer) ? peer : null;
 }
 
 /** Failed attempts per key in a fixed window; at the limit the key is blocked for a while. Bounded. */
@@ -224,7 +246,13 @@ export class GameServer {
     this.start();
   }
 
+  /**
+   * The key every per-IP limit and the economy count this socket against: a relayed Steam player's
+   * peer id (relayPeer, only with RELAY_SECRET set), else the client's IP address.
+   */
   private clientIp(req: IncomingMessage): string {
+    const relayed = relayPeer(req.socket.remoteAddress, req.headers, this.cfg.relaySecret);
+    if (relayed) return relayed;
     const peer = unmapIPv4(req.socket.remoteAddress ?? 'unknown');
     if (this.cfg.trustedProxies.includes(peer)) {
       // only our own proxy may tell us the client address; it appends the real peer at the end

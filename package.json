@@ -14,7 +14,11 @@
     "start": "node --env-file-if-exists=.env server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\" \"client/**/*.test.ts\"",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "desktop:bundle": "node desktop/scripts/build.ts --server",
+    "desktop:build": "node desktop/scripts/build.ts",
+    "desktop:typecheck": "tsc --noEmit -p desktop/tsconfig.json",
+    "desktop:test": "node --test --test-reporter=spec \"desktop/test/**/*.test.ts\""
   },
   "dependencies": {
     "@fontsource-variable/nunito": "5.3.0",

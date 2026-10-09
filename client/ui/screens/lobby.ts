@@ -85,6 +85,10 @@ export function buildLobby(ctx: UiCtx, s0: AppState): ScreenView {
     }, 1600);
   }, { icon: 'copy', cls: 'copy-btn' });
   const codePlate = h('div', { class: 'code-plate' }, h('span', { class: 'code-label', text: 'Room code' }), codeText, copyBtn);
+  // Steam lobbies (Steam build only): invite friends through the Steam overlay; Leave leaves the lobby
+  const inSteam = () => !!ctx.get().steam && ctx.get().steam!.phase === 'lobby';
+  const inviteBtn = button('Invite friends', () => a.steamInvite?.(), { icon: 'people', cls: 'invite-btn' });
+  inviteBtn.classList.toggle('hidden', !inSteam());
 
   // ---------------------------------------------------------------- teams
   const teamCols = ([0, 1] as Team[]).map((t) => {
@@ -150,9 +154,10 @@ export function buildLobby(ctx: UiCtx, s0: AppState): ScreenView {
   const status = h('div', { class: 'lobby-status' });
   const matchBanner = h('div', { class: 'match-banner hidden' }, icon('clock'), h('span', { text: 'A match is running in this room. You will join the next one.' }));
 
+  const leaveBtn = button('Leave', () => (inSteam() ? a.steamLeave?.() : a.leaveRoom()), { cls: 'ghost', icon: 'left' });
   const el = h('div', { class: 'scr scr-lobby' },
     h('div', { class: 'panel wide-panel lobby-panel' },
-      h('header', { class: 'panel-head' }, button('Leave', () => a.leaveRoom(), { cls: 'ghost', icon: 'left' }), h('div', { class: 'lobby-head-mid' }, title, privBadge), codePlate),
+      h('header', { class: 'panel-head' }, leaveBtn, h('div', { class: 'lobby-head-mid' }, title, privBadge), inviteBtn, codePlate),
       matchBanner,
       h('div', { class: 'panel-body lobby-body' },
         h('div', { class: 'lobby-left' },
@@ -221,6 +226,9 @@ export function buildLobby(ctx: UiCtx, s0: AppState): ScreenView {
     startBtn.classList.toggle('hidden', !isHost);
     startBtn.disabled = room.phase === 'match';
     matchBanner.classList.toggle('hidden', room.phase !== 'match');
+    const steamLobby = !!s.steam && s.steam.phase === 'lobby';
+    inviteBtn.classList.toggle('hidden', !steamLobby);
+    setButtonLabel(leaveBtn, steamLobby ? 'Leave lobby' : 'Leave');
   }
   paint(s0);
   paintChat(s0.chat);
@@ -228,7 +236,7 @@ export function buildLobby(ctx: UiCtx, s0: AppState): ScreenView {
   return {
     el,
     update(s: AppState, prev: AppState) {
-      if (s.room !== prev.room || s.online.youId !== prev.online.youId) paint(s);
+      if (s.room !== prev.room || s.online.youId !== prev.online.youId || s.steam !== prev.steam) paint(s);
       if (s.chat !== prev.chat) paintChat(s.chat);
     },
     destroy() {},

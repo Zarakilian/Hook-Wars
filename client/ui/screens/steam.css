@@ -1,0 +1,125 @@
+/* Play with Steam (Steam build only). Built on the Online screen's classes; only stm-* is new. */
+
+.stm-bar {
+  justify-content: space-between;
+}
+
+.stm-fake {
+  flex: none;
+  font: 400 max(11px, 0.8rem) var(--font-head);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.65rem;
+  border-radius: 0.45rem;
+  background: rgba(255, 176, 46, 0.22);
+  color: #6b3e05;
+  box-shadow: inset 0 0 0 0.12rem rgba(160, 96, 10, 0.45);
+}
+
+.stm-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  margin: 0 0 0.75rem;
+}
+
+.stm-field .text-in {
+  width: 100%;
+}
+
+.scr-steam .toggle-field {
+  margin: 0 0 0.9rem;
+}
+
+.stm-busy {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.6rem 0.8rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.85rem;
+  background: rgba(255, 210, 90, 0.12);
+  box-shadow: inset 0 0 0 0.12rem rgba(255, 210, 90, 0.35);
+}
+
+.stm-busy.hidden {
+  display: none;
+}
+
+.stm-busy-text {
+  font-weight: 800;
+}
+
+.stm-busy-btns {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.stm-spin {
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  border: 0.22rem solid rgba(255, 243, 217, 0.25);
+  border-top-color: var(--gold);
+  animation: stmSpin 0.9s linear infinite;
+}
+
+.stm-busy.in-lobby .stm-spin {
+  animation: none;
+  border-color: #6fdc5a;
+}
+
+@keyframes stmSpin {
+  to { transform: rotate(360deg); }
+}
+
+.stm-list-note {
+  display: block;
+  margin: 0.4rem 0.2rem 0;
+  font-size: max(11px, 0.78rem);
+}
+
+.stm-thumb-none {
+  display: grid;
+  place-items: center;
+  background: rgba(10, 5, 2, 0.35);
+}
+
+.stm-thumb-none .ico {
+  width: 2.2rem;
+  height: 2.2rem;
+  opacity: 0.6;
+}
+
+.stm-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stm-host .ico {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+.refresh-btn.spinning .ico {
+  animation: stmSpin 0.9s linear infinite;
+}
+
+/* the invite question during a match */
+.stm-invite {
+  width: min(92vw, 30rem);
+}
+
+.stm-invite .panel-body p {
+  margin: 0 0 0.6rem;
+}

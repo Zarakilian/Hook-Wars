@@ -5,6 +5,7 @@ import type { Loadout } from '../../shared/cosmetics.ts';
 import type { AccountView, Listing } from '../../shared/economy.ts';
 import type { ServerMsg } from '../../shared/protocol.ts';
 import type { FamilyId } from '../../shared/types.ts';
+import type { CloudSaverOptions, CloudStore } from './cloudLocker.ts';
 
 export interface EconomyState {
   /** 'local' = this browser's offline locker, 'server' = the account on the connected server */
@@ -23,6 +24,12 @@ export interface EconomyState {
    * Show it where the screens would otherwise say "Signing in...".
    */
   accountError: string | null;
+  /**
+   * Connected to a server that keeps no accounts (ECONOMY=trust: a lobby a player hosts in the Steam
+   * build). mode is 'local' then: the offline locker is what this player wears and spends there, and
+   * the client pays its own Pearls at match end (payLocalMatch). False or absent everywhere else.
+   */
+  localOnly?: boolean;
 }
 
 export interface EconomyClient {
@@ -52,4 +59,18 @@ export interface EconomyClient {
   detachServer(): void;
   /** auth token to send in hello for this server (null = create a new account) */
   tokenFor(serverKey: string): string | null;
+  /**
+   * Pearls for an online match on a local_only server, paid into the offline locker once per match
+   * key (client/economy/payout.ts matchKey). False when that match was paid already.
+   */
+  payLocalMatch(key: string, pearls: number): boolean;
+  /**
+   * Steam build: also keep the offline locker in Steam Cloud. Reads the Cloud copy first (the newer of
+   * it and this computer's copy wins), then every change is written to localStorage at once and to the
+   * Cloud a moment later; a failed Cloud write keeps the data and retries. Resolves with which copy
+   * is used: 'cloud', 'local', or 'failed' (the Cloud could not be read; the local copy is used).
+   */
+  useCloud(store: CloudStore, opts?: CloudSaverOptions & { readTries?: number }): Promise<'cloud' | 'local' | 'failed'>;
+  /** Write a pending Cloud save now (true when the Cloud has the newest copy, or there is no Cloud). */
+  flushCloud(): Promise<boolean>;
 }

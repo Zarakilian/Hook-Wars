@@ -1,0 +1,56 @@
+{
+  "name": "hook-wars-desktop",
+  "productName": "Hook Wars",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hook Wars for Steam: the game client in Electron, Steam lobbies over P2P, and the local game server for hosting.",
+  "license": "MIT",
+  "type": "module",
+  "main": "build/main.cjs",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "build:server": "node scripts/build.ts --server",
+    "start": "node scripts/build.ts && node scripts/start.ts",
+    "start:fake": "node scripts/build.ts && node scripts/start.ts --fake",
+    "start:fake2": "node scripts/start.ts --fake --instance=2 --fake-name=Second",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "dist": "node scripts/build.ts && electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "steamworks.js": "0.4.0",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "hookwars.desktop",
+    "productName": "Hook Wars",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "build/server.mjs",
+      "node_modules/steamworks.js/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "dir"
+      ]
+    },
+    "linux": {
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}

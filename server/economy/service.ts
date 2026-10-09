@@ -15,6 +15,7 @@ import {
 } from '../../shared/economy.ts';
 import type { Profile } from '../../shared/protocol.ts';
 import { FAMILIES, type FamilyId } from '../../shared/types.ts';
+import { RELAY_PEER_RE } from '../config.ts';
 import type { EconomyConn, MatchResult, ServerEconomy } from './api.ts';
 import { ISSUED_TOKEN_RE, newId, randomToken, sha256Hex } from './crypto.ts';
 import { isEmptyGuest, type AccountRec, type AccountStore } from './store.ts';
@@ -65,6 +66,7 @@ function defaultLoadouts(): Record<FamilyId, Loadout> {
  * /64 network of an IPv6 address, because one IPv6 home has a whole /64 and rotates addresses in it.
  */
 export function netKey(ip: string): string {
+  if (RELAY_PEER_RE.test(ip)) return ip; // a Steam player relayed by the desktop app: one key per SteamID
   let s = ip.trim().toLowerCase();
   if (s.startsWith('::ffff:') && s.includes('.')) s = s.slice(7);
   if (!s.includes(':')) return s;
