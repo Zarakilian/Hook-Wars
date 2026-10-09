@@ -9,6 +9,8 @@ A voxel hook-brawler. Up to 6v6 Lunkers stand on either side of a river and drag
 
 This is the standard edition: a normal game with no crypto of any kind. It runs in the browser (free, cosmetics earned with Pearls) and is being packaged for Steam (paid, premium cosmetics sold through Steam). An experimental Solana edition is parked on the `edition/solana` branch.
 
+More docs: [design](docs/design.md), [economy](docs/economy.md), [Steam desktop app](docs/steam-desktop.md), [moving development to another PC](docs/home-pc-handoff.md).
+
 Inspired by the classic Pudge Wars custom game. Every character, name, model and sound here is original and generated in code.
 
 ## Features
@@ -41,7 +43,7 @@ npm run dev
 
 **Expect:** a line like `Local: http://127.0.0.1:5173/`.
 
-3. Open http://127.0.0.1:5173 and click **Play Solo vs Bots**.
+3. Open http://127.0.0.1:5173 and click **Play Solo**.
 
 **Expect:** a 4 second countdown, then your Lunker on the west bank with bots on both teams.
 

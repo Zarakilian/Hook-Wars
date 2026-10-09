@@ -44,12 +44,12 @@ Install from `https://store.steampowered.com/about/` and log in. Leave it runnin
 ### A3. Get the code
 
 ```powershell
-git clone https://github.com/Zarakilian/Hook-Wars.git; cd Hook-Wars; git checkout wip/art-pass
+git clone https://github.com/Zarakilian/Hook-Wars.git; cd Hook-Wars
 ```
 
-If you already have a clone, run `git pull` on that branch instead.
+If you already have a clone, run `git pull` on `main` instead.
 
-**Expect:** a `Hook-Wars` folder, and `git branch` shows `* wip/art-pass`.
+**Expect:** a `Hook-Wars` folder, and `git branch` shows `* main`.
 
 ### A4. Install the root packages
 
