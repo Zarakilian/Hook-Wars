@@ -59,9 +59,13 @@ test('a runtime Epic toggle disposes live Pudgy and surf materials (fresh compil
   m.addEventListener('dispose', () => dm++);
   s.addEventListener('dispose', () => ds++);
   setCinematic(true);
+  const dmOn = dm;
+  const dsOn = ds;
   setCinematic(false);
-  assert.equal(dm, 2);
-  assert.equal(ds, 2);
+  // every toggle disposes them at least once (this module's own listener, and the voxel look's sync,
+  // which disposes every material it patches or restores: both materials adopt the voxel look)
+  assert.ok(dmOn >= 1 && dm - dmOn >= 1, `Pudgy disposes per toggle: on ${dmOn}, off ${dm - dmOn}`);
+  assert.ok(dsOn >= 1 && ds - dsOn >= 1, `surf disposes per toggle: on ${dsOn}, off ${ds - dsOn}`);
   m.dispose();
 });
 

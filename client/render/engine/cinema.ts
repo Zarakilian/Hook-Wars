@@ -4,7 +4,9 @@
 //   1. mist march (shaftScale resolution): rays from the camera through a low slab of height mist,
 //      each step lit by the sun / moon through the sun shadow map (light shafts) plus a sky ambient,
 //      plus closed-form in-scatter around each pooled lantern light (glow in the mist and rain)
-//   2. depth of field (half resolution): downsample with a circle of confusion, separable blur
+//   2. depth of field (half resolution): downsample with a circle of confusion, separable blur. In a
+//      match it is a tilt-shift that never blurs play; on the Epic menu stage (menuFocus) it is a plain
+//      depth of field around the posed Lunker: the Lunker sharp, the town, lighthouse and peaks soft
 //   3. composite (full resolution): tilt-shift blend, depth rim / back light, mist (bilateral upsample)
 // LookGradeEffect runs last in the EffectPass, after GradeEffect: split toning, S-curve, vibrance.
 //
@@ -18,6 +20,10 @@ import type { LanternRig } from '../look/lanterns.ts';
 import type { CaptureTargets } from './post.ts';
 
 const MAX_LIGHTS = 16;
+/** menu stage depth of field: in-focus depth around the Lunker (m), blur ramp as a fraction of the focus distance, radius scale */
+const MENU_DOF_RANGE = 1.5;
+const MENU_DOF_RAMP = 0.6;
+const MENU_DOF_RADIUS = 1.6;
 
 const FS_VERT = /* glsl */ `
 varying vec2 vUv;
@@ -177,6 +183,7 @@ void main() {
 const COC_GLSL = /* glsl */ `
 uniform vec4 uDof;  // focus distance, in-focus range (m), band start (0..1 from the centre), blur radius in full-res px at coc 1
 uniform vec4 uPlay; // play rectangle half width and half depth, bank top y, blur ramp outside it (m)
+uniform vec2 uDofMenu; // x 1 = the menu stage's depth of field (no play rectangle), y = blur ramp beyond the in-focus range (m)
 // Miniature (tilt-shift) depth of field that never touches play: inside the play rectangle nothing
 // below ~3.5 m above the bank (units, hooks, low props) is ever blurred. Outside it (the backdrop
 // scenery past the map edge) the blur grows with the distance out; tall props far from the focus
@@ -184,6 +191,10 @@ uniform vec4 uPlay; // play rectangle half width and half depth, bank top y, blu
 float hwCoc(vec2 uv, float dist, vec3 wp) {
   float edge = abs(uv.y - 0.5) * 2.0;
   float sy = smoothstep(uDof.z, 1.0, edge);
+  if (uDofMenu.x > 0.5) {
+    // the menu stage: sharp within uDof.y of the posed Lunker, softening over uDofMenu.y beyond that
+    return clamp((abs(dist - uDof.x) - uDof.y) / uDofMenu.y, 0.0, 1.0) * mix(0.85, 1.0, sy);
+  }
   vec2 o = abs(wp.xz) - uPlay.xy;
   float outside = smoothstep(0.0, uPlay.w, max(o.x, o.y));
   float dz = clamp((abs(dist - uDof.x) - uDof.y) / (uDof.x * 0.5), 0.0, 1.0);
@@ -368,6 +379,11 @@ export class CinematicPass extends Pass {
   private time = 0;
   private fullW = 1;
   private fullH = 1;
+  /**
+   * The Epic menu stage is showing (no map): the depth of field runs as a plain depth of field around
+   * the focus point (the stage anchor, where the Lunker stands) instead of staying off. Set per frame.
+   */
+  menuFocus = false;
   /** optional GPU timer (profiling) */
   timer: CineTimer | null = null;
 
@@ -394,6 +410,7 @@ export class CinematicPass extends Pass {
       uWaterY: { value: -1e3 },
       uDof: { value: new THREE.Vector4(40, 6, 0.7, 0) },
       uPlay: { value: new THREE.Vector4(1e4, 1e4, 0, 6) },
+      uDofMenu: { value: new THREE.Vector2(0, 4) },
     };
     const marchU = (): Record<string, THREE.IUniform> => ({
       ...this.shared,
@@ -502,7 +519,11 @@ export class CinematicPass extends Pass {
     const camPos = sh.uCamPos.value as THREE.Vector3;
     const fd = this.tmp.copy(this.focus).sub(camPos).length();
     const dof = sh.uDof.value as THREE.Vector4;
-    dof.set(fd, fd * 0.3, 0.7, this.cfg.dofRadius * (this.fullH / 1080));
+    const menu = this.menuFocus && !this.hasMap;
+    // the menu stage: the Lunker (about a metre deep) in focus, a stronger blur on the set behind it
+    const radius = this.cfg.dofRadius * (menu ? MENU_DOF_RADIUS : 1);
+    dof.set(fd, menu ? MENU_DOF_RANGE : fd * 0.3, 0.7, radius * (this.fullH / 1080));
+    (sh.uDofMenu.value as THREE.Vector2).set(menu ? 1 : 0, menu ? Math.max(1, fd * MENU_DOF_RAMP) : 4);
     const timer = this.timer;
 
     // 1. mist / shafts / lantern glow
@@ -526,7 +547,7 @@ export class CinematicPass extends Pass {
     }
 
     // 2. depth of field
-    const dofOn = this.dofOn && this.hasMap;
+    const dofOn = this.dofOn && (this.hasMap || menu);
     if (dofOn) {
       if (timer) timer.begin('cine.dof');
       const du = this.downMat.uniforms;
@@ -536,8 +557,8 @@ export class CinematicPass extends Pass {
       renderer.setRenderTarget(this.dofA);
       renderer.render(this.scene, this.camera);
       const bu = this.blurMat.uniforms;
-      // radius: cfg.dofRadius pixels at 1080p, in half-resolution texels
-      bu.uMaxR.value = (this.cfg.dofRadius * (this.fullH / 1080)) * 0.5;
+      // radius: cfg.dofRadius pixels at 1080p (menu stage: MENU_DOF_RADIUS times that), in half-resolution texels
+      bu.uMaxR.value = (radius * (this.fullH / 1080)) * 0.5;
       bu.tSrc.value = this.dofA.texture;
       (bu.uDir.value as THREE.Vector2).set(1 / this.dofA.width, 0);
       this.fullscreenMaterial = this.blurMat;
@@ -559,7 +580,7 @@ export class CinematicPass extends Pass {
     (cu.uTexel.value as THREE.Vector2).set(1 / this.fullW, 1 / this.fullH);
     (cu.uFogTexel.value as THREE.Vector2).set(1 / this.fogRT.width, 1 / this.fogRT.height);
     (cu.uRim.value as THREE.Vector2).set(this.hasMap && this.look ? this.look.rim : 0, 2.5 * Math.max(1, this.fullH / 1080));
-    // the menu has no mist and no blur: gate those blocks off (their inputs are stale there)
+    // the menu has no mist (and no blur unless the stage is up): gate those blocks off (their inputs are stale there)
     (cu.uGate.value as THREE.Vector2).set(fogOn ? 1 : 0, dofOn ? 1 : 0);
     this.fullscreenMaterial = this.compMat;
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer);
@@ -599,6 +620,7 @@ uniform vec4 hwlHigh;   // rgb = highlight hue (luma 1), a = lean
 uniform vec4 hwlCurve;  // curve, black, vibrance, warm saturation
 uniform vec4 hwlMisc;   // shadow desaturation, complementary split, exposure, extra vignette
 uniform vec2 hwlRange;  // luma where the highlight lean starts and where it is full
+uniform vec2 hwlTeam;   // team-colour guard: x = warm lean and orange split kept off team red, y = share of the shadow desaturation / teal lean kept off it
 const vec3 HWL_LUMA = vec3(0.2126, 0.7152, 0.0722);
 // lean a colour toward a luma-1 hue while keeping its luma
 vec3 hwlLean(vec3 g, vec3 h, float k) {
@@ -610,15 +632,24 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   float mx = max(g.r, max(g.g, g.b));
   float mn = min(g.r, min(g.g, g.b));
   float sat = mx - mn;
+  // team red (the Red Tide's rims, rings, trims and glow): a saturated red whose hue sits at pure red or
+  // past it toward magenta (green no higher than about blue). Measured on the colour as it arrives, before
+  // any lean. The warm lean and the orange split below would turn it lantern orange (the night grade made
+  // the red team read orange at the gameplay camera), so it keeps its hue. Lantern flames, skin, rust and
+  // wood have green well above blue: they still warm up.
+  float hry = (g.g - g.b) / max(g.r - min(g.g, g.b), 1e-3);
+  float teamRed = step(mx, g.r) * smoothstep(0.2, 0.4, sat) * (1.0 - smoothstep(0.12, 0.3, hry));
+  float keepW = 1.0 - teamRed * hwlTeam.x;
+  float keepS = 1.0 - teamRed * hwlTeam.y;
   // split toning that keeps luma: the deep tones lose some colour and lean teal, the bright ones warm
   float ws = 1.0 - smoothstep(0.02, 0.45, l);
   float wh = smoothstep(hwlRange.x, hwlRange.y, l);
-  g = mix(g, vec3(l), ws * hwlMisc.x);
-  g = hwlLean(g, hwlShadow.rgb, ws * hwlShadow.a);
-  g = hwlLean(g, hwlHigh.rgb, wh * hwlHigh.a);
+  g = mix(g, vec3(l), ws * hwlMisc.x * keepS);
+  g = hwlLean(g, hwlShadow.rgb, ws * hwlShadow.a * keepS);
+  g = hwlLean(g, hwlHigh.rgb, wh * hwlHigh.a * keepW);
   // complementary split: coloured warm pixels lean further orange, coloured cool ones further teal
   float warmth = clamp((g.r - g.b) / max(sat, 1e-3), -1.0, 1.0);
-  float k = smoothstep(0.03, 0.3, sat) * abs(warmth) * hwlMisc.y * 0.5;
+  float k = smoothstep(0.03, 0.3, sat) * abs(warmth) * hwlMisc.y * 0.5 * (warmth > 0.0 ? keepW : 1.0);
   g = hwlLean(g, warmth > 0.0 ? hwlHigh.rgb : hwlShadow.rgb, k);
   // black point and filmic S-curve (deep contrast)
   g = clamp((g - hwlCurve.y) / (1.0 - hwlCurve.y), 0.0, 1.0);
@@ -647,6 +678,7 @@ export class LookGradeEffect extends Effect {
         ['hwlCurve', new THREE.Uniform(new THREE.Vector4(0, 0, 0, 0))],
         ['hwlMisc', new THREE.Uniform(new THREE.Vector4(0, 0, 1, 0))],
         ['hwlRange', new THREE.Uniform(new THREE.Vector2(0.36, 0.95))],
+        ['hwlTeam', new THREE.Uniform(new THREE.Vector2(0, 0))],
       ]),
     });
   }
@@ -657,11 +689,13 @@ export class LookGradeEffect extends Effect {
     const h = (u.get('hwlHigh') as THREE.Uniform).value as THREE.Vector4;
     const c = (u.get('hwlCurve') as THREE.Uniform).value as THREE.Vector4;
     const m = (u.get('hwlMisc') as THREE.Uniform).value as THREE.Vector4;
+    const team = (u.get('hwlTeam') as THREE.Uniform).value as THREE.Vector2;
     if (!look || !on) {
       s.set(1, 1, 1, 0);
       h.set(1, 1, 1, 0);
       c.set(0, 0, 0, 0);
       m.set(0, 0, 1, 0);
+      team.set(0, 0);
       return;
     }
     const g = look.grade;
@@ -670,5 +704,6 @@ export class LookGradeEffect extends Effect {
     c.set(g.curve, g.black, g.vibrance, g.warmSat);
     m.set(g.shadowDesat, g.split, g.exposure, g.vignette);
     ((u.get('hwlRange') as THREE.Uniform).value as THREE.Vector2).set(g.highLo, g.highHi);
+    team.set(g.teamGuard, g.teamShadow);
   }
 }

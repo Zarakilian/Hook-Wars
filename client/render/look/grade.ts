@@ -36,6 +36,13 @@ export interface CineGrade {
   vignette: number;
   /** replaces the map's own lift (the blue lift that keeps night maps readable turns blacks navy) */
   lift: THREE.Vector3;
+  /**
+   * 0..1 how much of the warm lean (highlight lean and the orange side of the split) saturated team red
+   * is spared, so the Red Tide stays red under a warm grade instead of turning lantern orange
+   */
+  teamGuard: number;
+  /** 0..1 how much of the shadow desaturation and teal lean saturated team red is spared */
+  teamShadow: number;
 }
 
 export interface CineMist {
@@ -154,6 +161,8 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
           exposure: 1.04,
           vignette: 0.2,
           lift: v3(0.0, 0.002, 0.008),
+          teamGuard: 1,
+          teamShadow: 0.5,
         }
       : {
           // rainy or clear night (Lanternwharf, Cogwater): near-black blue-teal shadows, lantern orange
@@ -172,6 +181,8 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
           exposure: 1.08,
           vignette: 0.22,
           lift: v3(0.0, 0.002, 0.007),
+          teamGuard: 1,
+          teamShadow: 0.5,
         }
     : low
       ? {
@@ -193,6 +204,8 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
           exposure: 1.18,
           vignette: 0.1,
           lift: v3(0.006, 0.0, 0.01),
+          teamGuard: 1,
+          teamShadow: 0.5,
         }
       : {
           // tropical day (Maelstrom): teal-cyan shadows and water, warm sun, punchy
@@ -211,6 +224,8 @@ export function cinematicLook(map: MapDef | null, a: Atmosphere): CineLook {
           exposure: 1.0,
           vignette: 0.14,
           lift: v3(0.0, 0.0, 0.004),
+          teamGuard: 1,
+          teamShadow: 0.5,
         };
 
   // mist: low and thick at dusk (Mirelight), rain haze at night, a thin sea haze by day

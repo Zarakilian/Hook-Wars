@@ -38,8 +38,8 @@ git clone https://github.com/Zarakilian/Hook-Wars.git; cd Hook-Wars; npm ci
 npm test
 ```
 
-**Expect:** about 340 tests, ending with `fail 0`. It takes 1 to 3 minutes.
-**If wrong:** one timing test (`desktop/test/hostRelay.test.ts`, the flood test) can fail when the PC is busy. Run `node --test desktop/test/hostRelay.test.ts` on its own: it should pass.
+**Expect:** about 370 tests, ending with `fail 0`. It takes 1 to 3 minutes.
+**If wrong:** note the failing test name and ask Claude to look at it.
 
 ```powershell
 npm run dev
@@ -60,7 +60,7 @@ Follow [steam-desktop.md](steam-desktop.md): part A (setup), part B (two windows
 | Cosmetics, Locker, Store, Pearl market | Done. Premium items (US$1.99) show "Available in the Steam version" |
 | Online play on your own server | Done. Rejoin, flow control, compression, per-IP limits |
 | Steam desktop app (lobbies, P2P relay, Steam Cloud, Epic setting) | Code done, 67 desktop tests with a stand-in. Never run on real Electron or Steam yet |
-| Epic graphics (Steam only) | Foundation done; the modules' look (characters, props, terrain, water, a reference-angle menu scene) see the last commit message for its final state |
+| Epic graphics (Steam only) | Done: bevelled voxels, lantern lights, mist and shafts, tilt-shift, per-map grade, a reference-angle menu and Locker scene. With Epic off the graphics are proven identical. In a match, a change applies from the next match. GTX 1070 cost is estimated, not measured |
 | Steam Inventory, Item Store purchases | Not started: needs your Steamworks app |
 | Controller support (Steam Deck) | Not started |
 | Store page art, trailer, achievements | Not started |
@@ -89,7 +89,6 @@ Open the project folder in Claude Code and start with: "Read docs/home-pc-handof
 | You see | Check | Fix |
 |---|---|---|
 | `npm ci` errors about the lock file | Node version: `node --version` | Install Node 25, then run `npm ci` again |
-| One `hostRelay` flood test fails in `npm test` | Run that file on its own | If it passes alone it is load timing, not a bug |
 | `npm run dev` page is blank | The terminal for build errors | Run `npm run typecheck`; send the first error to Claude |
 | The Steam app will not start | [steam-desktop.md](steam-desktop.md) "If it fails" | Follow that table |
 | Art work looks wrong against the references | `References_Sources/` copied? | Copy it from the laptop (step 1) |
@@ -102,4 +101,4 @@ Not needed: this guide only reads and runs code.
 
 - Nothing here has run on your home PC. The Steam desktop app has never run under real Electron or Steam.
 - The GTX 1070 frame rates for the Epic setting are estimates scaled from the laptop's integrated GPU, not measurements.
-- `npm test` counts change as work lands; the "about 340" is from the last full run.
+- `npm test` counts change as work lands; "about 370" is from the last full run (372).

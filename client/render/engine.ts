@@ -116,6 +116,8 @@ class HookEngine implements Engine {
   private hemiScale = 1;
   /** materials adopted by debugVoxelLook() */
   private readonly previewLook = new Set<THREE.Material>();
+  /** cinematic menu: the showcase stage's anchor in world space (depth of field focus) */
+  private readonly stageFocus = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement, quality: Quality) {
     this.renderer = new THREE.WebGLRenderer({
@@ -185,12 +187,14 @@ class HookEngine implements Engine {
   }
 
   /**
-   * Replace the lantern lights derived from the map (props can report exact lamp positions here).
-   * null goes back to the derived list. Only used while cinematic mode is on.
+   * Replace the lantern lights derived from the map (props report their exact lamp positions here when
+   * the world is built in Epic; the world's dispose passes null). null goes back to the derived list.
+   * Only used while cinematic mode is on: the light pool is sized and its active count set again for
+   * this list (the exact list can be longer or shorter than the derived one).
    */
   setLanternSources(list: LanternSource[] | null): void {
     this.lanternOverride = list;
-    if (this.lanterns) this.lanterns.setSources(list ?? (this.map ? lanternSources(this.map) : []));
+    if (this.cine && !this.disposed) this.applyLanternPool();
   }
 
   /**
@@ -310,6 +314,19 @@ class HookEngine implements Engine {
     if (this.post && cfg.grade && map) this.post.applyCinematicLift(look.grade.lift);
     if (this.cinePass) this.cinePass.apply(look, map !== null);
     if (this.cineGrade) this.cineGrade.set(look, cfg.grade);
+    this.applyLanternPool();
+  }
+
+  /**
+   * The lantern light pool for the current map and source list (the props' exact lamps or the derived
+   * ones). Only this part runs again when the source list changes: the rest of the per-map look scales
+   * values post.apply() set (the bloom), so it must only follow post.apply().
+   */
+  private applyLanternPool(): void {
+    const cfg = this.cineCfg;
+    const look = this.cineLook;
+    if (!cfg || !look) return;
+    const map = this.map;
     // lantern lights: as many as the map needs, up to the budget (day maps few, night maps many, menu none)
     const sources = map ? (this.lanternOverride ?? lanternSources(map)) : [];
     const want = cfg.lights ? Math.min(cfg.lightBudget, look.lightBudget, sources.length) : 0;
@@ -556,6 +573,7 @@ class HookEngine implements Engine {
     const t = this.clock;
 
     if (this.menu && !this.map) this.menu.update(t, this.camera);
+    if (this.cine && this.post?.ao) this.post.ao.configuration.halfRes = !this.map && !!this.menu?.showcase;
     this.sky.update(t, this.camera);
     if (this.map) this.shadows.update(this.camera, focusX, focusZ, this.bounds);
     if (this.weather) this.weather.update(t, focusX, focusZ);
@@ -567,7 +585,15 @@ class HookEngine implements Engine {
         // the same pool for materials that light themselves (water): see LANTERN_UNIFORMS
         LANTERN_UNIFORMS.hwLanternCount.value = this.lanterns.fill(LANTERN_UNIFORMS.hwLanternPos.value, LANTERN_UNIFORMS.hwLanternCol.value);
       } else LANTERN_UNIFORMS.hwLanternCount.value = 0;
-      if (this.cinePass) this.cinePass.update(t, focusX, this.map ? groundY(this.map) : 0, focusZ);
+      if (this.cinePass) {
+        // the Epic menu stage: a depth of field focused where the posed Lunker stands
+        const stage = this.map ? null : (this.menu?.showcase ?? null);
+        this.cinePass.menuFocus = stage !== null;
+        if (stage) {
+          stage.anchor.getWorldPosition(this.stageFocus);
+          this.cinePass.update(t, this.stageFocus.x, this.stageFocus.y, this.stageFocus.z);
+        } else this.cinePass.update(t, focusX, this.map ? groundY(this.map) : 0, focusZ);
+      }
     }
   }
 

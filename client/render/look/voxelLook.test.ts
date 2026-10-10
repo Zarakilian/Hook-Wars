@@ -64,3 +64,21 @@ test('inject works on the stock standard shader in both size modes', () => {
     for (const k of ['hwVoxA', 'hwVoxB', 'hwLookRim', 'hwLookOn']) assert.ok(k in sh.uniforms);
   }
 });
+
+test('a runtime toggle disposes every material it patches or restores (fresh compile, fresh uniforms)', () => {
+  // three reuses a material's earlier program with the uniforms object of its last compile, so after
+  // Epic -> off -> Epic hwVoxA / hwVoxB / hwLookRim would never be uploaded again unless the material is
+  // disposed (its cached programs dropped) at each switch
+  assert.equal(cinematicEnabled(), false);
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true });
+  applyVoxelLook(m, { voxelSize: 0.05 });
+  let disposed = 0;
+  m.addEventListener('dispose', () => disposed++);
+  setCinematic(true);
+  try {
+    assert.equal(disposed, 1, 'patched and disposed when Epic turns on');
+  } finally {
+    setCinematic(false);
+  }
+  assert.equal(disposed, 2, 'restored and disposed when Epic turns off');
+});

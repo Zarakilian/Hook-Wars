@@ -11,7 +11,7 @@ import type { MatchConfig, RiverState } from '../../../shared/types.ts';
 import { cinematicEnabled, onCinematicChange } from '../cinematic.ts';
 import { bedY, platformDeckY, waterY, type AnimatedView, type Engine, type Quality, type WorldView } from '../contracts.ts';
 import { applyVoxelLook } from '../look/voxelLook.ts';
-import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup } from '../models/props.ts';
+import { buildDecor, buildPlatforms, buildProps, createFountainView, disposePropGroup, propLanternSources } from '../models/props.ts';
 import { buildBackwater, type Backwater } from './terrain/backwater.ts';
 import { createBiome, type MapBiome } from './terrain/biomes/index.ts';
 import { buildCascades } from './terrain/cascades.ts';
@@ -344,6 +344,9 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
   group.add(decorGroup);
   const platformGroup = map.platforms?.length ? buildPlatforms(map.platforms, map, quality) : null;
   if (platformGroup) group.add(platformGroup);
+  // Epic: the lantern lights (and the pool the water, wet ground and mist read) sit at the props' exact
+  // lamp flames, the Epic set dressing's lamps included, instead of positions derived from the map
+  if (epic) engine.setLanternSources?.(propLanternSources(propsGroup, decorGroup, platformGroup));
   const fountains: AnimatedView[] = [0, 1].map((t) => {
     const c = map.fountains[t];
     const v = createFountainView(t as 0 | 1, c, map, height);
@@ -400,6 +403,11 @@ export function buildWorld(map: MapDef, config: MatchConfig, _hazards: HazardIns
       for (const fv of fountains) fv.dispose();
       disposePropGroup(propsGroup);
       disposePropGroup(decorGroup);
+      // frees only per-match buffers (the Epic deck set built while the menu stage holds the cached one);
+      // the cached decks of every tier are kept for the next match
+      if (platformGroup) disposePropGroup(platformGroup);
+      // the engine keeps an override into the next map: give the derived lamps back
+      if (epic) engine.setLanternSources?.(null);
     },
   };
 }

@@ -1,12 +1,18 @@
 // Main menu: the animated logo, Play (Solo, Online, and Steam lobbies in the Steam build), the hub (Locker, Store, Market, Career),
 // Settings and How to Play, the profile chip, and your character on its dock post over the live scene.
+// Epic (the Steam build's cinematic mode): no preview canvas here; the engine's backdrop poses your
+// Lunker on the showcase stage (render/showcase) inside the .menu-stage box, in the mood of the last map,
+// and drags and clicks on the box spin it and play its show-offs. Switching Epic swaps the two at once.
 import { FAMILY_DEFS, GAME_VERSION, MAX_NAME_LEN, MAX_TEAM_SIZE, UNIT_NOUN } from '../../../shared/constants.ts';
 import { cleanName } from '../../../shared/protocol.ts';
+import { cinematicEnabled, onCinematicChange } from '../../render/cinematic.ts';
+import { menuShowcase, themeForMap } from '../../render/showcase/index.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
 import { icon, setIcon, type IconId } from '../icons.ts';
 import { TIPS } from '../info.ts';
 import { createLogo } from '../logo.ts';
+import { ONE_SHOTS } from '../preview.ts';
 import { profileChip } from '../shell.ts';
 import type { AppState } from '../types.ts';
 import { button } from '../widgets.ts';
@@ -116,19 +122,90 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
     famPassive.title = def.passiveBlurb;
     if (document.activeElement !== nameIn && nameIn.value !== p.name) nameIn.value = p.name;
     chip.update(s);
-    ctx.preview.focus(null);
-    ctx.preview.show({ family: p.family, loadout: p.loadout, team: s.settings.soloTeam, name: p.name });
+    const look = { family: p.family, loadout: p.loadout, team: s.settings.soloTeam, name: p.name };
+    if (epic) {
+      // Epic: the backdrop poses the Lunker (the preview is not mounted, or there would be two)
+      menuShowcase.setTheme(themeForMap(s.lastMap ?? s.settings.soloConfig.mapId));
+      menuShowcase.setLook(look);
+    } else {
+      ctx.preview.focus(null);
+      ctx.preview.show(look);
+    }
   };
+
+  // ---------------------------------------------------------------- Epic: the backdrop's stage box
+  let epic = cinematicEnabled();
+  /** where the .menu-stage box is on screen: the backdrop frames the Lunker in it */
+  const frameStage = () => {
+    if (!epic || !el.isConnected) return;
+    const r = stage.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    menuShowcase.setFrame({ x: (r.left + r.width / 2) / innerWidth, head: (r.top + 0.035 * r.height) / innerHeight, feet: (r.bottom - 0.045 * r.height) / innerHeight });
+  };
+  // the stage's own lantern lights the Lunker in Epic (no painted glow); the box takes the drags
+  const epicChrome = () => {
+    glow.classList.toggle('hidden', epic);
+    stage.style.cursor = epic ? 'grab' : '';
+    stage.style.touchAction = epic ? 'none' : '';
+  };
+  const stageObs = new ResizeObserver(frameStage);
+  stageObs.observe(stage);
+  window.addEventListener('resize', frameStage);
+  // drag to spin, click (under 4 px of movement) to show off; with Epic off the preview canvas has these
+  let dragId = -1;
+  let dragX = 0;
+  let dragMoved = 0;
+  stage.addEventListener('pointerdown', (e) => {
+    if (!epic || e.target !== stage) return;
+    dragId = e.pointerId;
+    dragX = e.clientX;
+    dragMoved = 0;
+    stage.setPointerCapture(e.pointerId);
+    stage.style.cursor = 'grabbing';
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!epic || e.pointerId !== dragId) return;
+    const dx = e.clientX - dragX;
+    dragX = e.clientX;
+    dragMoved += Math.abs(dx);
+    if (dx) menuShowcase.drag(dx);
+  });
+  const dragEnd = (e: PointerEvent) => {
+    if (e.pointerId !== dragId) return;
+    dragId = -1;
+    if (!epic) return;
+    stage.style.cursor = 'grab';
+    if (dragMoved < 4 && e.type === 'pointerup') menuShowcase.play(ONE_SHOTS[Math.floor(Math.random() * ONE_SHOTS.length)]);
+  };
+  stage.addEventListener('pointerup', dragEnd);
+  stage.addEventListener('pointercancel', dragEnd);
+  // switching Epic while the menu shows: the preview and the backdrop's Lunker swap at once
+  const offCine = onCinematicChange((on) => {
+    if (on === epic || !el.isConnected) return;
+    epic = on;
+    epicChrome();
+    if (on) {
+      ctx.preview.unmount();
+      frameStage();
+    } else {
+      menuShowcase.setLook(null);
+      ctx.preview.mount(stage);
+    }
+    paint(ctx.get());
+  });
+  if (epic) epicChrome();
 
   // mount the preview after the element is in the document so it can measure itself
   queueMicrotask(() => {
     if (!el.isConnected) return;
-    ctx.preview.mount(stage);
+    if (epic) frameStage();
+    else ctx.preview.mount(stage);
     paint(ctx.get());
   });
   requestAnimationFrame(() => {
     if (!el.isConnected) return;
-    ctx.preview.mount(stage);
+    if (epic) frameStage();
+    else ctx.preview.mount(stage);
     paint(ctx.get());
   });
   paint(s0);
@@ -143,6 +220,11 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
       window.clearInterval(tipTimer);
       chip.destroy();
       ctx.preview.unmount();
+      offCine();
+      stageObs.disconnect();
+      window.removeEventListener('resize', frameStage);
+      // the backdrop keeps rendering behind the other screens: the posed Lunker belongs to this one
+      if (epic) menuShowcase.setLook(null);
     },
   };
 }

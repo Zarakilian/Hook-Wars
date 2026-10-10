@@ -58,6 +58,12 @@ export class App {
   private game: GameClient | null = null;
   private toastId = 0;
   private menuOpen = false;
+  /**
+   * Epic (Steam build) changed during a match: applied when the match ends. The world, water, props
+   * and units of a match are built for one mode, so a switch mid-match would leave them half-and-half;
+   * the menu and the Locker / Store previews switch at once (they are only reachable outside a match).
+   */
+  private pendingCinematic: boolean | null = null;
   private readonly act: AppActions;
   readonly economy: EconomyClient;
   /** Steam build only: lobbies (null in the browser build) */
@@ -387,7 +393,7 @@ export class App {
       onEscape: () => this.toggleMenu(),
     });
     this.menuOpen = false;
-    this.set({ screen: 'match', match: { local: session.local, ended: null } });
+    this.set({ screen: 'match', match: { local: session.local, ended: null }, lastMap: session.start.config.mapId });
   }
 
   private toggleMenu(open?: boolean): void {
@@ -406,7 +412,25 @@ export class App {
     }
     this.session = null;
     this.engine.setAtmosphere(null, null);
+    // an Epic change made during the match takes effect now, before the next match is built
+    if (this.pendingCinematic !== null) {
+      const on = this.pendingCinematic;
+      this.pendingCinematic = null;
+      this.state = { ...this.state, epicPending: false };
+      this.engine.setCinematic?.(on);
+    }
     this.audio.setMusic('menu');
+  }
+
+  /** Epic on or off (Steam build): at once outside a match, from the next match during one. */
+  private applyCinematic(on: boolean): boolean {
+    if (!this.game) {
+      this.pendingCinematic = null;
+      this.engine.setCinematic?.(on);
+      return false;
+    }
+    this.pendingCinematic = on === !!this.engine.cinematic ? null : on;
+    return this.pendingCinematic !== null;
   }
 
   // ------------------------------------------------------------------------------------------
@@ -550,11 +574,13 @@ export class App {
         saveSettings(s);
         const prev = app.state.settings;
         if (s.quality !== prev.quality) app.engine.setQuality(app.resolveQuality(s.quality));
-        // Epic (Steam build): the engine's cinematic mode on top of the quality tier
-        if (app.state.epicAvailable && !!s.cinematic !== !!prev.cinematic) app.engine.setCinematic?.(!!s.cinematic);
+        // Epic (Steam build): the engine's cinematic mode on top of the quality tier (from the next match
+        // when changed during one: Settings says so)
+        let epicPending = app.state.epicPending;
+        if (app.state.epicAvailable && !!s.cinematic !== !!prev.cinematic) epicPending = app.applyCinematic(!!s.cinematic);
         app.audio.setVolumes(s.master, s.sfx, s.music);
         app.game?.setSettings(s);
-        app.set({ settings: s });
+        app.set(epicPending === app.state.epicPending ? { settings: s } : { settings: s, epicPending });
       },
       startSolo(config: MatchConfig, team: Team) {
         app.audio.unlock();

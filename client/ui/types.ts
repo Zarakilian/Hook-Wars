@@ -2,7 +2,7 @@
 // The app owns state and calls ui.render(state) whenever it changes; the UI calls actions.
 import type { MatchEnd, Profile, RoomState, RoomSummary } from '../../shared/protocol.ts';
 import type {
-  GameEvent, HookSnap, ItemId, MatchConfig, PlayerInfo, RiverState, RuneSnap, ScoreRow, Team, UnitSnap, UpgradeStat, YouSnap,
+  GameEvent, HookSnap, ItemId, MapId, MatchConfig, PlayerInfo, RiverState, RuneSnap, ScoreRow, Team, UnitSnap, UpgradeStat, YouSnap,
 } from '../../shared/types.ts';
 import type { MapDef } from '../../shared/maps/types.ts';
 import type { HazardInst } from '../../shared/sim/entities.ts';
@@ -49,6 +49,10 @@ export interface AppState {
   steam?: SteamPlayState;
   /** Steam build only: the engine has the cinematic mode behind the Epic graphics option. */
   epicAvailable?: boolean;
+  /** Steam build only: Epic was switched during the match and takes effect when it ends. */
+  epicPending?: boolean;
+  /** the map of the last match this session (the Epic menu stage's mood follows it) */
+  lastMap?: MapId;
 }
 
 export interface AppActions {

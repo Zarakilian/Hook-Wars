@@ -2,20 +2,38 @@
 // a wooden dock pedestal, a turntable you can drag, and an idle animation. Leaving a screen stops
 // rendering and frees the model, but keeps the context: creating and force-losing a context on every
 // screen change makes Chrome block WebGL for the page.
+// Epic (the Steam build's cinematic mode): the turntable stands on the showcase stage instead (the
+// lantern-lit dock of the menu, in its mood; render/showcase in preview mode) with its own sky, lights,
+// fog and environment, seen from a low camera; the pedestal and the studio lights are hidden. Switching
+// Epic swaps the two at once. With Epic off nothing of the stage is built and the preview is as before.
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { CosmeticSlot, Loadout } from '../../shared/cosmetics.ts';
 import { UNIT_NOUN } from '../../shared/constants.ts';
 import type { Profile } from '../../shared/protocol.ts';
 import { UnitState, type FamilyId, type Team } from '../../shared/types.ts';
+import { cinematicEnabled, onCinematicChange } from '../render/cinematic.ts';
 import type { PudgyOneShot, PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
+import { createShowcaseStage, menuShowcase, type ShowcaseStage } from '../render/showcase/index.ts';
 import { fitDistance, meshCorners } from './previewFit.ts';
 
 /** Random show-offs (idle and on click). No grapple: it throws the arm and hook high over the head. */
 export const ONE_SHOTS: readonly PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'melee'];
 /** Camera tilt above the look-at target (radians). */
 const TILT = 0.28;
+/** Epic: the showcase stage's low camera (the dock and sky read as in the references) */
+const EPIC_TILT = 0.04;
+/** Epic: the stage set reaches about 210 m back */
+const EPIC_FAR = 400;
+const STUDIO_FAR = 60;
+const STUDIO_NEAR = 0.1;
+/**
+ * Epic: the stage set was composed for the menu's closer camera, so between the turntable camera and the
+ * Lunker stand bollards, crates and quay edges. The near plane clips them: everything nearer than this
+ * much in front of the Lunker spot, but never so far out that the deck at the bottom of the frame goes.
+ */
+const EPIC_CLEAR = 2.6;
 
 /** Camera framing per slot: look-at height (fraction of the model height) and distance multiplier. */
 const FOCUS: Record<CosmeticSlot | 'all', { y: number; d: number }> = {
@@ -75,9 +93,17 @@ export class PudgyPreview {
   /** family of the last model built (kept across unmounts): the spawn pop plays only for a new family */
   private lastFamily: FamilyId | null = null;
   private readonly corners: THREE.Vector3[] = [];
+  /** the preview's own studio lights (hidden while the Epic stage brings its own) */
+  private lights: THREE.Object3D[] = [];
+  /** Epic: the showcase stage behind the turntable (null with Epic off) */
+  private stage: ShowcaseStage | null = null;
+  private tilt = TILT;
+  /** Epic as the stage was last synced (a toggle rebuilds the shown model as a fresh start would) */
+  private stageEpic = false;
 
   constructor() {
     this.canvas = this.makeCanvas();
+    onCinematicChange(() => this.onCinematic());
   }
 
   private makeCanvas(): HTMLCanvasElement {
@@ -127,6 +153,7 @@ export class PudgyPreview {
       this.init();
     }
     if (!this.renderer) return;
+    this.syncStage();
     if (this.look && this.key === '') this.show(this.look);
     this.resizeObs?.disconnect();
     this.resizeObs = new ResizeObserver(() => this.resize());
@@ -192,13 +219,63 @@ export class PudgyPreview {
     const fill = new THREE.PointLight(0xffa860, 6, 6, 1.6);
     fill.position.set(-1.8, 0.6, 2.2);
     scene.add(fill);
+    this.lights = [hemi, key, rim, fill];
 
     this.pedestal = this.buildPedestal();
     scene.add(this.pedestal);
     scene.add(this.spinner);
     this.scene = scene;
-    this.camera = new THREE.PerspectiveCamera(28, 1, 0.1, 60);
+    this.camera = new THREE.PerspectiveCamera(28, 1, 0.1, STUDIO_FAR);
     this.key = '';
+  }
+
+  /**
+   * Epic on: build the showcase stage (preview mode: its Lunker spot is the world origin, where the
+   * turntable turns), hide the pedestal and the studio lights, open the camera to the far set, lower the
+   * tilt. Epic off: dispose the stage (it hands the room environment and the fog back) and restore all
+   * of that. While it stays on, the stage follows the menu's mood.
+   */
+  private syncStage(): void {
+    const scene = this.scene;
+    const cam = this.camera;
+    const r = this.renderer;
+    if (!scene || !cam || !r) return;
+    const want = cinematicEnabled();
+    this.stageEpic = want;
+    if (want && !this.stage) {
+      try {
+        this.stage = createShowcaseStage({ scene, camera: cam, renderer: r }, { mode: 'preview', theme: menuShowcase.state.theme, quality: 'high' });
+        scene.add(this.stage.group);
+      } catch (err) {
+        console.warn('[preview] could not build the showcase stage', err);
+        this.stage = null;
+        return;
+      }
+      if (this.pedestal) this.pedestal.visible = false;
+      for (const l of this.lights) l.visible = false;
+      cam.far = EPIC_FAR;
+      cam.updateProjectionMatrix();
+      this.tilt = EPIC_TILT;
+    } else if (!want && this.stage) {
+      this.stage.dispose();
+      this.stage = null;
+      if (this.pedestal) this.pedestal.visible = true;
+      for (const l of this.lights) l.visible = true;
+      cam.far = STUDIO_FAR;
+      cam.near = STUDIO_NEAR;
+      cam.updateProjectionMatrix();
+      this.tilt = TILT;
+    } else if (this.stage) this.stage.setTheme(menuShowcase.state.theme);
+  }
+
+  /** Epic switched (Settings, between matches): swap the set, and rebuild the shown model as a fresh start would. */
+  private onCinematic(): void {
+    if (!this.renderer || cinematicEnabled() === this.stageEpic) return;
+    this.syncStage();
+    if (this.look && this.key !== '') {
+      this.key = '';
+      this.show(this.look, null);
+    }
   }
 
   /** A round wooden dock post with rope trim and brass bolts. */
@@ -442,8 +519,18 @@ export class PudgyPreview {
     }
     if (this.pudgy && this.focusKey === 'all') this.keepInFrame();
     const cam = this.camera;
-    cam.position.set(0, this.target.y + Math.sin(TILT) * this.dist, Math.cos(TILT) * this.dist);
+    cam.position.set(0, this.target.y + Math.sin(this.tilt) * this.dist, Math.cos(this.tilt) * this.dist);
     cam.lookAt(this.target);
+    if (this.stage) {
+      // clip the set in front of the Lunker (see EPIC_CLEAR); the deck ray at the frame bottom stays in
+      const floor = (0.9 * Math.max(0.2, cam.position.y)) / Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2 + this.tilt);
+      const near = Math.max(STUDIO_NEAR, Math.min(this.dist - EPIC_CLEAR, floor));
+      if (Math.abs(cam.near - near) > 0.01) {
+        cam.near = near;
+        cam.updateProjectionMatrix();
+      }
+      this.stage.update(dt, this.time);
+    }
     r.render(this.scene, cam);
   }
 
@@ -456,7 +543,7 @@ export class PudgyPreview {
     if (!this.pudgy || !this.camera) return;
     this.spinner.rotation.y = this.yaw;
     this.spinner.updateMatrixWorld(true);
-    const need = fitDistance(meshCorners(this.pudgy.root, this.corners), { fov: this.camera.fov, aspect: this.camera.aspect, tilt: TILT, target: this.target });
+    const need = fitDistance(meshCorners(this.pudgy.root, this.corners), { fov: this.camera.fov, aspect: this.camera.aspect, tilt: this.tilt, target: this.target });
     if (need > this.camDist) {
       this.camDist = need;
       this.dist = need;
@@ -502,6 +589,9 @@ export class PudgyPreview {
   /** Free every GPU resource for good (not used by the screens, which share one preview). */
   dispose(): void {
     this.unmount();
+    // before the room environment goes: the stage hands it back to the scene first
+    this.stage?.dispose();
+    this.stage = null;
     for (const g of this.pedestalGeoms) g.dispose();
     for (const m of this.pedestalMats) {
       const t = (m.userData as { tex?: THREE.Texture }).tex;

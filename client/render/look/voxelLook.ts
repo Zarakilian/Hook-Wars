@@ -207,6 +207,16 @@ function unpatch(m: PatchableMaterial, e: Entry): void {
   m.needsUpdate = true;
 }
 
+/**
+ * A runtime toggle patches or restores every registered material, then disposes it. Not needsUpdate
+ * alone: three keeps each material's compiled programs and, when the material switches back to one of
+ * them (Epic -> off -> Epic), reuses that program with the uniforms object of the material's LAST compile
+ * (the other mode's), so hwVoxA / hwVoxB / hwLookRim / hwLookOn would never be uploaded again and every
+ * material sharing the program would draw with whatever it last held (the props' stale voxel size, a
+ * wrong rim). dispose() drops the cached programs: the next draw runs onBeforeCompile again with fresh
+ * uniforms; three re-initialises a disposed material that is still in use. Materials kept across matches
+ * (the props' caches) hit this on the next match after a toggle in the menu.
+ */
 function syncAll(): void {
   const want = wantPatched();
   for (const r of live) {
@@ -217,8 +227,13 @@ function syncAll(): void {
     }
     const e = entries.get(m);
     if (!e || !isPatchable(m)) continue;
-    if (want && !e.patched) patch(m, e);
-    else if (!want && e.patched) unpatch(m, e);
+    if (want && !e.patched) {
+      patch(m, e);
+      m.dispose();
+    } else if (!want && e.patched) {
+      unpatch(m, e);
+      m.dispose();
+    }
   }
 }
 

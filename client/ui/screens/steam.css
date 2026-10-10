@@ -123,3 +123,8 @@
 .stm-invite .panel-body p {
   margin: 0 0 0.6rem;
 }
+
+/* Settings: an Epic change made during a match waits for the next match */
+.stm-epic-next {
+  color: #ffc46b;
+}

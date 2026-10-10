@@ -182,6 +182,13 @@ export class LanternRig {
   active = Number.POSITIVE_INFINITY;
   /** fade speed (1/s) */
   fadeRate = 2.5;
+  /**
+   * the pick: squared distance times this over the lamp's intensity (a lamp of this many candela counts as
+   * it is, brighter ones as nearer); 0 = plain nearest
+   */
+  pickIntensity = 9;
+  /** how strongly brightness counts in the pick (the weight above to this power): a 6 cd lantern competes like one 1.5x as far */
+  pickPower = 2;
   private snap = true;
 
   constructor(budget: number) {
@@ -228,9 +235,14 @@ export class LanternRig {
     order.length = 0;
     for (let i = 0; i < n; i++) order.push(i);
     const src = this.sources;
+    // nearest first, a bright lamp counting as nearer than a dim one at the same distance: the props' exact
+    // list adds many small lanterns (crates, walls, jibs; 6 cd) that would otherwise take the pool from the
+    // street lamps (10 to 13 cd) a few metres further out, and the wet street and the canal around the
+    // player would go dark where the derived list (which the streaks and glow were tuned on) lit them
     const score = (i: number) => {
       const s = src[i];
-      const d = (s.x - focusX) * (s.x - focusX) + (s.z - focusZ) * (s.z - focusZ);
+      const w = this.pickIntensity > 0 ? Math.pow(this.pickIntensity / Math.max(1, s.intensity), this.pickPower) : 1;
+      const d = ((s.x - focusX) * (s.x - focusX) + (s.z - focusZ) * (s.z - focusZ)) * w;
       return this.fade[i] > 0 ? d * 0.8 : d;
     };
     order.sort((a, b) => score(a) - score(b));

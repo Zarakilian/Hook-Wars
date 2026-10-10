@@ -1,6 +1,7 @@
 // Settings: control scheme with a key reference, graphics quality, volumes and gameplay toggles.
 // The Steam build adds the Epic graphics option (the engine's cinematic mode, when the engine has it)
-// and a Fullscreen switch for the desktop window; the browser build shows neither.
+// and a Fullscreen switch for the desktop window; the browser build shows neither. Epic switched during
+// a match takes effect from the next match (the match's world is built for one mode); the screen says so.
 import type { ControlScheme } from '../../../shared/types.ts';
 import type { Quality } from '../../render/contracts.ts';
 import type { Settings } from '../../settings.ts';
@@ -58,6 +59,8 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
     onChange: (v) => (v === 'epic' ? patch({ cinematic: true }) : patch({ quality: v, cinematic: false })),
   });
   const qHint = h('div', { class: 'rule-hint' });
+  // Steam build: an Epic change made during a match waits for the match to end
+  const epicNext = epic ? h('div', { class: 'rule-hint stm-epic-next hidden', role: 'status', text: 'Takes effect from the next match.' }) : null;
   const fullscreen = s0.steam ? toggle('Fullscreen', s0.steam.fullscreen, (v) => a.setFullscreen?.(v), 'Fill the whole screen with the game window') : null;
 
   const master = slider('Master volume', s0.settings.master, (v) => patch({ master: v }), (v) => live({ master: v }));
@@ -75,7 +78,7 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
       h('div', { class: 'panel-body settings-body' },
         h('section', { class: 'set-col' }, sectionTitle('Controls', 'gear'), controls.el, keysHolder),
         h('section', { class: 'set-col' },
-          sectionTitle('Graphics', 'eye'), quality.el, qHint, fullscreen?.el ?? null,
+          sectionTitle('Graphics', 'eye'), quality.el, qHint, epicNext, fullscreen?.el ?? null,
           sectionTitle('Sound', 'chat'), master.el, sfx.el, music.el,
           sectionTitle('Gameplay', 'target'), shake.el, range.el, fps.el)),
     ));
@@ -109,12 +112,15 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
   };
   paint(s0.settings);
   const paintSteam = (s: AppState) => fullscreen?.set(s.steam?.fullscreen ?? false);
+  const paintPending = (s: AppState) => epicNext?.classList.toggle('hidden', !(s.epicPending && s.match));
+  paintPending(s0);
 
   return {
     el,
     update(s: AppState, prev: AppState) {
       if (s.settings !== prev.settings) paint(s.settings);
       if (s.steam !== prev.steam) paintSteam(s);
+      if (s.epicPending !== prev.epicPending || s.match !== prev.match) paintPending(s);
     },
     destroy() {
       window.clearTimeout(liveTimer);
