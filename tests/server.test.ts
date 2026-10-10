@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import WebSocket from 'ws';
-import { DEFAULT_CONFIG, PROTOCOL_VERSION, TICK_RATE } from '../shared/constants.ts';
+import { BAL, DEFAULT_CONFIG, PROTOCOL_VERSION, TICK_RATE } from '../shared/constants.ts';
 import { GameServer, ipKey, JOIN_MISS_LIMIT, MissCounter } from '../server/gameServer.ts';
 import { loadConfig, type ServerConfig } from '../server/config.ts';
 import { LAG_TICKS, Room, type RoomClient } from '../server/room.ts';
@@ -612,20 +612,29 @@ test('rejoin edge cases: grace window, full rooms, silent owners, match results 
     for (let i = 0; i < 10; i++) room.tick();
     return { a, b, room, token: room.rejoinToken(2)! };
   };
-  const seatOf = (room: Room, unit: number) => (room as unknown as { seats: Map<number, { leftAt: number }> }).seats.get(unit)!;
-  // 1. inside the grace window a new connection takes the unit; the economy pays that connection
+  const seatOf = (room: Room, unit: number) => (room as unknown as { seats: Map<number, { leftAt: number; escrow: number }> }).seats.get(unit)!;
+  // 1. inside the grace window a new connection takes the unit; the economy pays that connection. The
+  //    owner's gold waits in escrow meanwhile: the stand-in bot may shop, but only with gold it earns itself.
   {
     const { room, token } = mk();
     const u = room.sim!.unitById.get(2)!;
     u.gold = 2000;
     room.leave(2);
     assert.ok(room.canRejoin(token));
-    for (let i = 0; i < TICK_RATE * 8; i++) room.tick(); // the stand-in bot plays (and would shop) for 8 s
+    const seat = seatOf(room, 2);
+    const g0 = u.stats.g;
+    room.sim!.giveGold(u, BAL.goldKill); // a kill of its own, so it shops on every run, not by chance
+    for (let i = 0; i < TICK_RATE * 8; i++) {
+      room.tick(); // the stand-in bot plays and shops for 8 s
+      assert.equal(seat.escrow, 2000, `the owner's gold left escrow (${seat.escrow} of 2000 still held)`);
+      assert.ok(u.gold <= u.stats.g - g0, `the stand-in bot holds ${u.gold} gold but earned only ${u.stats.g - g0}`);
+    }
+    const purse = u.gold;
+    assert.ok(u.stats.g - g0 > purse, 'the stand-in bot never shopped, so this case no longer tests the escrow');
     room.join(fakeClient(9, 'B2'), token);
     assert.equal(room.unitFor(9), 2);
     assert.equal(u.isBot, false);
-    assert.ok(u.gold >= 2000, `the stand-in bot spent the owner's gold (${u.gold} left)`);
-    assert.deepEqual(u.up, { damage: 0, range: 0, speed: 0, width: 0 }, 'the stand-in bot bought upgrades');
+    assert.equal(u.gold, 2000 + purse, `the owner got back ${u.gold - purse} of the 2000 gold they left`);
     let results: { connId: number; row: { i: number } }[] = [];
     room.onMatchEnd = (r) => (results = r);
     room.sim!.phase = 'ended';
