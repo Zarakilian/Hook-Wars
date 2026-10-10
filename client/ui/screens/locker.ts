@@ -72,7 +72,7 @@ export function buildLocker(ctx: UiCtx, s0: AppState): ScreenView {
   const famTabs = h('div', { class: 'lk-fams', role: 'tablist', 'aria-label': 'Family' });
   for (const f of FAMILIES) {
     const main = h('span', { class: 'lkf-main', title: 'You play as this family' }, icon('star'));
-    const b = h('button', { class: 'lk-fam', type: 'button', role: 'tab' }, icon(f, 'lkf-ico'), h('span', { class: 'lkf-texts' }, h('span', { class: 'lkf-name', text: FAMILY_DEFS[f].name }), h('span', { class: 'lkf-passive', text: FAMILY_DEFS[f].passive })), main);
+    const b = h('button', { class: 'lk-fam', type: 'button', role: 'tab', title: `${FAMILY_DEFS[f].passive}: ${FAMILY_DEFS[f].passiveBlurb}` }, icon(f, 'lkf-ico'), h('span', { class: 'lkf-texts' }, h('span', { class: 'lkf-name', text: FAMILY_DEFS[f].name }), h('span', { class: 'lkf-passive', text: FAMILY_DEFS[f].passive })), main);
     b.addEventListener('click', () => {
       if (f === family) return;
       clickSound();

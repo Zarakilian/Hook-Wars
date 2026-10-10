@@ -2937,3 +2937,22 @@
     padding-right: 0.45rem;
   }
 }
+
+/* ------------------------------------------------------------------------------------------
+   Shorter wide screens: 1366x768, 1280x800 and 1440x900 (16:9 and 16:10, 760 to 900 px tall). The eight-map row is
+   too narrow for the two-line blurbs, and at 16:10 (1280x800, 1440x900) the quick presets run past the right edge.
+   The blurb stays in the card's tooltip and the preset line in its preset's tooltip. 1280x720, 1920x1080 and 2560x1440
+   are shorter or taller than this band, so they keep the rules above exactly.
+   ------------------------------------------------------------------------------------------ */
+@media (min-aspect-ratio: 3/2) and (min-height: 760px) and (max-height: 900px) {
+  .cfg-solo .mc-blurb,
+  .cfg-room .mc-blurb {
+    display: none;
+  }
+}
+
+@media (min-aspect-ratio: 3/2) and (max-aspect-ratio: 17/10) and (min-height: 760px) and (max-height: 900px) {
+  .scr-solo .pr-line {
+    display: none;
+  }
+}

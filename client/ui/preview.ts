@@ -578,7 +578,8 @@ export class PudgyPreview {
   /** How far the clearTop overlay reaches into the canvas (layout only changes it, so on resize). */
   private measureClear(): void {
     const el = this.clearEl;
-    if (!el || !el.isConnected || !this.canvas.isConnected) {
+    // 3:2 and wider keep the camera they had before the clearance, so the 16:9 framing does not change
+    if (window.innerWidth / window.innerHeight >= 1.5 || !el || !el.isConnected || !this.canvas.isConnected) {
       this.clearPx = 0;
       return;
     }
