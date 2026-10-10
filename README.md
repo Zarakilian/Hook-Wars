@@ -58,7 +58,23 @@ npm run dev
 | Items | 1 to 4 | 1 to 4 |
 | Shop, scoreboard, chat, menu | B, Tab, Enter (Shift+Enter for team), Esc | same |
 
-Switch schemes in **Settings**.
+Switch schemes in **Settings**. Teams go up to 6 v 6. 5 v 5 is the default and the Quick Play size.
+
+### Gamepad
+
+A standard (Xbox-layout) pad works in matches, in the browser and in the Steam app. The menus still use the mouse.
+
+| Action | Control |
+|---|---|
+| Move | Left stick |
+| Aim | Right stick |
+| Chain Hook | RT |
+| Grapple | LT |
+| Belly Bash | A or RB |
+| Items 1 to 4 | D-pad left, up, right, down, or hold LB and press X, Y, B, A |
+| Shop | Y |
+| Scoreboard (while held) | View (Back) |
+| Menu | Start |
 
 ## Host it for friends on your home PC
 
