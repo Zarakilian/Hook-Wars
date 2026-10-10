@@ -85,6 +85,16 @@ $env:HOST = "0.0.0.0"; $env:PORT = "8080"; npm start
 
 **Expect:** they see your server name in the room browser and can join a room by its 5-letter code.
 
+### Keep the settings in a .env file
+
+`npm start` reads a `.env` file in the project folder when there is one (it is gitignored). Copy `.env.example` to `.env` and set the values you want there instead of typing them each time.
+
+```powershell
+Copy-Item .env.example .env; notepad .env
+```
+
+**Expect:** after a restart, the server log shows your `SERVER_NAME` and listens on your `HOST` and `PORT`.
+
 ### Server settings
 
 | Variable | Default | What it does |
@@ -94,11 +104,31 @@ $env:HOST = "0.0.0.0"; $env:PORT = "8080"; npm start
 | `SERVER_NAME` | `Hook Wars Server` | Shown in the room browser |
 | `MOTD` | a welcome line | Message shown when players connect |
 | `MAX_CLIENTS` | `200` | Total connections |
-| `MAX_PER_IP` | `6` | Connections per IP address |
+| `MAX_PER_IP` | `6` | Connections per IP address. Raise it to `12` for a LAN party where everyone shares one internet address (6v6 needs 12) |
 | `MAX_ROOMS` | `24` | Concurrent rooms |
+| `MAX_ROOMS_PER_IP` | `2` | Rooms one address can have open at once |
 | `TRUST_PROXY` | off | Set `1` only behind your own reverse proxy, so the real client IP is read from `X-Forwarded-For` |
-| `ALLOWED_ORIGINS` | same host only | Extra browser origins allowed to connect, comma separated |
+| `ALLOWED_ORIGINS` | same host only | Extra browser origins allowed to connect, comma separated. Add `app://hookwars` so players of the Steam build can join this server from Play Online |
 | `STATIC_DIR` | `dist` | Folder with the built client |
+| `ECONOMY` | `on` | `on` keeps accounts, Pearls, the store and the Pearl market. `off` = everyone wears the default looks |
+| `ECONOMY_DATA_DIR` | `./data` | Where the accounts database (`economy.db`) lives. Back this folder up: it holds every player's Pearls and items |
+| `TICK_PRECISE` | on | `0` saves a little CPU on Windows at the cost of less even ticks |
+
+### Update the server
+
+Stop it (Ctrl+C), then run these from the project folder and start it again.
+
+```powershell
+git pull; npm ci; npm run build; npm start
+```
+
+**Expect:** players who still have the old page open are told their version does not match; a refresh fixes it.
+
+### Before you open it to the internet
+
+- Your home IP address is visible to everyone who connects. Steam lobbies in the Steam build avoid that, because Steam relays the traffic.
+- Back up `data/` (see `ECONOMY_DATA_DIR`) before updates.
+- Stop the server when you are not playing.
 
 ### What the server protects against
 
@@ -133,8 +163,8 @@ Design, rules and module ownership: [docs/design.md](docs/design.md).
 
 ## What I have not verified
 
-- Internet play through a real home router and NAT. Tested on one machine with two browser tabs.
-- Performance on low-end GPUs. Quality tiers exist, but nothing has been measured on weak hardware yet.
+- Internet play through a real home router and NAT. Tested on one machine with several browser tabs and in-process clients.
+- Frame rates were measured only on one laptop's integrated Intel GPU (medium is fine there); dedicated GPUs are estimated.
 - Balance with human players. Numbers come from design and bot soaks.
 
 ## License
