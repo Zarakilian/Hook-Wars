@@ -1,7 +1,17 @@
-// The predicted ("ghost") hook drawn online from the moment of release until the server's hook arrives.
+// The predicted ("ghost") hook drawn online from the moment of release until the server's hook turns.
 // Its flight must match the hook the server will launch (shared/sim/sim.ts launchHook), or the head
 // lurches when the real one takes over.
+//
+// The ghost flies in the present; the server's hook is drawn on the render clock, a round trip plus the
+// interpolation delay behind it (0.1 s on a LAN, 0.3 s at 150 ms). Blending into that timeline while the
+// hook flies out can only slow the head down (it did: 14-16 m/s for 0.1 s on a LAN, 7-9 m/s for 0.25 s
+// at 100 ms, against a 30 m/s flight). So the ghost keeps flying for as long as the server's hook flies
+// out straight: on the server's line, never behind the server's head, at the full flight speed. The time
+// it is ahead is given back where the hook stops flying out anyway: the ghost stops at the point where
+// the newest snapshot says the hook turned (its range, a wall, a catch), or where it is when that news
+// arrives, and the server's head takes over once the picture reaches the turn.
 import { BAL, HOOK_LEVELS, TICK_DT } from '../../shared/constants.ts';
+import { clamp } from '../../shared/math.ts';
 import type { HookSnap, YouSnap } from '../../shared/types.ts';
 
 export interface GhostHookParams {
@@ -13,17 +23,42 @@ export interface GhostHookParams {
   range: number;
   /** HookSnap.fx bits: 1 ember, 2 ricochet, 4 bendy, 8 longshot */
   fx: number;
+  /** m from the hand where the server's hook turns at the end of a straight flight (range, rounded up to its 0.35 m step) */
+  reach: number;
+}
+
+/** shared/sim/sim.ts HOOK_SUBSTEP: the sim moves a flying hook in steps this long (m). */
+const SIM_HOOK_SUBSTEP = 0.35;
+
+/**
+ * Where the server's hook turns on a straight flight: the sim adds its steps (shared/sim/sim.ts hookOut)
+ * and turns on the one that reaches the range, up to a step past it. Same arithmetic, same number.
+ */
+export function flightReach(speed: number, range: number): number {
+  let traveled = 0;
+  for (let tick = 0; tick < 100_000; tick++) {
+    let remaining = speed * TICK_DT;
+    while (remaining > 1e-6) {
+      const step = Math.min(remaining, SIM_HOOK_SUBSTEP);
+      remaining -= step;
+      traveled += step;
+      if (traveled >= range) return traveled;
+    }
+  }
+  return range;
 }
 
 export function ghostHookParams(you: YouSnap): GhostHookParams {
   const has = (t: string) => you.buffs.some((b) => b.t === t);
   const item = (id: string) => you.items.some((s) => s && s.id === id);
   const longshot = has('longshot');
+  const speed = HOOK_LEVELS.speed[you.up.speed] * (longshot ? BAL.longshotSpeedMul : 1);
   return {
-    speed: HOOK_LEVELS.speed[you.up.speed] * (longshot ? BAL.longshotSpeedMul : 1),
+    speed,
     radius: HOOK_LEVELS.width[you.up.width],
     range: you.hookRange,
     fx: (item('ember') ? 1 : 0) | (item('ricochet') || has('bouncy') ? 2 : 0) | (has('bendy') ? 4 : 0) | (longshot ? 8 : 0),
+    reach: flightReach(speed, you.hookRange),
   };
 }
 
@@ -51,6 +86,16 @@ export interface GhostFlight extends GhostHookParams {
   ox: number;
   oz: number;
   launched: boolean;
+  /** m along the throw the head stops at: where the server's hook turned (Infinity = not known yet) */
+  cap: number;
+  /** furthest our hook was seen flying out straight in the newest snapshot (m along the throw) */
+  peak: number;
+  /** where our hook was drawn on the render clock last frame (m along the throw), NaN = not yet */
+  srvS: number;
+  /** when the picture first showed our hook turned (client clock), -1 = not yet */
+  turnAt: number;
+  /** client clock of the last frame */
+  lastTime: number;
 }
 
 /**
@@ -61,6 +106,14 @@ export interface GhostFlight extends GhostHookParams {
 export const HANDOVER_GRACE = 0.25;
 /** Past the deadline, at most this long waiting on a stalled snapshot stream (s). */
 export const GHOST_STALL_CAP = 2;
+/**
+ * Once the picture shows our hook turned, the ghost waits (standing at the turn) at most this long for
+ * the drawn server head to come up to it: the turn shows up to a tick early (interpolation takes the
+ * newer snapshot's phase), two ticks of real time when the render clock runs slow.
+ */
+export const TURN_WAIT = 0.1;
+/** How fast the ghost slides sideways onto the server's line (m/s): the body it left from was predicted. */
+const LINE_SLIDE = 2;
 /** Render ticks of margin on deadTick (input queueing on the server, one tick of input pacing). */
 const DEAD_TICK_MARGIN = 8;
 
@@ -92,6 +145,11 @@ export function startGhostFlight(
     ox: 0,
     oz: 0,
     launched: false,
+    cap: Infinity,
+    peak: -Infinity,
+    srvS: Number.NaN,
+    turnAt: -1,
+    lastTime: Number.NaN,
   };
 }
 
@@ -109,36 +167,111 @@ export function launchGhost(g: GhostFlight, body: { x: number; z: number }): voi
   g.launched = true;
 }
 
+/** How far the ghost's head is from the hand along the throw (m). */
+export function ghostTravel(g: GhostFlight, time: number): number {
+  return Math.min(g.cap === Infinity ? g.reach : g.cap, g.speed * Math.max(0, time - g.start));
+}
+
 export function ghostHead(g: GhostFlight, time: number, out: { x: number; z: number }): { x: number; z: number } {
-  const travel = Math.min(g.range, g.speed * Math.max(0, time - g.start));
+  const travel = ghostTravel(g, time);
   out.x = g.ox + g.dx * travel;
   out.z = g.oz + g.dz * travel;
   return out;
 }
 
+/** A point's distance along the ghost's throw, from the hand it left (m). */
+function along(g: GhostFlight, x: number, z: number): number {
+  return (x - g.ox) * g.dx + (z - g.oz) * g.dz;
+}
+
+/** The hook flies out on a straight line, the flight the ghost predicts (no catch, no bend, no steering). */
+export function fliesStraight(h: Pick<HookSnap, 'p' | 'tg' | 'ru' | 'pts' | 'fx'>): boolean {
+  return h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && !(h.fx & 4);
+}
+
+/** Bendy Eel: flying out, but steered toward the live cursor on the server, which the ghost cannot follow. */
+function steers(h: Pick<HookSnap, 'p' | 'tg' | 'ru' | 'pts' | 'fx'>): boolean {
+  return h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && (h.fx & 4) !== 0;
+}
+
+/**
+ * The newest snapshot (ahead of the picture by the interpolation delay) tells early where our hook
+ * stopped flying out: the ghost may go up to that point and no further. If it is already past it (the
+ * news takes a round trip), it stops where it is: it never goes back while the hook is out.
+ */
+function learnTurn(g: GhostFlight, latest: { h: HookSnap[] } | undefined, youId: number, time: number): void {
+  if (!latest || g.cap !== Infinity) return;
+  const h = latest.h.find((x) => x.o === youId && x.k === 0);
+  if (!h) {
+    // seen in an older newest snapshot and gone from this one: the hook is already over
+    if (g.peak > -Infinity) g.cap = Math.max(g.peak, ghostTravel(g, time));
+    return;
+  }
+  const s = along(g, h.x, h.z);
+  if (fliesStraight(h) || steers(h)) g.peak = Math.max(g.peak, s);
+  else g.cap = Math.max(g.peak, s, ghostTravel(g, time));
+}
+
+/**
+ * The server's hook is in the picture and flies out straight: keep the ghost on its line and never
+ * behind its head (a page that froze, a picture catching up after a stall).
+ */
+function followServer(g: GhostFlight, own: HookSnap, time: number, dt: number): void {
+  const s = along(g, own.x, own.z);
+  if (s > g.speed * (time - g.start)) g.start = time - s / g.speed;
+  const side = (own.x - g.ox) * -g.dz + (own.z - g.oz) * g.dx;
+  const k = clamp(side, -LINE_SLIDE * dt, LINE_SLIDE * dt);
+  g.ox -= g.dz * k;
+  g.oz += g.dx * k;
+}
+
 /**
  * What the ghost does this frame:
  * - 'before': still winding up, nothing to draw
- * - 'fly': draw the ghost; the server's hook may already be in the frame (`own`), but it is not drawn yet
+ * - 'fly': draw the ghost; the server's hook may already be in the frame (`own`), but it is not drawn
  * - 'take': the server's hook takes over now (`own`)
  * - 'drop': no server hook came, or we were knocked, hooked or killed: remove the ghost
- * The server's hook takes over only once it is interpolated. A hook only in the newer snapshot stands
- * at that snapshot's position for up to a tick, and blending into a standing head pulls it backwards.
- * Records when our server hook was first seen (g.seenAt).
+ * While our server hook flies out straight the ghost keeps flying (see the top of this file). Once it
+ * has turned, the ghost stands at the turn until the drawn server head has come up to it, then hands
+ * over. A Bendy Eel hook steers on the server toward the live cursor: it is handed over as soon as it
+ * is interpolated (a hook only in the newer snapshot stands at that snapshot's position for up to a
+ * tick, and blending into a standing head pulls it backwards). Records when our server hook was first
+ * seen (g.seenAt).
  */
 export function ghostStep(
   g: GhostFlight,
-  frame: { tick: number; hooks: HookSnap[]; freshHooks: ReadonlySet<number> },
+  frame: { tick: number; hooks: HookSnap[]; freshHooks: ReadonlySet<number>; latest?: { h: HookSnap[] } },
   youId: number,
   time: number,
   disabled: boolean,
 ): { act: 'before' | 'fly' | 'take' | 'drop'; own: HookSnap | null } {
+  const dt = Number.isNaN(g.lastTime) ? 0 : Math.max(0, time - g.lastTime);
+  g.lastTime = time;
+  if (g.launched) learnTurn(g, frame.latest, youId, time);
   const own = frame.hooks.find((h) => h.o === youId && h.k === 0) ?? null;
   if (own) {
     if (g.seenAt < 0) g.seenAt = time;
-    const waiting = frame.freshHooks.has(own.i) && g.launched && time - g.seenAt <= HANDOVER_GRACE;
-    return { act: waiting ? 'fly' : 'take', own };
+    if (!g.launched) return { act: 'take', own };
+    if (fliesStraight(own)) {
+      followServer(g, own, time, dt);
+      g.srvS = along(g, own.x, own.z);
+      return { act: 'fly', own };
+    }
+    if (steers(own)) {
+      const waiting = frame.freshHooks.has(own.i) && time - g.seenAt <= HANDOVER_GRACE;
+      return { act: waiting ? 'fly' : 'take', own };
+    }
+    // turned: caught a unit or a rune, hit a wall, bounced, bent in a whirlpool, clashed or reached its range
+    const s = ghostTravel(g, time);
+    if (g.cap > s) g.cap = s;
+    if (g.turnAt < 0) g.turnAt = time;
+    const srv = along(g, own.x, own.z);
+    const coming = srv > g.srvS + 1e-6 && srv < s - 1e-3 && time - g.turnAt <= TURN_WAIT;
+    g.srvS = srv;
+    return { act: coming ? 'fly' : 'take', own };
   }
+  // our hook was in the picture and is gone (it came back between two frames, or a stall skipped it)
+  if (g.seenAt >= 0) return { act: 'drop', own: null };
   // never earlier than the client-clock deadline; later only while the render clock has not yet
   // reached the tick the hook should show up on (a stalled stream), and never past the cap
   const late = time > g.deadline && (g.deadTick < 0 || frame.tick > g.deadTick || time > g.deadline + GHOST_STALL_CAP);
@@ -163,13 +296,20 @@ export interface HeadBlend {
   lz: number;
 }
 
-/** The blend at hand-over, or null when the head should snap (the hook already caught or turned back). */
+/**
+ * The blend at hand-over, from where the ghost is drawn to the server's head (null: the ghost never
+ * left the hand, the head snaps). Also after a turn: a ghost that overshot a catch comes back to it
+ * instead of jumping.
+ */
 export function startHeadBlend(g: GhostFlight, own: HookSnap, time: number): HeadBlend | null {
-  if (!g.launched || own.p !== 0 || own.tg >= 0 || own.ru >= 0) return null;
+  if (!g.launched) return null;
   const head = ghostHead(g, time, { x: 0, z: 0 });
   const ox = head.x - own.x;
   const oz = head.z - own.z;
-  return { id: own.i, ox, oz, t: 0, dur: 0.06 + Math.hypot(ox, oz) / g.speed, started: false, dx: g.dx, dz: g.dz, lx: head.x, lz: head.z };
+  // after a turn the hook is coming back (with what it caught): the head rejoins it fast, before it is in
+  const d = Math.hypot(ox, oz);
+  const dur = fliesStraight(own) || steers(own) ? 0.06 + d / g.speed : 0.04 + d / (3 * g.speed);
+  return { id: own.i, ox, oz, t: 0, dur, started: false, dx: g.dx, dz: g.dz, lx: head.x, lz: head.z };
 }
 
 /**
@@ -202,6 +342,8 @@ export function blendHead(bl: HeadBlend, h: Pick<HookSnap, 'x' | 'z' | 'p' | 'tg
  * Our own hook online, from the key press until the server's hook is drawn on its own: the ghost, the
  * hand-over and the blend. GameClient keeps the chain meshes; this decides where the head goes.
  * Per frame: frame() once, before the hooks are drawn, then head() for every hook in the frame.
+ * frame() takes the interpolated Frame (client/net/interp.ts): its `latest` snapshot tells the ghost
+ * early where the hook turned.
  */
 export class OwnHookPredictor {
   ghost: GhostFlight | null = null;
@@ -223,7 +365,7 @@ export class OwnHookPredictor {
 
   /** 'fly' with the ghost to draw at ghostHead(); 'take' and 'drop' end the ghost; 'none' = no ghost */
   frame(
-    f: { tick: number; hooks: HookSnap[]; freshHooks: ReadonlySet<number> },
+    f: { tick: number; hooks: HookSnap[]; freshHooks: ReadonlySet<number>; latest?: { h: HookSnap[] } },
     youId: number,
     time: number,
     body: { x: number; z: number },

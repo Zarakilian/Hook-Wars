@@ -2,14 +2,40 @@
 // The Steam build adds the Epic graphics option (the engine's cinematic mode, when the engine has it)
 // and a Fullscreen switch for the desktop window; the browser build shows neither. Epic switched during
 // a match takes effect from the next match (the match's world is built for one mode); the screen says so.
+// Controller: on/off, stick dead zone, aim sensitivity, invert aim Y, whether a pad is found, and the
+// button reference. The pad plays matches; menus still use the mouse.
 import type { ControlScheme } from '../../../shared/types.ts';
+import { DEADZONE_MAX, PAD_TABLE, browserPads, gamepadApi, padName } from '../../game/gamepad.ts';
 import type { Quality } from '../../render/contracts.ts';
-import type { Settings } from '../../settings.ts';
+import { padSettings, type Settings } from '../../settings.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
 import { keyTable } from '../howto.ts';
 import type { AppState } from '../types.ts';
-import { button, sectionTitle, segmented, slider, toggle } from '../widgets.ts';
+import { button, keycap, sectionTitle, segmented, slider, toggle } from '../widgets.ts';
+
+/** The gamepad button reference, in the look of the key table. */
+function padTable(): HTMLElement {
+  const body = h('tbody');
+  for (const [action, keys] of PAD_TABLE) {
+    const kc = h('td', { class: 'kt-keys' });
+    keys.forEach((k, i) => {
+      if (i > 0) kc.append(h('span', { class: 'kt-or', text: 'or' }));
+      kc.append(keycap(k));
+    });
+    body.append(h('tr', {}, h('th', { scope: 'row', text: action }), kc));
+  }
+  return h('table', { class: 'key-table pad-table' }, body);
+}
+
+/** One line on whether a controller can be used here and which one was found. */
+function padStatusText(): string {
+  if (!gamepadApi()) return 'This browser does not offer controllers on this page. Browsers only allow them on https:// pages (or localhost).';
+  const pads = browserPads().filter((p) => p && p.connected);
+  if (!pads.length) return 'No controller found. Plug one in and press any button on it.';
+  const more = pads.length > 1 ? ` (and ${pads.length - 1} more)` : '';
+  return `Found: ${padName(pads[0]!.id)}${more}`;
+}
 
 type QualityChoice = Quality | 'auto' | 'epic';
 
@@ -70,6 +96,28 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
   const range = toggle('Hook range ring', s0.settings.showRange, (v) => patch({ showRange: v }), 'A faint circle showing how far your hook reaches');
   const fps = toggle('Show FPS', s0.settings.showFps, (v) => patch({ showFps: v }), 'Frame rate in the top corner');
 
+  // controller (Gamepad API)
+  const pad0 = padSettings(s0.settings);
+  const padOn = toggle('Use a controller', pad0.enabled, (v) => patch({ padEnabled: v }), 'Twin-stick controls in matches. Menus still use the mouse.');
+  // the dead zone stops at 50%: a drag past it snaps back when let go
+  const dz = (v: number) => Math.min(DEADZONE_MAX, v);
+  const padDz = slider('Stick dead zone', pad0.deadzone, (v) => {
+    // the slider repaints only without focus, so let go of it to show the snap (keyboard users keep it otherwise)
+    if (v > DEADZONE_MAX) (document.activeElement as HTMLElement | null)?.blur?.();
+    patch({ padDeadzone: dz(v) });
+  }, (v) => live({ padDeadzone: dz(v) }));
+  const padSens = slider('Aim sensitivity', pad0.aimSens, (v) => patch({ padAimSens: v }), (v) => live({ padAimSens: v }));
+  const padInv = toggle('Invert aim stick Y', pad0.invertY, (v) => patch({ padInvertY: v }), 'Push the stick up to aim down the screen');
+  const padStatus = h('div', { class: 'rule-hint pad-status', role: 'status' });
+  const paintPadStatus = () => {
+    const t = padStatusText();
+    if (padStatus.textContent !== t) padStatus.textContent = t;
+  };
+  paintPadStatus();
+  const padTimer = window.setInterval(paintPadStatus, 1000);
+  window.addEventListener('gamepadconnected', paintPadStatus);
+  window.addEventListener('gamepaddisconnected', paintPadStatus);
+
   const back = button(s0.match ? 'Back to match' : 'Back', () => a.go(ctx.get().match ? 'match' : 'menu'), { cls: 'ghost', icon: 'left' });
 
   const el = h('div', { class: 'scr scr-settings' },
@@ -80,7 +128,9 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
         h('section', { class: 'set-col' },
           sectionTitle('Graphics', 'eye'), quality.el, qHint, epicNext, fullscreen?.el ?? null,
           sectionTitle('Sound', 'chat'), master.el, sfx.el, music.el,
-          sectionTitle('Gameplay', 'target'), shake.el, range.el, fps.el)),
+          sectionTitle('Gameplay', 'target'), shake.el, range.el, fps.el,
+          sectionTitle('Controller', 'play'), padStatus, padOn.el, padDz.el, padSens.el, padInv.el,
+          h('div', { class: 'keys-holder' }, padTable()))),
     ));
 
   // Esc goes back. In a match this also stops the game's own Esc handling from un-pausing
@@ -109,6 +159,11 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
     shake.set(s.shake);
     range.set(s.showRange);
     fps.set(s.showFps);
+    const p = padSettings(s);
+    padOn.set(p.enabled);
+    padDz.set(p.deadzone);
+    padSens.set(p.aimSens);
+    padInv.set(p.invertY);
   };
   paint(s0.settings);
   const paintSteam = (s: AppState) => fullscreen?.set(s.steam?.fullscreen ?? false);
@@ -124,7 +179,10 @@ export function buildSettings(ctx: UiCtx, s0: AppState): ScreenView {
     },
     destroy() {
       window.clearTimeout(liveTimer);
+      window.clearInterval(padTimer);
       window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('gamepadconnected', paintPadStatus);
+      window.removeEventListener('gamepaddisconnected', paintPadStatus);
     },
   };
 }

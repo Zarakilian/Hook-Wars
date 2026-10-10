@@ -12,7 +12,7 @@ import { Connection, defaultServerUrl, normaliseServerUrl, setDefaultServerUrl, 
 import { SnapshotBuffer, clockStepMs } from '../client/net/interp.ts';
 import { RejoinStore, type KeyValueStore } from '../client/net/rejoin.ts';
 import { LocalSession } from '../client/net/session.ts';
-import { GHOST_STALL_CAP, HANDOVER_GRACE, OwnHookPredictor, ghostHead, ghostHookParams } from '../client/game/ghost.ts';
+import { GHOST_STALL_CAP, HANDOVER_GRACE, OwnHookPredictor, flightReach, ghostHead, ghostHookParams } from '../client/game/ghost.ts';
 
 // ---------------------------------------------------------------------------------------------
 // helpers
@@ -326,9 +326,43 @@ test('solo render clock: pausing and resuming the match does not leave the pictu
   }
 });
 
-test('online render clock is unchanged: frameTick is advance with the 100 ms clamp, and the delay still covers jitter', () => {
-  // the solo fix must not touch online play: drive one buffer the new way (frameTick, even with a stray
-  // paused flag, which only solo honours) and one the old way (advance(now, clamp(raw, 0, 100)))
+// ---------------------------------------------------------------------------------------------
+// The online render clock only moves forward
+
+/**
+ * Recorded snapshot timings: how late each of 300 consecutive snapshots reached the page, in ms, measured
+ * in the browser against the real server (2026-10-10, loopback, `ws` message events in the page). Idle:
+ * nothing else on the main thread. Busy: the page drawing frames, with two GC-sized hitches (43 and 52 ms).
+ * The harness replays them on top of a one-way latency, on the way down and (offset) on the way up.
+ */
+const TRACE_IDLE = [
+  0.4, 0.4, 0.7, 0.6, 0.5, 0.6, 0.7, 0.7, 0.6, 1, 0.9, 0.6, 0.8, 1.1, 0.9, 0.9, 0.4, 1.1, 0.9, 1.1, 0.7, 0.7, 0.6, 0.6, 0.8, 0.6, 0.6, 0.6, 0.6, 0.6,
+  0.6, 0.5, 0.9, 0.9, 0.9, 0.5, 0.6, 0.7, 0.4, 0.7, 0.6, 0.8, 0.5, 0.5, 0.5, 0.8, 0.7, 0.7, 1.2, 0.7, 0.8, 0.6, 0.6, 0.4, 0.5, 0.8, 0.3, 0.7, 0.9, 0.4,
+  0.7, 0.8, 0.6, 1, 1.9, 1, 0.8, 0.3, 0.6, 0.6, 0.7, 0.6, 0.8, 0.5, 0.4, 0.7, 1.1, 0.6, 0.8, 0.9, 0.7, 0.8, 0.8, 0.4, 0.5, 0.8, 0.9, 0.5, 0.5, 0.5,
+  1.3, 0.9, 0.8, 0.8, 0.6, 0.4, 1.6, 0.6, 1.3, 0.8, 1.2, 1.1, 0.6, 0.8, 0.6, 0.6, 0.9, 0.6, 0.7, 0.6, 0.4, 0.4, 0.8, 0.9, 0.5, 1, 0.8, 1.1, 0.5, 0.3,
+  0.4, 0.5, 0.8, 1.4, 0.7, 1.3, 0.7, 0.5, 0.4, 0.5, 0.4, 0.8, 1.1, 0.7, 0.4, 0.5, 0.6, 0.6, 0.9, 0.9, 1.1, 0.4, 0.4, 0.4, 0.5, 1, 0.6, 0.5, 0.4, 0.5,
+  0.4, 0.5, 0.8, 0.7, 0.5, 0.8, 0.6, 0.6, 0.7, 0.4, 1.3, 0.7, 1.4, 0.7, 1, 0.4, 0.5, 0.5, 1, 0.7, 0.7, 0.4, 0.6, 0.7, 0.5, 0.7, 0.1, 1, 0.9, 0.5,
+  0.6, 0.5, 0.7, 0.7, 0.9, 0.5, 0.6, 0.7, 0.5, 0.8, 0.7, 0.6, 0.5, 1, 0.6, 0.8, 0.8, 0.7, 1.4, 0.9, 0.6, 0.6, 0.3, 1, 0.5, 0.7, 0.9, 0.6, 0.5, 0.8,
+  0.8, 0.5, 0.5, 0.6, 0.9, 0.5, 0.6, 1, 0.6, 0.7, 0.8, 1.2, 0.8, 0.6, 0.5, 0.7, 0.9, 0.8, 1, 1, 0.7, 0.6, 0.8, 1, 0.8, 0.6, 0.7, 0.7, 0.6, 0.7,
+  0.7, 0.6, 0.9, 0.7, 0.8, 0.5, 0.3, 0.4, 0.9, 0.5, 0.6, 0.6, 0.6, 0.4, 0.2, 0.4, 0.6, 0.8, 0.8, 1.3, 0.6, 0.7, 0.7, 0.4, 0.8, 0.5, 0.9, 0.5, 0.3, 0.6,
+  0.8, 1.1, 0.5, 0.6, 0.5, 0.7, 0.5, 1.1, 0.6, 0.5, 0.5, 0.7, 1.2, 0.5, 1.2, 1, 0.6, 0.9, 1.2, 0.7, 1, 0.6, 1.4, 0.8, 1.3, 0.5, 0.7, 0.6, 1, 1.3,
+];
+const TRACE_BUSY = [
+  0.5, 0.4, 0.5, 0.6, 43.5, 10.3, 3.9, 1.9, 0.5, 0.1, 0.5, 0.4, 0, 0.2, 1.1, 0.2, 0.5, 0.6, 0.3, 0.1, 1.1, 0.5, 0.1, 0.5, 0.2, 0.3, 0.8, 1, 7.1, 0.9,
+  1.2, 0.6, 0.4, 1.7, 0.4, 0.3, 0.7, 0.4, 0, 0.9, 0.5, 1, 0.3, 0.1, 0, 1.2, 0.4, 0.6, 0.5, 0.2, 0, 0.6, 0.5, 4.1, 2.3, 1.7, 0.5, 0.3, 0.8, 0,
+  0.2, 0.1, 0.1, 0.4, 0.4, 0.1, 0.2, 0.2, 0.5, 0.3, 0.4, 0.7, 1.1, 0.3, 0.2, 0.2, 0.3, 6.4, 1.1, 0.5, 0.3, 0.3, 1.1, 0.2, 0.2, 0.3, 0.2, 0.2, 0.2, 0.6,
+  0.7, 0.4, 0.2, 0.3, 0.8, 0.5, 0.2, 0.4, 0, 0.2, 5.1, 2.6, 3.7, 1.5, 1.1, 0.6, 0.9, 0.8, 0.7, 0.2, 0.4, 0.3, 0.3, 0.2, 0.7, 0.4, 0, 1, 0.3, 0.2,
+  0.2, 0.2, 0.1, 0.3, 0.1, 2, 3, 0.2, 0.3, 0.7, 0.3, 0.3, 0.4, 0.5, 0.5, 0.7, 0.5, 0.3, 2.5, 0.3, 4.1, 0.4, 0.3, 0.7, 0.3, 0.7, 0.7, 0.8, 0.4, 1.2,
+  0.4, 0.5, 0.4, 0.7, 0.3, 0.3, 0.8, 0.4, 0, 0.3, 0.4, 3, 2.6, 1.6, 0.4, 0.5, 0.5, 0.2, 0.8, 0.3, 1.1, 0.8, 0.6, 1.2, 1.7, 0.6, 0.5, 0.4, 0.4, 0.4,
+  1, 0.5, 0.2, 2.1, 0.6, 2.1, 0.7, 1.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.1, 0.1, 0.2, 1.3, 1.2, 2.2, 0.3, 0.5, 0.4, 0.3, 0.4, 0.2, 0.4, 0.5, 0.3, 0.4, 3,
+  2.9, 1.9, 0.7, 0.4, 0.3, 0.3, 0.6, 0.7, 0.5, 0.6, 0.6, 1.1, 0.4, 0.8, 0.1, 0.4, 0.5, 0.6, 0.4, 0.2, 0.1, 0.3, 0.3, 2.6, 1, 3.4, 0.9, 0.2, 0.3, 0,
+  0.5, 0.4, 1.3, 0.4, 0.3, 0.2, 1.6, 0.2, 1.4, 0.3, 0.6, 0.3, 0.5, 0.6, 0.4, 0.6, 0.3, 4.4, 2.2, 1.5, 0.2, 0.4, 0.5, 0.3, 0.7, 0.7, 0.4, 0.6, 0.4, 0.7,
+  52.4, 19.3, 0.4, 0.4, 0.4, 0.4, 0.6, 0.6, 0.2, 0.3, 5.7, 5.8, 4.9, 2.7, 0.7, 0.5, 0.4, 4, 0.6, 0.7, 0, 0.5, 1.3, 0.3, 0.1, 0.6, 0.5, 0.6, 0.4, 0,
+];
+
+test('online render clock: frameTick is advance with the 100 ms clamp, the solo pause never leaks online, and the delay still covers jitter', () => {
+  // drive one buffer the GameClient way (frameTick, even with a stray paused flag, which only solo
+  // honours) and one directly (advance(now, clamp(raw, 0, 100)))
   let seed = 11;
   const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const snap = (t: number) => ({ t, u: [], h: [], r: [], ev: [] }) as unknown as Snapshot;
@@ -358,6 +392,126 @@ test('online render clock is unchanged: frameTick is advance with the 100 ms cla
     frames++;
   }
   assert.ok(maxDelay > 2.5, `online interpolation delay no longer grows with network jitter (max ${maxDelay.toFixed(2)})`);
+});
+
+interface OnlineClockRun {
+  /** frames whose render tick went back, and the worst step (ticks) */
+  back: number;
+  worst: number;
+  /** frames where the interpolated walking unit went back, and the worst step (m) */
+  unitBack: number;
+  /** render ticks per tick of real time, per frame (after warm-up, outside a stall and its catch-up second) */
+  rates: number[];
+  /** newest snapshot tick minus the render tick, per frame (after warm-up) */
+  lags: number[];
+  maxDelay: number;
+  /** lag per frame in the second after a stall ended */
+  afterStall: number[];
+}
+
+/**
+ * The online SnapshotBuffer the way GameClient drives it (frameTick at a fixed frame rate), snapshots
+ * arriving in order with jitter (a seeded random one, or a recorded trace), one unit walking +x at
+ * 6 m/s in them, and optionally a stall on the line (everything inside it arrives at its end).
+ */
+function runOnlineClock(o: { jitter: number; fps: number; seed: number; trace?: readonly number[]; stall?: { at: number; ms: number }; ticks?: number }): OnlineClockRun {
+  let seed = o.seed;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const tickMs = 1000 / TICK_RATE;
+  const buf = new SnapshotBuffer(false);
+  const snap = (t: number) => ({ t, u: [{ i: 7, x: t * 0.2, z: 0, y: 0, f: 0, hp: 100 }], h: [], r: [], ev: [] }) as unknown as Snapshot;
+  const n = o.ticks ?? 1200;
+  const arrivals: { at: number; t: number }[] = [];
+  let lastAt = 0;
+  for (let k = 0; k < n; k++) {
+    let at = 1000 + k * tickMs + 40 + (o.trace ? o.trace[k % o.trace.length] : rnd() * o.jitter);
+    if (o.stall && at >= o.stall.at && at < o.stall.at + o.stall.ms) at = o.stall.at + o.stall.ms;
+    lastAt = Math.max(lastAt, at);
+    arrivals.push({ at: lastAt, t: k });
+  }
+  const run: OnlineClockRun = { back: 0, worst: 0, unitBack: 0, rates: [], lags: [], maxDelay: 0, afterStall: [] };
+  let ai = 0;
+  let last = -1;
+  let prevTick = Number.NaN;
+  let prevX = Number.NaN;
+  let newest = -1;
+  const stallEnd = o.stall ? o.stall.at + o.stall.ms : Infinity;
+  for (let now = 1000; now < 1000 + n * tickMs; now += 1000 / o.fps) {
+    for (; ai < arrivals.length && arrivals[ai].at <= now; ai++) {
+      buf.push(snap(arrivals[ai].t), arrivals[ai].at);
+      newest = arrivals[ai].t;
+    }
+    if (last < 0) last = now;
+    const raw = now - last;
+    last = now;
+    const tick = buf.frameTick(now, raw, false);
+    const f = buf.sample(tick);
+    if (!f || now < 2000) {
+      prevTick = tick;
+      prevX = f?.units.get(7)?.x ?? Number.NaN;
+      continue;
+    }
+    const x = f.units.get(7)!.x;
+    if (tick < prevTick - 1e-9) {
+      run.back++;
+      run.worst = Math.min(run.worst, tick - prevTick);
+    }
+    if (x < prevX - 1e-9) run.unitBack++;
+    const inStall = o.stall && now >= o.stall.at - 200 && now < stallEnd + 1000;
+    if (!inStall && raw > 0) run.rates.push((tick - prevTick) / (raw / tickMs));
+    run.lags.push(newest - tick);
+    if (o.stall && now >= stallEnd && now < stallEnd + 1000) run.afterStall.push(newest - tick);
+    run.maxDelay = Math.max(run.maxDelay, buf.delay);
+    prevTick = tick;
+    prevX = x;
+  }
+  return run;
+}
+
+const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+
+test('online render clock never steps back (0 to 80 ms jitter, 60 to 240 fps, recorded timings), so no interpolated unit does', () => {
+  // the old clock followed its server-clock estimate directly: under jitter at high frame rates it went
+  // back (2398 -> 2395 seen in play; one frame at -6 m/s at 60 ms jitter and 144 fps)
+  const RATE_MIN = 0.5; // client/net/interp.ts RENDER_RATE_MIN / MAX
+  const RATE_MAX = 2;
+  for (const jitter of [0, 10, 20, 40, 60, 80]) {
+    for (const fps of [60, 90, 144, 240]) {
+      for (const seed of [3, 17, 4242]) {
+        const label = `${jitter} ms jitter at ${fps} fps (seed ${seed})`;
+        const r = runOnlineClock({ jitter, fps, seed });
+        assert.equal(r.back, 0, `${label}: the render tick went back on ${r.back} frames (worst ${r.worst.toFixed(3)} ticks)`);
+        assert.equal(r.unitBack, 0, `${label}: an interpolated unit walking forward went back on ${r.unitBack} frames`);
+        const lo = Math.min(...r.rates);
+        const hi = Math.max(...r.rates);
+        assert.ok(lo >= RATE_MIN - 1e-9 && hi <= RATE_MAX + 1e-9, `${label}: the picture ran at ${lo.toFixed(2)}..${hi.toFixed(2)} x real time`);
+        // still about the interpolation delay behind the newest snapshot: delay changes are absorbed, not dropped
+        assert.ok(mean(r.lags) <= r.maxDelay + 1, `${label}: the picture fell ${mean(r.lags).toFixed(2)} ticks behind (delay up to ${r.maxDelay.toFixed(2)})`);
+        if (jitter >= 40) assert.ok(r.maxDelay > 2.5, `${label}: the delay no longer grows with jitter`);
+      }
+    }
+  }
+  for (const [name, trace] of [['idle page', TRACE_IDLE], ['busy page', TRACE_BUSY]] as const) {
+    for (const fps of [60, 144, 240]) {
+      const r = runOnlineClock({ jitter: 0, fps, seed: 1, trace });
+      assert.equal(r.back, 0, `recorded ${name} at ${fps} fps: the render tick went back on ${r.back} frames`);
+      assert.equal(r.unitBack, 0, `recorded ${name} at ${fps} fps: a unit went back`);
+    }
+  }
+});
+
+test('online render clock: after the line stalls the picture catches up without stepping back', () => {
+  for (const ms of [150, 300, 500, 1000]) {
+    for (const fps of [60, 144]) {
+      const label = `${ms} ms stall at ${fps} fps`;
+      const r = runOnlineClock({ jitter: 10, fps, seed: 9, stall: { at: 12_000, ms } });
+      assert.equal(r.back, 0, `${label}: the render tick went back on ${r.back} frames`);
+      assert.equal(r.unitBack, 0, `${label}: a unit went back`);
+      const before = mean(r.lags.slice(0, 300));
+      const settled = r.afterStall.slice(-10);
+      assert.ok(Math.max(...settled) <= before + 1.5, `${label}: a second after the stall the picture was still ${Math.max(...settled).toFixed(2)} ticks behind (normally ${before.toFixed(2)})`);
+    }
+  }
 });
 
 test('render clock step: online keeps the 100 ms clamp, solo follows the 0.5 s catch-up', () => {
@@ -421,50 +575,107 @@ test('predicted hook: same speed, range, width and look as the hook the server l
   }, 'Boing Barb + Bendy Eel');
 });
 
+test('predicted hook: the ghost stops where the server hook turns, at every speed and range level, with and without Long Line', () => {
+  // the hand-over waits at the tip for the server head: a tip that is off by a step (0.35 m) hitches
+  // there for upgraded players. Walls are switched off so every range fits on the map.
+  const misses: string[] = [];
+  for (const longLine of [false, true]) {
+    for (let sp = 0; sp < HOOK_LEVELS.speed.length; sp++) {
+      for (let rg = 0; rg < HOOK_LEVELS.range.length; rg++) {
+        const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
+        for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
+        (sim.world as { sweep: (...a: unknown[]) => null }).sweep = () => null;
+        const a = sim.unitById.get(1)!;
+        const b = sim.unitById.get(2)!;
+        a.spawnProt = 0;
+        a.x = -20;
+        a.z = 0;
+        a.up.speed = sp;
+        a.up.range = rg;
+        if (longLine) sim.grantRune(a, 'longshot');
+        b.x = 30; // nowhere near the throw
+        b.z = 30;
+        const g = ghostHookParams(sim.snapshotFor(1).you!);
+        let seq = 1;
+        sim.queueInput(1, { seq: seq++, mx: 0, mz: 0, ax: -20, az: -60, b: Btn.Hook });
+        let turned = Number.NaN;
+        for (let i = 0; i < 90 && Number.isNaN(turned); i++) {
+          sim.step();
+          sim.queueInput(1, { seq: seq++, mx: 0, mz: 0, ax: -20, az: -60, b: 0 });
+          const h = a.activeHook >= 0 ? sim.hookById(a.activeHook) : undefined;
+          if (h && h.phase !== 0) turned = h.traveled;
+        }
+        const label = `speed ${sp}, range ${rg}${longLine ? ', Long Line' : ''}`;
+        assert.ok(!Number.isNaN(turned), `${label}: the hook never turned`);
+        assert.equal(g.reach, flightReach(g.speed, g.range), `${label}: ghostHookParams.reach`);
+        if (Math.abs(g.reach - turned) > 1e-6) misses.push(`${label}: ghost ${g.reach.toFixed(3)} m, server ${turned.toFixed(3)} m`);
+      }
+    }
+  }
+  assert.deepEqual(misses, [], 'the ghost tip is off the server turn point');
+});
+
+/** Our hook flies out on a straight line (no catch, no bend, no Bendy Eel steering): what the ghost predicts. */
+const straight = (h: HookSnap) => h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && !(h.fx & 4);
+
 interface OwnThrow {
-  /** frames from the ghost's first frame until the hook turns or catches: progress along the throw, m */
-  steps: number[];
-  /** index into steps of the hand-over frame (-1 = the server's hook never took over) */
-  handIdx: number;
-  /** speed along the throw of the server's head as drawn (what the blend rides on), first frames after the hand-over */
-  baseSpeeds: number[];
-  /** frames with no head drawn between the ghost's first frame and the turn */
-  gaps: number;
-  /** s from the hand-over until the head is the server's again (-1 = not within the throw) */
-  blendFor: number;
-  /** index into steps where the blend ended (steps.length if it ended after the hook turned) */
-  blendEndIdx: number;
-  /** after the hook turned or caught: distance from the drawn head to the server's, per frame, until the blend ends or the hook is gone */
-  turnGaps: number[];
   v: number;
+  /** the drawn head's distance along the throw (m), one entry per frame from the ghost's first frame */
+  s: number[];
+  /** each frame's step (s) */
+  dt: number[];
+  /** first frame our server hook was in the picture: the old hand-over (-1 = never) */
+  seenIdx: number;
+  /** frame the server's hook took the drawing over from the ghost (-1 = never) */
+  takeIdx: number;
+  /** first frame the picture showed our hook turned (-1 = never) */
+  turnIdx: number;
+  /** on the server: where the hook stopped flying out, m along the throw (NaN = not seen) */
+  turnS: number;
+  /** on the server: it stopped because it caught a unit */
+  caught: boolean;
+  /** frames with no head drawn before the hook came in */
+  gaps: number;
+  /** from the take on: drawn head to server head (m), per frame, while the hook is in the picture */
+  offs: number[];
+  /** frame the blend ended, the head the server's own again (-1 = not before the hook came in) */
+  blendEndIdx: number;
 }
 
 /**
  * Our own hook online, the way GameClient draws it: a real GameSim stepping at 30 Hz, inputs and
- * snapshots each delayed by a one-way latency plus jitter (in order, like a WebSocket), the online
- * SnapshotBuffer driven by frameTick at the frame rate, and the OwnHookPredictor GameClient uses.
+ * snapshots each delayed by a one-way latency plus jitter (in order, like a WebSocket; a recorded trace
+ * or a seeded random one), the online SnapshotBuffer driven by frameTick at the frame rate, and the
+ * OwnHookPredictor GameClient uses (frame() then head() per frame, drawing the ghost with ghostHead).
  */
 function runOwnHook(
-  net: { up: number; down: number; jitter: number },
-  o: { fps?: number; throws?: number; targetAt?: number; stall?: { after: number; ms: number }; freeze?: { after: number; ms: number } } = {},
+  net: { up: number; down: number; jitter: number; trace?: readonly number[] },
+  o: { fps?: number; throws?: number; targetAt?: number; longLine?: boolean; stall?: { after: number; ms: number }; freeze?: { after: number; ms: number } } = {},
 ): OwnThrow[] {
   let seed = 5;
   const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  let downK = 0;
+  let upK = 150; // the way up replays another stretch of the trace
+  const jitter = (k: number) => (net.trace ? net.trace[k % net.trace.length] : rnd() * net.jitter);
   const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
   for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
   const a = sim.unitById.get(1)!;
   const b = sim.unitById.get(2)!;
+  // Long Line reaches 24 m: a lane with nothing in the way for that long, inside the map
+  const x0 = o.longLine ? -22 : -20;
+  const z0 = o.longLine ? 3 : 0;
   const stage = () => {
     a.spawnProt = 0;
-    a.x = -20;
-    a.z = 0;
+    a.x = x0;
+    a.z = z0;
+    if (o.longLine) sim.grantRune(a, 'longshot');
     b.spawnProt = 0;
     b.hp = b.maxHp;
-    b.x = -20;
-    b.z = o.targetAt ? -o.targetAt : 30; // in the path, or well out of it
+    b.x = o.targetAt ? x0 : x0 - 10; // in the path, or well out of it
+    b.z = o.targetAt ? z0 - o.targetAt : z0;
   };
   stage();
-  const aim = { x: -20, z: -30 };
+  const aim = { x: x0, z: -30 };
   const tickMs = TICK_DT * 1000;
   const frameMs = 1000 / (o.fps ?? 60);
   const buffer = new SnapshotBuffer(false);
@@ -483,16 +694,31 @@ function runOwnHook(
   let body = { x: a.x, z: a.z };
   let playing = false;
   const presses = Array.from({ length: o.throws ?? 4 }, (_, i) => 3000 + i * 5137 + rnd() * 40);
-  const throws: OwnThrow[] = [];
+  type Rec = OwnThrow & { on: boolean; done: boolean; ox: number; oz: number; dx: number; dz: number; tx: number; tz: number };
+  const throws: Rec[] = [];
   let pi = 0;
-  let cur: (OwnThrow & { on: boolean; done: boolean; handAt: number; ox: number; oz: number; dx: number; dz: number; prevS: number; prevBase: number }) | null = null;
+  let cur = null as Rec | null; // set by press(), which TypeScript cannot follow
   const tmp = { x: 0, z: 0 };
+  const press = () => {
+    own.press(you!, time, aim, net.up + net.down, buffer.delay, buffer.latest?.t ?? -1);
+    pressed = true;
+    cur = { v: ghostHookParams(you!).speed, s: [], dt: [], seenIdx: -1, takeIdx: -1, turnIdx: -1, turnS: Number.NaN, caught: false, gaps: 0, offs: [], blendEndIdx: -1, on: false, done: false, ox: 0, oz: 0, dx: 0, dz: 0, tx: Number.NaN, tz: Number.NaN };
+    throws.push(cur);
+    pi++;
+  };
   for (let now = 1000; now < presses[presses.length - 1] + 3000; now += frameMs) {
     while (serverAt <= now) {
       while (up.length && up[0].at <= serverAt) sim.queueInput(1, up.shift()!.i);
       if (pi < presses.length && Math.abs(serverAt - (presses[pi] - 1000)) < tickMs / 2) stage();
       sim.step();
-      let at = Math.max(lastDown, serverAt + net.down + rnd() * net.jitter);
+      // on the server: where our hook stops flying out
+      const sh = a.activeHook >= 0 ? sim.hookById(a.activeHook) : undefined;
+      if (cur && sh && Number.isNaN(cur.tx) && (sh.phase !== 0 || sh.tg >= 0 || sh.ru >= 0 || sh.pts.length > 0)) {
+        cur.tx = sh.x;
+        cur.tz = sh.z;
+        cur.caught = sh.tg >= 0;
+      }
+      let at = Math.max(lastDown, serverAt + net.down + jitter(downK++));
       // a stalled line (a Wi-Fi hiccup): what would arrive inside the window arrives at its end, all at once
       const st = o.stall;
       if (st) for (const pr of presses) if (at >= pr + st.after && at < pr + st.after + st.ms) at = pr + st.after + st.ms;
@@ -506,13 +732,7 @@ function runOwnHook(
     let resumeAt = -1;
     if (fz) {
       // the key press itself lands just before the freeze
-      if (pi < presses.length && presses[pi] <= now && you && playing) {
-        own.press(you, time, aim, net.up + net.down, buffer.delay, (buffer.latest?.t ?? -1));
-        pressed = true;
-        if (cur) throws.push(cur);
-        cur = { steps: [], handIdx: -1, baseSpeeds: [], gaps: 0, blendFor: -1, blendEndIdx: -1, turnGaps: [], v: ghostHookParams(you).speed, on: false, done: false, handAt: 0, ox: 0, oz: 0, dx: 0, dz: 0, prevS: NaN, prevBase: NaN };
-        pi++;
-      }
+      if (pi < presses.length && presses[pi] <= now && you && playing) press();
       if (presses.some((pr) => now >= pr + fz.after && now < pr + fz.after + fz.ms)) continue;
       for (const pr of presses) if (now >= pr + fz.after + fz.ms) resumeAt = pr + fz.after + fz.ms;
     }
@@ -524,13 +744,7 @@ function runOwnHook(
       if (me) body = { x: me.x, z: me.z };
     }
     // the key goes down between frames: GameClient.localPress -> startGhost, with the time of the last frame
-    if (pi < presses.length && presses[pi] <= now && you && playing) {
-      own.press(you, time, aim, net.up + net.down, buffer.delay, (buffer.latest?.t ?? -1));
-      pressed = true;
-      if (cur) throws.push(cur);
-      cur = { steps: [], handIdx: -1, baseSpeeds: [], gaps: 0, blendFor: -1, blendEndIdx: -1, turnGaps: [], v: ghostHookParams(you).speed, on: false, done: false, handAt: 0, ox: 0, oz: 0, dx: 0, dz: 0, prevS: NaN, prevBase: NaN };
-      pi++;
-    }
+    if (pi < presses.length && presses[pi] <= now && you && playing) press();
     // GameClient.frame, online
     if (last < 0) last = now;
     const rawMs = now - last;
@@ -540,9 +754,9 @@ function runOwnHook(
     tickAcc += Math.min(500, Math.max(0, rawMs)) / 1000;
     while (tickAcc >= TICK_DT) {
       tickAcc -= TICK_DT;
-      lastUp = Math.max(lastUp, now + net.up + rnd() * net.jitter);
+      lastUp = Math.max(lastUp, now + net.up + jitter(upK++));
       up.push({ at: lastUp, i: { seq: ++seq, mx: 0, mz: 0, ax: aim.x, az: aim.z, b: pressed ? Btn.Hook : 0 } });
-      if (pressed) own.sent((buffer.latest?.t ?? -1), net.up + net.down); // GameClient.localTick
+      if (pressed) own.sent(buffer.latest?.t ?? -1, net.up + net.down); // GameClient.localTick
       pressed = false;
     }
     const f = buffer.sample(buffer.frameTick(now, rawMs, false));
@@ -552,111 +766,165 @@ function runOwnHook(
     const step = own.frame(f, 1, time, body, false);
     let drawn: { x: number; z: number } | null = step.act === 'fly' && own.ghost ? ghostHead(own.ghost, time, { x: 0, z: 0 }) : null;
     let mine: HookSnap | null = null;
+    let inPicture: HookSnap | null = null;
     for (const h of f.hooks) {
+      if (h.o === 1 && h.k === 0) inPicture = h;
       const at = own.head(h, 1, dt, tmp);
       if (at && h.o === 1 && h.k === 0) {
         drawn = { x: at.x, z: at.z };
         mine = h;
       }
     }
-    if (!cur || cur.done) continue;
-    if (!cur.on) {
+    const c: Rec | null = cur;
+    if (!c || c.done) continue;
+    if (!c.on) {
       if (!drawn) continue;
-      cur.on = true;
+      c.on = true;
       const l = Math.hypot(aim.x - body.x, aim.z - body.z);
-      cur.dx = (aim.x - body.x) / l;
-      cur.dz = (aim.z - body.z) / l;
-      cur.ox = body.x;
-      cur.oz = body.z;
+      c.dx = (aim.x - body.x) / l;
+      c.dz = (aim.z - body.z) / l;
+      c.ox = body.x;
+      c.oz = body.z;
     }
-    if (step.act === 'take') {
-      cur.handIdx = cur.steps.length;
-      cur.handAt = time;
-    }
-    if (cur.handIdx >= 0 && cur.blendFor < 0 && !own.blend) {
-      cur.blendFor = time - cur.handAt;
-      cur.blendEndIdx = cur.steps.length;
-    }
-    const turned = mine !== null && (mine.p !== 0 || mine.tg >= 0 || mine.ru >= 0);
-    if (turned || (!mine && cur.turnGaps.length)) {
-      // turned or caught: only the end of the blend is still watched, until it ends or the hook is in
-      if (!mine || cur.blendFor >= 0) cur.done = true;
-      else if (drawn) cur.turnGaps.push(Math.hypot(drawn.x - mine.x, drawn.z - mine.z));
-      continue;
-    }
+    const i = c.s.length;
+    if (inPicture && c.seenIdx < 0) c.seenIdx = i;
+    if (inPicture && !straight(inPicture) && c.turnIdx < 0) c.turnIdx = i;
+    if (step.act === 'take') c.takeIdx = i;
     if (!drawn) {
-      cur.gaps++;
+      // the hook came in (or the ghost was dropped with nothing to take over: a gap)
+      if (c.takeIdx >= 0 || (c.seenIdx >= 0 && !inPicture)) c.done = true;
+      else c.gaps++;
       continue;
     }
-    const c = cur;
-    const along = (x: number, z: number) => (x - c.ox) * c.dx + (z - c.oz) * c.dz;
-    const sNow = along(drawn.x, drawn.z);
-    if (!Number.isNaN(cur.prevS)) cur.steps.push(sNow - cur.prevS);
-    cur.prevS = sNow;
-    if (mine && cur.handIdx >= 0) {
-      const base = along(mine.x, mine.z);
-      if (!Number.isNaN(cur.prevBase) && cur.baseSpeeds.length < 4) cur.baseSpeeds.push((base - cur.prevBase) / dt);
-      cur.prevBase = base;
+    c.s.push((drawn.x - c.ox) * c.dx + (drawn.z - c.oz) * c.dz);
+    c.dt.push(dt);
+    if (mine && c.takeIdx >= 0) {
+      c.offs.push(Math.hypot(drawn.x - mine.x, drawn.z - mine.z));
+      if (c.blendEndIdx < 0 && !own.blend) c.blendEndIdx = i;
     }
   }
-  if (cur) throws.push(cur);
+  for (const t of throws) if (!Number.isNaN(t.tx)) t.turnS = (t.tx - t.ox) * t.dx + (t.tz - t.oz) * t.dz;
   return throws;
 }
 
-const around = (t: OwnThrow, fps: number) => t.steps.slice(Math.max(0, t.handIdx - 1), t.handIdx + 5).map((d) => (d * fps).toFixed(0)).join(', ');
+/**
+ * Per throw, over the flight out (from the ghost's first frame to the furthest point the head is drawn
+ * at, whoever draws it): the worst step back, the slowest and fastest frame from the hand-over (our
+ * server hook in the picture) until the turn point, how far past the server's turn point the head went,
+ * how long it waited there, and the take-over and blend times.
+ */
+function throwStats(t: OwnThrow) {
+  let peakIdx = 0;
+  for (let i = 1; i < t.s.length; i++) if (t.s[i] > t.s[peakIdx] + 1e-9) peakIdx = i;
+  let minSpeed = Infinity;
+  let maxSpeed = 0;
+  let worstBack = 0;
+  for (let i = 1; i <= peakIdx; i++) {
+    const d = t.s[i] - t.s[i - 1];
+    worstBack = Math.min(worstBack, d);
+    // flying: after the hand-over and not yet at the turn point (the frame that lands on it is a part step)
+    if (t.seenIdx >= 0 && i > t.seenIdx && t.s[i] < t.turnS - 1e-3 && t.dt[i] > 0) {
+      minSpeed = Math.min(minSpeed, d / t.dt[i]);
+      maxSpeed = Math.max(maxSpeed, d / t.dt[i]);
+    }
+  }
+  let reachedAt = -1; // frame the head reached the turn point
+  for (let i = 0; i < t.s.length && reachedAt < 0; i++) if (t.s[i] >= t.turnS - 1e-3) reachedAt = i;
+  const span = (from: number, to: number) => t.dt.slice(from + 1, to + 1).reduce((x, y) => x + y, 0);
+  return {
+    minSpeed,
+    maxSpeed,
+    worstBack,
+    overshoot: t.s[peakIdx] - t.turnS,
+    hold: reachedAt >= 0 && t.takeIdx >= reachedAt ? span(reachedAt, t.takeIdx) : Number.NaN,
+    takeAfterTurn: t.turnIdx >= 0 && t.takeIdx >= t.turnIdx ? span(t.turnIdx, t.takeIdx) : Number.NaN,
+    blendFor: t.blendEndIdx >= 0 && t.takeIdx >= 0 ? span(t.takeIdx, t.blendEndIdx) : Number.NaN,
+  };
+}
 
-test('own hook online: when the server hook takes over, the head never stands still or moves back (finding 29)', () => {
-  // holdOk: on a jittery line the interpolated server head itself slows and speeds up; the head may then
-  // wait a few frames for it (it never goes back), and after the blend it is the interpolation's own motion
-  const nets = [
-    { name: 'LAN', up: 1, down: 1, jitter: 0, holdOk: false },
-    { name: '100 ms RTT', up: 50, down: 50, jitter: 10, holdOk: false },
-    { name: '150 ms RTT, 20 ms jitter', up: 75, down: 75, jitter: 20, holdOk: true },
-    { name: '60 ms RTT, 60 ms jitter', up: 30, down: 30, jitter: 60, holdOk: true },
+const speedsAround = (t: OwnThrow) =>
+  t.s.slice(Math.max(1, t.seenIdx - 1), t.seenIdx + 6).map((v, k) => ((v - t.s[Math.max(1, t.seenIdx - 1) + k - 1]) / t.dt[Math.max(1, t.seenIdx - 1) + k]).toFixed(1)).join(', ');
+
+test('own hook online: through the hand-over the head keeps its full flight speed and never moves back, at 0, 50, 100 and 150 ms RTT (recorded snapshot timings)', (tc) => {
+  // the old hand-over blended into the server's head, drawn a round trip plus the interpolation delay
+  // behind the ghost: 14-16 m/s for 0.1 s on a LAN, 7-9 m/s for 0.25 s at 100 ms RTT, against 30 m/s
+  const lines = [
+    { name: 'LAN', up: 1, down: 1 },
+    { name: '50 ms RTT', up: 25, down: 25 },
+    { name: '100 ms RTT', up: 50, down: 50 },
+    { name: '150 ms RTT', up: 75, down: 75 },
   ];
-  for (const n of nets) {
-    for (const fps of [60, 144]) {
-      const label = `${n.name} at ${fps} fps`;
-      const throws = runOwnHook(n, { fps, throws: 3 });
-      assert.equal(throws.length, 3, label);
-      for (const [i, t] of throws.entries()) {
-        const tl = `${label}, throw ${i + 1}`;
-        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
-        assert.equal(t.gaps, 0, `${tl}: ${t.gaps} frames drew no head (the ghost was dropped before the server hook took over)`);
-        // the server head the blend rides on must be moving: a hook only in the newer snapshot stands still
-        // (old code: exactly 0 on the first frame after the hand-over, on every line)
-        const base = n.holdOk ? t.baseSpeeds[0] : Math.min(...t.baseSpeeds);
-        assert.ok(base > 0.25 * t.v, `${tl}: right after the hand-over the server head stood still (${t.baseSpeeds.map((v) => v.toFixed(1)).join(', ')} m/s)`);
-        const blended = t.steps.slice(0, t.blendEndIdx); // the ghost, the hand-over and the blend
-        const worst = Math.min(...blended);
-        assert.ok(worst >= -1e-9, `${tl}: the head moved back ${(-worst * 100).toFixed(1)} cm in one frame (${around(t, fps)} m/s around the hand-over)`);
-        if (!n.holdOk) {
-          // one 144 fps frame can dip to nothing with the interpolation's own jitter; a hold you can see cannot
-          let run = 0;
-          let longest = 0;
-          for (const d of blended) {
-            run = d * fps < 0.02 * t.v ? run + 1 : 0;
-            longest = Math.max(longest, run);
+  const holds: string[] = [];
+  for (const line of lines) {
+    for (const [traceName, trace] of [['idle page', TRACE_IDLE], ['busy page', TRACE_BUSY]] as const) {
+      for (const fps of [60, 144]) {
+        for (const longLine of [false, true]) {
+          const label = `${line.name}, ${traceName}, ${fps} fps${longLine ? ', Long Line' : ''}`;
+          const throws = runOwnHook({ up: line.up, down: line.down, jitter: 0, trace }, { fps, throws: 3, longLine });
+          assert.equal(throws.length, 3, label);
+          for (const [k, t] of throws.entries()) {
+            const tl = `${label}, throw ${k + 1}`;
+            assert.equal(t.v, HOOK_LEVELS.speed[0] * (longLine ? BAL.longshotSpeedMul : 1), `${tl}: flight speed`);
+            assert.ok(t.seenIdx >= 0, `${tl}: our server hook never showed up`);
+            assert.ok(t.takeIdx >= 0, `${tl}: the server hook never took over`);
+            assert.ok(!Number.isNaN(t.turnS), `${tl}: the hook never turned on the server`);
+            assert.equal(t.gaps, 0, `${tl}: ${t.gaps} frames drew no head`);
+            const st = throwStats(t);
+            assert.ok(st.worstBack >= -1e-9, `${tl}: the head moved back ${(-st.worstBack * 100).toFixed(1)} cm in one frame while flying out`);
+            assert.ok(st.minSpeed >= t.v * (1 - 1e-6), `${tl}: after the hand-over the head slowed to ${st.minSpeed.toFixed(1)} m/s (flight ${t.v} m/s; ${speedsAround(t)} m/s around it)`);
+            assert.ok(st.maxSpeed <= t.v * 1.4, `${tl}: the head lurched forward at ${st.maxSpeed.toFixed(1)} m/s`);
+            // it goes all the way to where the hook turned on the server, and no further
+            assert.ok(Math.abs(st.overshoot) < 0.05, `${tl}: the head stopped ${st.overshoot.toFixed(2)} m from the server's turn point (turn at ${t.turnS.toFixed(2)} m, caught ${t.caught})`);
+            // the time it was ahead is given back at the turn point, then the server's head takes over: a
+            // round trip, the interpolation delay (2.5 ticks), up to 2 ticks of input pacing and a frame, no
+            // more (measured: at most 0.12 s past the round trip)
+            assert.ok(st.hold <= (line.up + line.down) / 1000 + 0.17, `${tl}: the head waited ${st.hold.toFixed(3)} s at the turn (round trip ${(line.up + line.down) / 1000} s)`);
+            assert.ok(st.takeAfterTurn <= 0.1 + 2 / fps + 1e-9, `${tl}: the server head took over ${st.takeAfterTurn.toFixed(2)} s after the picture showed the turn`);
+            assert.ok(st.blendFor >= 0 && st.blendFor <= 0.12, `${tl}: the head was off the server's for ${st.blendFor.toFixed(2)} s after it took over`);
+            if (fps === 60 && traceName === 'idle page' && k === 0) holds.push(`${line.name}${longLine ? ' LL' : ''} ${(st.hold * 1000).toFixed(0)} ms`);
           }
-          assert.ok((longest * 1000) / fps <= 20, `${tl}: the head stood still for ${((longest * 1000) / fps).toFixed(0)} ms (${around(t, fps)} m/s around the hand-over)`);
         }
-        assert.ok(Math.max(...blended) * fps <= t.v * 1.4, `${tl}: the head lurched forward at ${(Math.max(...t.steps) * fps).toFixed(1)} m/s`);
-        assert.ok(t.blendFor >= 0 && t.blendFor < 0.6, `${tl}: the head was still off the server's ${t.blendFor.toFixed(2)} s after the hand-over`);
+      }
+    }
+  }
+  tc.diagnostic(`wait at the turn point (60 fps, idle page, first throw): ${holds.join(', ')}`);
+});
+
+test('own hook online: the hand-over holds with random jitter and high frame rates as well', () => {
+  for (const n of [{ up: 50, down: 50, jitter: 10 }, { up: 75, down: 75, jitter: 20 }, { up: 30, down: 30, jitter: 60 }]) {
+    for (const fps of [60, 144, 240]) {
+      for (const [k, t] of runOwnHook(n, { fps, throws: 3 }).entries()) {
+        const tl = `${n.up + n.down} ms RTT +-${n.jitter} ms at ${fps} fps, throw ${k + 1}`;
+        assert.ok(t.takeIdx >= 0 && t.seenIdx >= 0, `${tl}: the server hook never took over`);
+        assert.equal(t.gaps, 0, `${tl}: ${t.gaps} frames drew no head`);
+        const st = throwStats(t);
+        assert.ok(st.worstBack >= -1e-9, `${tl}: the head moved back ${(-st.worstBack * 100).toFixed(1)} cm while flying out`);
+        assert.ok(st.minSpeed >= t.v * (1 - 1e-6), `${tl}: after the hand-over the head slowed to ${st.minSpeed.toFixed(1)} m/s`);
+        assert.ok(Math.abs(st.overshoot) < 0.05, `${tl}: the head stopped ${st.overshoot.toFixed(2)} m from the server's turn point (turn at ${t.turnS.toFixed(2)} m, caught ${t.caught})`);
       }
     }
   }
 });
 
-test('own hook online: a hook that catches someone during the blend still lands on the server head', () => {
-  for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
-    for (const [i, t] of runOwnHook(n, { targetAt: 7, throws: 3 }).entries()) {
-      const tl = `${n.up + n.down} ms RTT, throw ${i + 1}`;
-      assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
-      assert.ok(Math.min(...t.steps) >= -1e-9, `${tl}: the head moved back while flying out`);
-      assert.ok(t.turnGaps.length > 0 || t.blendFor >= 0, `${tl}: the catch was never seen`);
-      // after the catch the drawn head closes on the server's every frame and is on it when the hook comes in
-      for (let k = 1; k < t.turnGaps.length; k++) assert.ok(t.turnGaps[k] <= t.turnGaps[k - 1] + 1e-9, `${tl}: after the catch the head drifted away from the server head (${t.turnGaps.map((g) => g.toFixed(2)).join(', ')} m)`);
-      if (t.turnGaps.length) assert.ok(t.turnGaps[t.turnGaps.length - 1] < 0.5, `${tl}: the hook came in ${t.turnGaps[t.turnGaps.length - 1].toFixed(2)} m off the server head`);
+test('own hook online: a hook that catches someone stops at the catch, or comes straight back to it, and lands on the server head', () => {
+  for (const n of [{ up: 1, down: 1, jitter: 0, trace: TRACE_IDLE }, { up: 50, down: 50, jitter: 0, trace: TRACE_BUSY }, { up: 75, down: 75, jitter: 0, trace: TRACE_IDLE }]) {
+    for (const targetAt of [7, 12]) {
+      for (const [k, t] of runOwnHook(n, { targetAt, throws: 3 }).entries()) {
+        const rtt = n.up + n.down;
+        const tl = `${rtt} ms RTT, target ${targetAt} m, throw ${k + 1}`;
+        assert.ok(t.takeIdx >= 0, `${tl}: the server hook never took over`);
+        assert.ok(t.caught, `${tl}: the hook did not catch the target on the server`);
+        assert.equal(t.gaps, 0, `${tl}: ${t.gaps} frames drew no head`);
+        const st = throwStats(t);
+        assert.ok(st.worstBack >= -1e-9, `${tl}: the head moved back while flying out`);
+        // the news of the catch takes a round trip (and a tick of input pacing) to come back: the ghost may
+        // pass the catch by that much, never more (it stops where it is when the news arrives)
+        const allowance = t.v * ((rtt + 2 * TICK_DT * 1000) / 1000) + 0.05;
+        assert.ok(st.overshoot <= allowance, `${tl}: the head passed the catch by ${st.overshoot.toFixed(2)} m (allowance ${allowance.toFixed(2)} m)`);
+        // after the take the drawn head closes on the server's every frame and is on it when the hook comes in
+        for (let j = 1; j < t.offs.length; j++) assert.ok(t.offs[j] <= t.offs[j - 1] + 1e-9, `${tl}: after the catch the head drifted away from the server head (${t.offs.map((g) => g.toFixed(2)).join(', ')} m)`);
+        assert.ok(t.offs.length > 0 && t.offs[t.offs.length - 1] < 0.5, `${tl}: the hook came in ${t.offs[t.offs.length - 1]?.toFixed(2)} m off the server head`);
+      }
     }
   }
 });
@@ -675,28 +943,30 @@ test('interpolation marks hooks it could not interpolate (only in the newer snap
   assert.equal(buf.sample(11.5)!.freshHooks.size, 0, 'one tick later both hooks are interpolated');
 });
 
-test('own hook online: a snapshot stream that stalls mid-throw does not make the hook vanish and pop in behind', () => {
+test('own hook online: a snapshot stream that stalls mid-throw does not make the hook vanish, pop in behind or move back', () => {
   for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
     // during the throw, or from before the press (the newest snapshot at the press is already old)
     for (const stall of [{ after: 150, ms: 400 }, { after: 250, ms: 700 }, { after: -300, ms: 700 }, { after: -600, ms: 1000 }]) {
       for (const [i, t] of runOwnHook(n, { throws: 3, stall }).entries()) {
         const tl = `${n.up + n.down} ms RTT, ${stall.ms} ms stall, throw ${i + 1}`;
-        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over`);
+        assert.ok(t.takeIdx >= 0, `${tl}: the server hook never took over`);
         assert.equal(t.gaps, 0, `${tl}: the ghost vanished for ${t.gaps} frames before the server hook showed up`);
-        assert.ok(Math.min(...t.steps.slice(0, t.blendEndIdx)) >= -1e-9, `${tl}: the head moved back (${around(t, 60)} m/s around the hand-over)`);
+        const st = throwStats(t);
+        assert.ok(st.worstBack >= -1e-9, `${tl}: the head moved back ${(-st.worstBack * 100).toFixed(1)} cm while flying out`);
+        assert.ok(st.overshoot < 0.05, `${tl}: the head went ${st.overshoot.toFixed(2)} m past the server's turn point`);
       }
     }
   }
 });
 
-test('own hook online: a page that freezes right after the press does not make the hook vanish and pop in behind', () => {
+test('own hook online: a page that freezes right after the press does not make the hook vanish, pop in behind or move back', () => {
   for (const n of [{ up: 1, down: 1, jitter: 0 }, { up: 50, down: 50, jitter: 10 }]) {
     for (const freeze of [{ after: 1, ms: 300 }, { after: 1, ms: 600 }, { after: 60, ms: 450 }]) {
       for (const [i, t] of runOwnHook(n, { throws: 3, freeze }).entries()) {
         const tl = `${n.up + n.down} ms RTT, ${freeze.ms} ms freeze ${freeze.after} ms after the press, throw ${i + 1}`;
-        assert.ok(t.handIdx >= 0, `${tl}: the server hook never took over (the ghost was dropped)`);
+        assert.ok(t.takeIdx >= 0, `${tl}: the server hook never took over (the ghost was dropped)`);
         assert.equal(t.gaps, 0, `${tl}: the ghost vanished for ${t.gaps} frames before the server hook showed up`);
-        assert.ok(Math.min(...t.steps.slice(0, t.blendEndIdx)) >= -1e-9, `${tl}: the head moved back (${around(t, 60)} m/s around the hand-over)`);
+        assert.ok(throwStats(t).worstBack >= -1e-9, `${tl}: the head moved back while flying out`);
       }
     }
   }
@@ -709,9 +979,9 @@ test('hand-over blend: a hook that bounces or steers back while flying out is fo
   const body = { x: -20, z: 0 };
   const dt = 1 / 60;
   // ricochet or Boing Barb: the bounce adds a bend point; Bendy Eel: the steer bit, a bend point only later
-  const cases: { name: string; turned: Partial<HookSnap> }[] = [
-    { name: 'ricochet bounce', turned: { pts: [-20, -6], fx: 2 } },
-    { name: 'Bendy Eel turning back', turned: { fx: 4 } },
+  const cases: { name: string; fx: number; turned: Partial<HookSnap> }[] = [
+    { name: 'ricochet bounce', fx: 2, turned: { pts: [-20, -6], fx: 2 } },
+    { name: 'Bendy Eel turning back', fx: 4, turned: { fx: 4 } },
   ];
   for (const c of cases) {
     const own = new OwnHookPredictor();
@@ -720,51 +990,107 @@ test('hand-over blend: a hook that bounces or steers back while flying out is fo
     own.frame({ tick: 1000, hooks: [], freshHooks: new Set() }, 1, g.start + 0.01, body, false); // the ghost leaves the hand
     let t = g.start + 0.2; // the ghost is about 6 m out, the server head (drawn in the past) about 2 m
     let hz = -3;
-    const hook = (z: number, extra: Partial<HookSnap> = {}): HookSnap => ({ i: 60, o: 1, k: 0, p: 0, x: -20, z, r: 0.45, pts: [], tg: -1, ru: -1, fx: c.turned.fx ?? 0, ...extra });
-    assert.equal(own.frame({ tick: 1006, hooks: [hook(hz)], freshHooks: new Set() }, 1, t, body, false).act, 'take', `${c.name}: setup`);
-    const dur = own.blend!.dur;
+    const hook = (z: number, extra: Partial<HookSnap> = {}): HookSnap => ({ i: 60, o: 1, k: 0, p: 0, x: -20, z, r: 0.45, pts: [], tg: -1, ru: -1, fx: c.fx, ...extra });
     const out = { x: 0, z: 0 };
-    own.head(hook(hz), 1, dt, out); // the hand-over frame
+    let took = false;
+    let k = 0;
     let off = Infinity;
-    for (let k = 1; t < g.start + 0.2 + dur + 3 * dt; k++) {
+    for (; t < g.start + 1.5; k++) {
       t += dt;
-      // two more frames out, then it comes back along the throw, still flying out (phase 0)
+      // two more frames out, then it comes back along the throw (a bounce, or Bendy Eel steering), still phase 0
       hz += k <= 2 ? -0.5 : 0.5;
       const h = hook(hz, k <= 2 ? {} : c.turned);
-      own.frame({ tick: 1006 + k, hooks: [h], freshHooks: new Set() }, 1, t, body, false);
-      own.head(h, 1, dt, out);
-      off = Math.hypot(out.x - h.x, out.z - h.z);
+      const step = own.frame({ tick: 1006 + k, hooks: [h], freshHooks: new Set() }, 1, t, body, false);
+      if (step.act === 'take') took = true;
+      const at = own.head(h, 1, dt, out);
+      if (took && at) off = Math.hypot(out.x - h.x, out.z - h.z);
+      if (took && !own.blend) break;
     }
-    assert.ok(off < 1e-6, `${c.name}: ${off.toFixed(2)} m off the server head after the blend time (the head was held at its furthest point)`);
+    assert.ok(took, `${c.name}: the server's hook never took over`);
+    assert.ok(t < g.start + 0.2 + 0.6, `${c.name}: the blend ran ${(t - g.start - 0.2).toFixed(2)} s`);
+    assert.ok(off < 1e-6, `${c.name}: ${off.toFixed(2)} m off the server head after the blend (the head was held at its furthest point)`);
     assert.equal(own.blend, null, `${c.name}: the blend never ended`);
   }
 });
 
-test('hand-over rules: wait for an interpolated server hook, but never forever, and never draw our hook twice', () => {
+test('hand-over rules: the ghost flies while our hook flies out straight, stops at the turn, and the server head takes over there', () => {
   const sim = new GameSim({ ...DEFAULT_CONFIG, hazards: 'none', botFill: false }, players([0, 1]), 11);
   for (let i = 0; i < TICK_RATE * 5; i++) sim.step();
   const you = sim.snapshotFor(1).you!;
-  const mineH: HookSnap = { i: 50, o: 1, k: 0, p: 0, x: -20, z: -3, r: 0.45, pts: [], tg: -1, ru: -1, fx: 0 };
-  const theirs: HookSnap = { ...mineH, i: 51, o: 2, z: 3 };
+  const v = ghostHookParams(you).speed;
+  const mineAt = (z: number, extra: Partial<HookSnap> = {}): HookSnap => ({ i: 50, o: 1, k: 0, p: 0, x: -20, z, r: 0.45, pts: [], tg: -1, ru: -1, fx: 0, ...extra });
+  const theirs: HookSnap = { ...mineAt(3), i: 51, o: 2 };
   const body = { x: -20, z: 0 };
-  const at = (tick: number, hooks: HookSnap[] = [], fresh: number[] = []) => ({ tick, hooks, freshHooks: new Set(fresh) });
+  const at = (tick: number, hooks: HookSnap[] = [], fresh: number[] = [], latest?: HookSnap[]) => ({ tick, hooks, freshHooks: new Set(fresh), latest: latest ? { h: latest } : undefined });
+  const headZ = (own: OwnHookPredictor, time: number) => ghostHead(own.ghost!, time, { x: 0, z: 0 }).z;
   const own = new OwnHookPredictor();
   // pressed at render tick 997 with snapshot 1000 the newest, 100 ms round trip
   own.press(you, 10, { x: -20, z: -30 }, 100, 2.5, 1000);
   const g = own.ghost!;
   assert.equal(own.frame(at(997), 1, 10.05, body, false).act, 'before', 'winding up');
   assert.equal(own.frame(at(998), 1, g.start + 0.05, body, false).act, 'fly');
-  const fresh = at(1004, [mineH, theirs], [50, 51]);
-  assert.equal(own.frame(fresh, 1, g.start + 0.1, body, false).act, 'fly', 'the server hook is only in the newer snapshot: keep flying the ghost');
-  assert.equal(own.head(mineH, 1, 1 / 60, { x: 0, z: 0 }), null, 'our server hook is not drawn while the ghost still is');
+  // our hook shows up, only in the newer snapshot, 2 m behind the ghost: keep flying the ghost, never draw ours twice
+  let time = g.start + 0.1;
+  const z1 = headZ(own, time) + 2;
+  assert.equal(own.frame(at(1004, [mineAt(z1), theirs], [50, 51]), 1, time, body, false).act, 'fly', 'the server hook only in the newer snapshot: the ghost keeps flying');
+  assert.equal(own.head(mineAt(z1), 1, 1 / 60, { x: 0, z: 0 }), null, 'our server hook is not drawn while the ghost still is');
   assert.ok(own.head(theirs, 1, 1 / 60, { x: 0, z: 0 }), 'a new hook of someone else is drawn as usual');
-  assert.equal(own.frame({ ...fresh, tick: 1005 }, 1, g.start + 0.1 + HANDOVER_GRACE - 0.01, body, false).act, 'fly', 'still waiting for it to interpolate');
-  assert.equal(own.frame({ ...fresh, tick: 1005 }, 1, g.start + 0.1 + HANDOVER_GRACE + 0.01, body, false).act, 'take', 'a hook that never interpolates (the stream stalled) still takes over');
+  // long past the old hand-over grace, still flying straight: still the ghost, at full speed
+  time = g.start + 0.1 + HANDOVER_GRACE + 0.05;
+  const before = headZ(own, time - 1 / 60);
+  assert.equal(own.frame(at(1012, [mineAt(headZ(own, time) + 3)]), 1, time, body, false).act, 'fly', 'a hook flying out straight is not handed over');
+  assert.ok(Math.abs(before - headZ(own, time) - v / 60) < 1e-6, 'the ghost flies at the full speed');
+  // the picture catches up past the ghost (it froze, or the stream came back): never behind the server's head
+  time += 1 / 60;
+  const ahead = headZ(own, time) - 1;
+  own.frame(at(1013, [mineAt(ahead)]), 1, time, body, false);
+  assert.ok(Math.abs(headZ(own, time) - ahead) < 1e-6, 'the ghost was drawn behind the server head');
+  // the newest snapshot says the hook turned 2 m further on: the ghost goes there and stops
+  const turnZ = ahead - 2;
+  time += 1 / 60;
+  own.frame(at(1014, [mineAt(ahead + 0.5)], [], [mineAt(turnZ, { p: 1 })]), 1, time, body, false);
+  assert.ok(headZ(own, time) > turnZ, 'the ghost jumped to the turn');
+  time += 0.2;
+  assert.equal(own.frame(at(1020, [mineAt(turnZ + 0.6)], [], [mineAt(turnZ + 3, { p: 1 })]), 1, time, body, false).act, 'fly');
+  assert.ok(Math.abs(headZ(own, time) - turnZ) < 1e-6, `the ghost did not stop at the turn (${headZ(own, time).toFixed(2)} vs ${turnZ.toFixed(2)})`);
+  // the picture shows it turned while the drawn head still comes up to the turn: wait there ...
+  time += 1 / 60;
+  assert.equal(own.frame(at(1021, [mineAt(turnZ + 0.3, { p: 1 })]), 1, time, body, false).act, 'fly', 'handed over before the drawn head reached the turn');
+  // ... and hand over once it has come up and turns back
+  time += 1 / 60;
+  const st = own.frame(at(1022, [mineAt(turnZ + 0.4, { p: 1 })]), 1, time, body, false);
+  assert.equal(st.act, 'take', 'the drawn server head turned back: it takes over');
   assert.equal(own.ghost, null);
-  assert.ok(own.blend, 'and blends from where the ghost was');
+  assert.ok(own.blend, 'and blends from where the ghost stood');
+
+  // a ghost already past the turn when the news arrives stops where it is: it never goes back while out
+  own.press(you, 20, { x: -20, z: -30 }, 100, 2.5, 1500);
+  const p = own.ghost!;
+  own.frame(at(1500), 1, p.start + 0.01, body, false);
+  time = p.start + 0.3;
+  own.frame(at(1505, [mineAt(-3)]), 1, time, body, false);
+  const z = headZ(own, time);
+  time += 1 / 60;
+  own.frame(at(1506, [mineAt(-3.5)], [], [mineAt(z + 1.5, { p: 1, tg: 2 })]), 1, time, body, false);
+  const held = headZ(own, time);
+  assert.ok(held <= z && held > z - v / 60 - 1e-9, 'past the catch: the ghost stops where it is this frame, it does not go back to the catch');
+  time += 0.1;
+  own.frame(at(1508, [mineAt(-4)]), 1, time, body, false);
+  assert.ok(Math.abs(headZ(own, time) - held) < 1e-9, 'and stays there');
+  // our hook leaves the picture without a turn ever shown (a stall skipped past it): the ghost goes
+  assert.equal(own.frame(at(1540), 1, time + 0.5, body, false).act, 'drop');
+
+  // Bendy Eel steers toward the live cursor on the server: handed over once interpolated, never forever
+  const bendy = new OwnHookPredictor();
+  bendy.press(you, 30, { x: -20, z: -30 }, 100, 2.5, 3000);
+  const bg = bendy.ghost!;
+  bendy.frame(at(3000), 1, bg.start + 0.05, body, false);
+  const steer = mineAt(-2, { fx: 4 });
+  assert.equal(bendy.frame(at(3004, [steer], [50]), 1, bg.start + 0.1, body, false).act, 'fly', 'only in the newer snapshot: wait for it to interpolate');
+  assert.equal(bendy.frame(at(3005, [steer], [50]), 1, bg.start + 0.1 + HANDOVER_GRACE + 0.01, body, false).act, 'take', 'a steering hook that never interpolates still takes over');
 
   // no hook comes: the cast failed on the server
-  own.press(you, 20, { x: -20, z: -30 }, 100, 2.5, 2000);
+  own.press(you, 40, { x: -20, z: -30 }, 100, 2.5, 2000);
   const h = own.ghost!;
   assert.ok(h.deadTick >= 2000 + 3 + 4, `the render-clock deadline ${h.deadTick} leaves no room for a round trip and the wind-up`);
   assert.equal(own.frame(at(h.deadTick - 1), 1, h.start + 0.05, body, false).act, 'fly');
@@ -772,19 +1098,11 @@ test('hand-over rules: wait for an interpolated server hook, but never forever, 
   // the snapshot stream stalls: the render clock stands still before the tick the hook should be on
   assert.equal(own.frame(at(h.deadTick - 3), 1, h.deadline + 0.5, body, false).act, 'fly', 'a stalled stream dropped the ghost, and the hook would pop in behind it');
   assert.equal(own.frame(at(h.deadTick + 1), 1, h.deadline + 0.6, body, false).act, 'drop', 'the picture passed the tick the hook should be on: the cast failed');
-  // the stream comes back after a long stall and our hook shows up only in the newer snapshot: it is
-  // still given its tick to interpolate, counted from when it showed up, not from the deadline
-  own.press(you, 25, { x: -20, z: -30 }, 100, 2.5, 2500);
-  const lg = own.ghost!;
-  assert.equal(own.frame(at(lg.deadTick - 4), 1, lg.start + 0.05, body, false).act, 'fly');
-  const late = at(lg.deadTick - 2, [mineH], [50]);
-  assert.equal(own.frame(late, 1, lg.deadline + 1, body, false).act, 'fly', 'a hook that shows up late is taken over before it interpolates');
-  assert.equal(own.frame({ ...late, freshHooks: new Set<number>() }, 1, lg.deadline + 1.02, body, false).act, 'take');
   // a stream that never comes back still lets the ghost go
-  own.press(you, 30, { x: -20, z: -30 }, 100, 2.5, 3000);
+  own.press(you, 50, { x: -20, z: -30 }, 100, 2.5, 3000);
   assert.equal(own.frame(at(2999), 1, own.ghost!.deadline + GHOST_STALL_CAP + 0.01, body, false).act, 'drop');
   // knocked, hooked or killed: gone at once
-  own.press(you, 40, { x: -20, z: -30 }, 100, 2.5, 4000);
+  own.press(you, 60, { x: -20, z: -30 }, 100, 2.5, 4000);
   assert.equal(own.frame(at(3999), 1, own.ghost!.start + 0.05, body, true).act, 'drop');
 });
 

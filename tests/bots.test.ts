@@ -8,7 +8,9 @@ import type { Unit } from '../shared/sim/entities.ts';
 import { botInfo, botProfile, resetBotProfile, setBotProfiling } from '../shared/sim/bots.ts';
 import { compAt, edgeDist, findPath, holdSpot, NAV_LAND, navStatic, newNavPath } from '../shared/sim/bots/nav.ts';
 import { hookLineClear, mapInfo, standable } from '../shared/sim/bots/mapinfo.ts';
-import { Mode } from '../shared/sim/bots/types.ts';
+import { ROLES } from '../shared/sim/bots/roles.ts';
+import { hookCanCatch, hookTierOf } from '../shared/sim/movement.ts';
+import { Mode, type Brain } from '../shared/sim/bots/types.ts';
 import { DEFAULT_CONFIG, MAX_TEAM_SIZE, TICK_RATE } from '../shared/constants.ts';
 import { getMap } from '../shared/maps/index.ts';
 import {
@@ -728,4 +730,140 @@ test('power-ups: bots hook power-up runes off the river', (t) => {
   }
   t.diagnostic(`power-up runes hooked: ${grabbed}/${n}`);
   assert.ok(grabbed >= n - 1, `bots hooked only ${grabbed} of ${n} power-up runes`);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Deck layers (dry Lanternwharf): a bridge is a roof for the bed below it. A hook thrown from the
+// bank or a deck flies over a unit under it, a bash or a wallop on the deck never reaches the bed.
+// Bots must not waste throws, bashes or brawls on units they cannot touch, and must still hit them
+// from the layer that can.
+// ---------------------------------------------------------------------------------------------
+
+interface Spot {
+  x: number;
+  z: number;
+  under: boolean;
+}
+
+/** Hold a unit still at a spot on a deck layer, with its tick history there (no teleport sprint). */
+function pin(u: Unit, s: Spot): void {
+  u.x = s.x;
+  u.z = s.z;
+  u.tickX = s.x;
+  u.tickZ = s.z;
+  u.under = s.under;
+  u.vx = 0;
+  u.vz = 0;
+}
+
+/**
+ * One brutal bot (team 0) against a still human dummy (team 1) on dry Lanternwharf, both held on their
+ * spots every tick. The bot first watches for 12 ticks with everything on cooldown (so it perceives the
+ * dummy where it stands), then plays for `seconds`. `each` runs before every tick.
+ */
+function deckDuel(seed: number, botAt: Spot, dummyAt: Spot, seconds: number, each?: (sim: GameSim, bot: Unit, dummy: Unit) => void) {
+  const players: PlayerInfo[] = [
+    { id: 1, name: 'Bot', team: 0, family: 'brawler', loadout: {}, isBot: true, botDifficulty: 'brutal' },
+    { id: 2, name: 'Dummy', team: 1, family: 'ogre', loadout: {}, isBot: false },
+  ];
+  const sim = new GameSim({ ...config('lanternwharf', 'dry'), botFill: false }, players, seed);
+  const bot = sim.unitById.get(1)!;
+  const dummy = sim.unitById.get(2)!;
+  bot.gold = 0; // no shopping: the base kit, no Ricochet Spring bank shots
+  run(sim, 5);
+  // layered: the two could touch (body, wallop, bash) on every tick; catchable: the bot's hook could catch the dummy
+  const r = { throws: 0, hits: 0, bashes: 0, pushTicks: 0, layered: true, catchable: true };
+  for (let i = 0; i < 12 + TICK_RATE * seconds; i++) {
+    if (bot.state === UnitState.Alive || bot.state === UnitState.Casting) pin(bot, botAt);
+    if (dummy.state === UnitState.Alive && dummy.hookedBy < 0) pin(dummy, dummyAt);
+    dummy.spawnProt = 0;
+    if (i < 12) {
+      bot.cdHook = Math.max(bot.cdHook, 0.2);
+      bot.cdBash = Math.max(bot.cdBash, 0.2);
+    }
+    each?.(sim, bot, dummy);
+    sim.step();
+    if (i < 12) continue;
+    if (!sim.sameLayer(bot, dummy)) r.layered = false;
+    if (!hookCanCatch(sim.world, sim.river, hookTierOf(sim.world, sim.river, bot), dummy)) r.catchable = false;
+    for (const e of sim.events) {
+      if (e.e === 'hookLaunch' && e.u === 1 && e.k === 0) r.throws++;
+      if (e.e === 'hookHit' && e.u === 1 && e.tg === 2) r.hits++;
+      if (e.e === 'bash' && e.u === 1) r.bashes++;
+    }
+    const info = botInfo(bot)!;
+    if (info.mode === Mode.Push && Math.hypot(info.goalX - dummy.x, info.goalZ - dummy.z) < 0.6) r.pushTicks++;
+    if (r.hits > 0) break;
+  }
+  return r;
+}
+
+test('deck layers: from the bank a bot never throws at a unit under a bridge, but still hooks it from the bed (and one on the deck from the bank)', (t) => {
+  const lines: string[] = [];
+  for (const [k, zb] of [10, -10].entries()) {
+    const quay: Spot = { x: -8, z: zb, under: false }; // on our quay beside the bridge end
+    const bed: Spot = { x: 0.2, z: zb - Math.sign(zb) * 5.5, under: false }; // out on the open bed beside the bridge
+    const underIt: Spot = { x: 0.2, z: zb, under: true };
+    const onTop: Spot = { x: 0.2, z: zb, under: false };
+    const fromBank = deckDuel(300 + k, quay, underIt, 4);
+    const guard = deckDuel(300 + k, quay, onTop, 4);
+    const fromBed = deckDuel(300 + k, bed, underIt, 4);
+    lines.push(`z=${zb}: bank->under ${fromBank.throws} throws; bank->deck ${guard.hits}/${guard.throws} hit; bed->under ${fromBed.hits}/${fromBed.throws} hit`);
+    assert.equal(fromBank.catchable, false, 'precondition: a hook from the quay flies over a unit under the bridge');
+    assert.ok(guard.catchable && fromBed.catchable, 'precondition: a hook from the quay catches a unit on the deck, one from the bed a unit under it');
+    assert.equal(fromBank.throws, 0, `z=${zb}: the bot threw ${fromBank.throws} hooks from the quay at a unit under the bridge (they fly over it)`);
+    assert.ok(guard.hits >= 1, `z=${zb}: the bot must still hook a unit standing on the bridge deck from the quay`);
+    assert.ok(fromBed.hits >= 1, `z=${zb}: a bot on the open bed must still hook a unit under the bridge (${fromBed.throws} throws)`);
+  }
+  t.diagnostic(lines.join(' | '));
+});
+
+test('deck layers: a bot on a bridge never bashes the bed below it, and still bashes a unit beside it on the deck', () => {
+  const noWallop = (_sim: GameSim, bot: Unit, dummy: Unit) => {
+    bot.cdMelee = 9; // measure the bash decision alone
+    bot.cdHook = Math.max(bot.cdHook, 1);
+    dummy.hp = 50; // one bash finishes them: a bash the bot wants badly
+  };
+  for (const [k, zb] of [10, -10].entries()) {
+    const deck: Spot = { x: 0, z: zb, under: false };
+    const below = deckDuel(320 + k, deck, { x: 0.7, z: zb, under: true }, 2, noWallop);
+    const beside = deckDuel(320 + k, deck, { x: 1.1, z: zb, under: false }, 2, noWallop);
+    assert.equal(below.layered, false, 'precondition: the deck and the bed under it are different layers');
+    assert.equal(below.bashes, 0, `z=${zb}: the bot bashed ${below.bashes} times from the deck at a unit on the bed below it`);
+    assert.ok(beside.bashes >= 1, `z=${zb}: the bot must still bash a low enemy beside it on the deck`);
+  }
+});
+
+/** Make the duel bot a bruiser with its hook and bash held on cooldown, to watch where it wants to walk. */
+const asBruiser = (_sim: GameSim, bot: Unit) => {
+  const br = bot.brain as Brain;
+  br.role = 'bruiser';
+  br.roleDef = ROLES.bruiser;
+  bot.cdHook = Math.max(bot.cdHook, 2); // no hooking: watch where it wants to walk
+  bot.cdBash = Math.max(bot.cdBash, 2);
+};
+
+test('deck layers: a bruiser out on the bed does not push to brawl a unit up on a bridge deck, and still pushes one on the bed', () => {
+  for (const [k, zb] of [10, -10].entries()) {
+    const bed: Spot = { x: 0, z: zb - Math.sign(zb) * 6, under: false };
+    const up = deckDuel(340 + k, bed, { x: 0.2, z: zb, under: false }, 3, asBruiser);
+    const down = deckDuel(340 + k, bed, { x: 0.2, z: zb - Math.sign(zb) * 3, under: false }, 3, asBruiser);
+    assert.equal(up.layered, false, 'precondition: the bed and the bridge deck are different layers');
+    assert.equal(up.pushTicks, 0, `z=${zb}: the bruiser on the bed pushed at a unit on the deck above it for ${up.pushTicks} ticks (it can never wallop it from there)`);
+    assert.ok(down.pushTicks > 0, `z=${zb}: the bruiser must still push at an enemy on the open bed`);
+  }
+});
+
+test('deck layers: a bruiser up on a bridge deck still pushes at an enemy out on the open bed (it steps off the side), never at one under its own deck', () => {
+  for (const [k, zb] of [10, -10].entries()) {
+    const deck: Spot = { x: 0, z: zb, under: false };
+    // beside the bridge, out on the open bed: a different layer now, but one step off the deck's side reaches it
+    const beside = deckDuel(360 + k, deck, { x: 0.5, z: zb - Math.sign(zb) * 4.5, under: false }, 3, asBruiser);
+    // on the bed under the very deck we stand on: walking to it keeps us on top, so no wallop ever reaches it
+    const below = deckDuel(360 + k, deck, { x: 1.5, z: zb, under: true }, 3, asBruiser);
+    assert.equal(beside.layered, false, 'precondition: the deck and the open bed beside it are different layers');
+    assert.equal(below.layered, false, 'precondition: the deck and the bed under it are different layers');
+    assert.ok(beside.pushTicks > 0, `z=${zb}: the bruiser on the deck must still push at an enemy on the open bed beside the bridge`);
+    assert.equal(below.pushTicks, 0, `z=${zb}: the bruiser on the deck pushed at a unit under its own deck for ${below.pushTicks} ticks (it can never wallop it from on top)`);
+  }
 });

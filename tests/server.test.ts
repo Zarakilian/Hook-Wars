@@ -158,9 +158,9 @@ test('spectator snapshots do not reveal stealthed units or any mines', () => {
 // v2 netcode: rejoin tokens, ack flow control, liveness, spectator delay, tick cadence
 // ---------------------------------------------------------------------------------------------
 
-async function startWith(over: Partial<ServerConfig>) {
+async function startWith(over: Partial<ServerConfig>, liveness: { graceMs?: number; idleMs?: number } = {}) {
   const http = createServer((_, res) => res.end('ok'));
-  const game = new GameServer({ ...loadConfig(), maxPerIp: 50, ...over });
+  const game = new GameServer({ ...loadConfig(), maxPerIp: 50, ...over }, undefined, liveness);
   game.attach(http, { exclusive: true });
   await new Promise<void>((r) => http.listen(0, '127.0.0.1', () => r()));
   const port = (http.address() as AddressInfo).port;
@@ -398,6 +398,167 @@ test('a client whose pongs are stuck behind a backlog stays connected while it k
     assert.equal(closed, false, 'a live client was killed by the heartbeat');
     assert.equal(quietClosed, true, 'a silent socket that never pongs must still be closed');
     assert.ok(pings >= 5, `only ${pings} heartbeats in 15 s`);
+    talker.c.ws.close();
+  } finally {
+    await s.close();
+  }
+});
+
+test('a tab that stalls for 3 s mid-match (reads nothing, answers no ping, sends nothing) is not dropped, and its stream resumes', async () => {
+  // A short heartbeat makes the old rule (no pong since the last heartbeat) bite: it dropped this tab
+  // 0.4 to 0.8 s into the stall, and the player saw 'Connection lost. Rejoining your match...'
+  const s = await startWith({ heartbeatMs: 400 });
+  try {
+    const a = await joined(s.port, 'Ann');
+    let closed = false;
+    a.c.ws.on('close', () => (closed = true));
+    a.c.send({ t: 'createRoom', name: 'r', isPrivate: true, config: { ...DEFAULT_CONFIG, teamSize: 1 } });
+    await a.c.until((m) => m.t === 'room');
+    a.c.send({ t: 'start' });
+    await a.c.until((m) => m.t === 'start');
+    let seq = 0;
+    const input = () => a.c.send({ t: 'input', i: { seq: ++seq, mx: 0, mz: 0, ax: 0, az: 0, b: 0 }, a: lastSnapTick(a.c) });
+    for (let i = 0; i < 15; i++) {
+      input();
+      await sleep(33);
+    }
+    // the page stalls: its socket is not read (no pings answered, TCP backs up), nothing is sent
+    const sock = (a.c.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+    sock.pause();
+    await sleep(3000);
+    sock.resume();
+    const stalledAt = lastSnapTick(a.c);
+    const t0 = Date.now();
+    const resumed = () => snaps(a.c).filter((m) => m.s.t > stalledAt).some((m, i, all) => i > 0 && m.s.t - all[i - 1].s.t === 1);
+    while (!closed && !resumed() && Date.now() - t0 < 5000) {
+      input();
+      await sleep(33);
+    }
+    assert.equal(closed, false, 'the heartbeat dropped a tab that was only stalled for 3 s');
+    assert.ok(resumed(), 'the snapshot stream did not resume after the stall');
+    a.c.ws.close();
+  } finally {
+    await s.close();
+  }
+});
+
+test('a 6v6 tab that stalls 1.5 or 3 s, in play or right after the start before its first ack, keeps its socket and its stream (default and short heartbeat)', async () => {
+  // Big 6v6 snapshots stress the ack pause and the byte guard (KILL_BUFFER) as well as the heartbeat. A
+  // slow laptop stalls right after 'start' (building the scene): it has not acked yet, so only the byte
+  // guard paces it. All cases run side by side, one room each.
+  const servers = [await startWith({ maxRoomsPerIp: 10 }), await startWith({ maxRoomsPerIp: 10, heartbeatMs: 400 })];
+  try {
+    const cases = [
+      { s: servers[0], ms: 3000, preAck: false },
+      { s: servers[0], ms: 3000, preAck: true },
+      { s: servers[1], ms: 1500, preAck: false },
+      { s: servers[1], ms: 3000, preAck: false },
+      { s: servers[1], ms: 3000, preAck: true },
+    ];
+    const results = await Promise.all(
+      cases.map(async (k, n) => {
+        const label = `${k.s === servers[0] ? 'default' : '400 ms'} heartbeat, ${k.ms} ms stall ${k.preAck ? 'before the first ack' : 'in play'}`;
+        const a = await joined(k.s.port, `Six${n}`);
+        let closed = false;
+        a.c.ws.on('close', () => (closed = true));
+        a.c.send({ t: 'createRoom', name: `six${n}`, isPrivate: true, config: { ...DEFAULT_CONFIG, teamSize: 6, botFill: true } });
+        await a.c.until((m) => m.t === 'room');
+        a.c.send({ t: 'start' });
+        const sock = (a.c.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+        let seq = 0;
+        const input = () => a.c.send({ t: 'input', i: { seq: ++seq, mx: 0, mz: 0, ax: 0, az: 0, b: 0 }, a: lastSnapTick(a.c) });
+        if (k.preAck) {
+          // the stall starts the moment 'start' is read: no input (so no ack) has gone out yet
+          await new Promise<void>((resolve) => {
+            const onMsg = (d: WebSocket.RawData) => {
+              if ((JSON.parse(d.toString()) as ServerMsg).t !== 'start') return;
+              a.c.ws.off('message', onMsg);
+              sock.pause();
+              resolve();
+            };
+            a.c.ws.on('message', onMsg);
+          });
+        } else {
+          await a.c.until((m) => m.t === 'start');
+          for (let i = 0; i < 30; i++) {
+            input();
+            await sleep(33);
+          }
+          sock.pause();
+        }
+        const units = (a.c.inbox.find((m) => m.t === 'start') as Extract<ServerMsg, { t: 'start' }> | undefined)?.m.players.length ?? 0;
+        await sleep(k.ms);
+        sock.resume();
+        const stalledAt = lastSnapTick(a.c);
+        const resumed = () => snaps(a.c).filter((m) => m.s.t > stalledAt).some((m, i, all) => i > 0 && m.s.t - all[i - 1].s.t === 1);
+        const t0 = Date.now();
+        while (!closed && !resumed() && Date.now() - t0 < 6000) {
+          input();
+          await sleep(33);
+        }
+        const out = { label, closed, resumed: resumed(), units };
+        a.c.ws.close();
+        return out;
+      }),
+    );
+    for (const r of results) {
+      assert.equal(r.units, 12, `${r.label}: not a full 6v6 (${r.units} players)`);
+      assert.equal(r.closed, false, `${r.label}: the server dropped the tab`);
+      assert.ok(r.resumed, `${r.label}: the snapshot stream did not resume`);
+    }
+  } finally {
+    for (const s of servers) await s.close();
+  }
+});
+
+test('a dead socket is still caught: never sooner than the grace, within a heartbeat after it, and the default heartbeat keeps its 10 to 20 s window', async () => {
+  const mod = (await import('../server/gameServer.ts')) as unknown as { deadAfterMs?: (hb: number) => number; LIVENESS_GRACE_MS?: number };
+  assert.equal(typeof mod.deadAfterMs, 'function', 'no liveness rule to check');
+  const grace = mod.LIVENESS_GRACE_MS!;
+  assert.ok(grace >= 3000, `a tab that answers within 3 s could be dropped (grace ${grace} ms)`);
+  assert.equal(mod.deadAfterMs!(10_000), 10_000, 'the default heartbeat no longer judges after 10 s of silence (a dead socket caught 10 to 20 s after it died)');
+  assert.equal(mod.deadAfterMs!(400), grace, 'a short heartbeat must not shorten the grace');
+  const HB = 400;
+  const s = await startWith({ heartbeatMs: HB });
+  try {
+    const dead = wsClientWith(s.port, { autoPong: false });
+    await dead.open;
+    dead.send({ t: 'hello', v: PROTOCOL_VERSION, profile: { ...PROFILE, name: 'Gone' } });
+    await dead.until((m) => m.t === 'welcome');
+    const t0 = Date.now();
+    let closedAt = -1;
+    dead.ws.on('close', () => (closedAt = Date.now()));
+    // from here it never answers and never talks (a laptop lid shut, a pulled cable)
+    await waitFor(() => closedAt > 0, grace + 6 * HB + 3000);
+    const after = closedAt - t0;
+    assert.ok(after >= grace - HB, `closed after ${after} ms, before the ${grace} ms grace`);
+    assert.ok(after <= grace + 3 * HB + 1500, `closed only after ${after} ms (grace ${grace} ms, heartbeat ${HB} ms)`);
+  } finally {
+    await s.close();
+  }
+});
+
+test('idle sockets: a hidden tab whose ping timer wakes once a minute is not idle, a socket that only pongs still is', async () => {
+  const mod = (await import('../server/gameServer.ts')) as unknown as { IDLE_MS?: number };
+  // Chrome may wake a tab hidden for over 5 minutes once a minute: its 2 s ping then comes 60 s apart
+  assert.ok((mod.IDLE_MS ?? 60_000) >= 75_000, `idle after ${mod.IDLE_MS ?? 60_000} ms: a hidden tab pinging once a minute races the cutoff`);
+  // the rule itself, shortened: pongs alone are not activity, a message inside the window is
+  const s = await startWith({ heartbeatMs: 300 }, { idleMs: 1500 });
+  try {
+    const quiet = await joined(s.port, 'PongOnly');
+    const talker = await joined(s.port, 'OncePerSecond');
+    let quietAt = -1;
+    let talkerClosed = false;
+    const t0 = Date.now();
+    quiet.c.ws.on('close', () => (quietAt = Date.now()));
+    talker.c.ws.on('close', () => (talkerClosed = true));
+    while (quietAt < 0 && Date.now() - t0 < 6000) {
+      talker.c.send({ t: 'ping', c: Date.now() });
+      await sleep(1000);
+    }
+    assert.ok(quietAt > 0, 'a socket that only answered pings was never closed as idle');
+    assert.ok(quietAt - t0 >= 1000, `closed as idle after ${quietAt - t0} ms, before the 1500 ms window`);
+    assert.equal(talkerClosed, false, 'a socket that sent a message every second was closed as idle');
     talker.c.ws.close();
   } finally {
     await s.close();
@@ -900,7 +1061,8 @@ test('room codes cannot be brute-forced by reconnecting: failed joins are counte
 
 test('a stall right after a heartbeat does not kill a client whose messages were waiting to be read', async () => {
   const HB = 300;
-  const s = await startWith({ heartbeatMs: HB });
+  // no liveness grace: a silence just over one heartbeat counts, so only the stall guard saves this client
+  const s = await startWith({ heartbeatMs: HB }, { graceMs: 0 });
   try {
     const t = wsClientWith(s.port, { autoPong: false });
     let closed = false;

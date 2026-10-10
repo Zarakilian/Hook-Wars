@@ -659,7 +659,8 @@ export class GameClient {
         this.mines.set(m.i, v);
         this.root.add(v);
       }
-      v.position.set(m.x, this.world.groundHeight(m.x, m.z), m.z);
+      // on the bed under a deck (MineSnap.ud) it stands where a unit under the deck stands, not on the deck top
+      v.position.set(m.x, m.ud ? this.baseY(m.x, m.z, true) : this.world.groundHeight(m.x, m.z), m.z);
       v.visible = true;
       v.scale.setScalar(m.a ? 1 : 0.7);
     }
@@ -891,7 +892,8 @@ export class GameClient {
         a.play('mineArm', { x: ev.x, z: ev.z, volume: 0.6 });
         break;
       case 'mineBoom':
-        this.fx.mineBoom(this.p3(ev.x, ev.z, 0.3));
+        // a mine on the bed under a deck (mineBoom.ud) goes off down there, not on the deck top
+        this.fx.mineBoom(ev.ud ? new THREE.Vector3(ev.x, this.baseY(ev.x, ev.z, true) + 0.3, ev.z) : this.p3(ev.x, ev.z, 0.3));
         a.play('mineBoom', { x: ev.x, z: ev.z });
         this.cam.shake(0.6 * this.nearMe(ev.x, ev.z, 18));
         break;

@@ -960,6 +960,120 @@ test('7: a mine dropped from the open bed that rolls in under a bridge lies on t
   assert.ok(boom, 'a bed unit walked under the bridge over a mine dropped from the bed, and it never went off');
 });
 
+test('7: the snapshot marks a mine lying on the bed under a deck (MineSnap.ud), so the client draws it there and not on the deck top', () => {
+  /** Unit `id` drops a mine where it stands (aiming at `aim`, so it lands 0.6 m behind); returns the mine and its snapshot row. */
+  const drop = (sim: GameSim, id: number, aim: { x: number; z: number }) => {
+    const u = sim.unitById.get(id)!;
+    u.face = Math.atan2(aim.x - u.x, aim.z - u.z);
+    u.items[0] = { id: 'mine', charges: 1 };
+    input(sim, id, 0, 0, aim.x, aim.z, Btn.Item1);
+    sim.step();
+    const m = sim.mines.find((q) => q.owner === id)!;
+    assert.ok(m, 'precondition: the mine is down');
+    const row = sim.snapshotFor(id).m.find((q) => q.i === m.id);
+    assert.ok(row, 'precondition: the owner sees its own mine');
+    return { m, row };
+  };
+  const inFootprint = (sim: GameSim, m: { x: number; z: number }) => !!platformAt(sim.map, m.x, m.z) && channelDepthAt(sim.map, m.x, m.z, true) > 0;
+
+  // dropped by a unit on the bed under the z = 10 bridge: on the bed
+  let sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  place(sim.unitById.get(1)!, -30, 0);
+  walkUnder(sim, 2, 0.2, 10);
+  const under = drop(sim, 2, { x: 0.2, z: 6 });
+  assert.ok(inFootprint(sim, under.m), 'precondition: the mine lies inside the bridge footprint');
+  assert.equal(under.row.ud, 1, 'a mine on the bed under the bridge must be flagged, or it is drawn on the deck top');
+  // the locks flood: there is no "under" in deep water (the sim lets the deck set it off), so it is drawn on top
+  sim.river = { ...sim.river, deep: true };
+  assert.equal(sim.snapshotFor(2).m.find((q) => q.i === under.m.id)!.ud, undefined, 'deep water: no deck layer, no flag');
+
+  // dropped by a unit standing on the deck (it walked on from the quay): on top
+  sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  place(sim.unitById.get(2)!, 30, 0);
+  place(sim.unitById.get(1)!, 0, 10);
+  const deck = drop(sim, 1, { x: 0, z: 6 });
+  assert.ok(inFootprint(sim, deck.m), 'precondition: the mine lies inside the bridge footprint');
+  assert.equal(deck.m.under, false, 'precondition: dropped on the deck');
+  assert.equal(deck.row.ud, undefined, 'a mine on the deck top must not be flagged');
+
+  // dropped from the open bed right at the bridge's south edge, rolling in under it: on the bed
+  sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  noMovers(sim);
+  place(sim.unitById.get(2)!, 30, 0);
+  place(sim.unitById.get(1)!, 0, 8.0);
+  const rolled = drop(sim, 1, { x: 0, z: 0 });
+  assert.ok(inFootprint(sim, rolled.m), 'precondition: the mine rolled inside the bridge footprint');
+  assert.equal(rolled.row.ud, 1, 'a mine dropped from the bed that rolls in under the bridge lies on the bed');
+
+  // out on the open bed, away from any deck: nothing to say (the bed is the only ground there)
+  sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  noMovers(sim);
+  place(sim.unitById.get(2)!, 30, 0);
+  place(sim.unitById.get(1)!, 0, 2);
+  const open = drop(sim, 1, { x: 0, z: -4 });
+  assert.equal(platformAt(sim.map, open.m.x, open.m.z), null, 'precondition: the mine is out on the open bed');
+  assert.equal(open.row.ud, undefined, 'a mine out on the open bed needs no flag');
+});
+
+test('7: a mine on the bed under a deck goes off with its layer (mineBoom.ud), so its blast is drawn on the bed; one on the deck is not flagged', () => {
+  /** Arm mine `m`, then step until it goes off (`each` runs before every tick); returns the mineBoom event. */
+  const setOff = (sim: GameSim, m: { armT: number }, each: () => void) => {
+    m.armT = 0;
+    for (let i = 0; i < TICK_RATE * 2; i++) {
+      each();
+      sim.step();
+      for (const ev of sim.events) if (ev.e === 'mineBoom') return ev;
+    }
+    return null;
+  };
+
+  // dropped from the open bed right at the z = 10 bridge's south edge, rolling in under it; an enemy walks in under it along the bed
+  let sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  noMovers(sim);
+  const d = sim.unitById.get(1)!;
+  const e = sim.unitById.get(2)!;
+  place(e, 30, 0);
+  place(d, 0, 8.0);
+  d.face = Math.PI; // facing south: the mine drops 0.6 m behind, inside the footprint
+  d.items[0] = { id: 'mine', charges: 1 };
+  input(sim, 1, 0, 0, 0, 0, Btn.Item1);
+  input(sim, 2, 0, 0, 0, 0);
+  sim.step();
+  const bedMine = sim.mines.find((q) => q.owner === 1)!;
+  assert.ok(bedMine && bedMine.under && platformAt(sim.map, bedMine.x, bedMine.z), 'precondition: the mine lies on the bed inside the bridge footprint');
+  place(d, 30, 5);
+  place(e, bedMine.x, 5.5);
+  const under = setOff(sim, bedMine, () => {
+    input(sim, 2, 0, 1, bedMine.x, 12);
+    input(sim, 1, 0, 0, 0, 0);
+  });
+  assert.ok(under, 'precondition: the bed unit walking in under the bridge set the mine off');
+  assert.equal(under.ud, 1, 'a mine on the bed under the bridge must go off flagged, or its blast is drawn on the deck top');
+
+  // dropped by a unit standing on the deck, set off by an enemy on the deck: on top, no flag
+  sim = setup([0, 1], { mapId: 'lanternwharf', riverMode: 'dry' });
+  noMovers(sim);
+  const a = sim.unitById.get(1)!;
+  const b = sim.unitById.get(2)!;
+  place(b, 30, 0);
+  place(a, 0, 10);
+  a.face = Math.PI;
+  a.items[0] = { id: 'mine', charges: 1 };
+  input(sim, 1, 0, 0, 0, 0, Btn.Item1);
+  input(sim, 2, 0, 0, 0, 0);
+  sim.step();
+  const deckMine = sim.mines.find((q) => q.owner === 1)!;
+  assert.ok(deckMine && !deckMine.under && platformAt(sim.map, deckMine.x, deckMine.z), 'precondition: the mine lies on the deck');
+  place(a, -30, 0);
+  place(b, deckMine.x, deckMine.z);
+  const onTop = setOff(sim, deckMine, () => {
+    input(sim, 1, 0, 0, 0, 0);
+    input(sim, 2, 0, 0, 0, 0);
+  });
+  assert.ok(onTop && sim.tierOf(b) === 1, 'precondition: the unit on the deck set the mine off');
+  assert.equal(onTop.ud, undefined, 'a mine on the deck top goes off unflagged');
+});
+
 test('6/7: a hook that breaks mid-drag drops the catch on its own layer: under a bridge stays on the bed, on the deck stays on top', () => {
   const bad: string[] = [];
   let breaks = 0;

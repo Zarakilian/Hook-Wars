@@ -1,7 +1,10 @@
 // Bottom of the HUD: buffs and status tags, the HP bar (damage trail, shield, ticks), the three
 // ability portholes with cooldown sweeps, four item crates and the gold purse.
+// Key hints follow the device in use: the scheme's keys, or gamepad glyphs (RT, LT, A, the D-pad arms
+// for items, Y for the shop) while a controller is being played with.
 import { BAL, ITEMS, RUNE_BLURBS, RUNE_COLORS, RUNE_NAMES } from '../../../shared/constants.ts';
 import { UFlag, UnitState, type BuffSnap, type ItemSlot } from '../../../shared/types.ts';
+import { PAD_ABILITY_GLYPHS, PAD_ITEM_DPAD, PAD_SHOP_GLYPH, lastDevice, noteHookRange } from '../../game/gamepad.ts';
 import type { Settings } from '../../settings.ts';
 import { h, hex, noFocus, pulse, setClass, setDisplay, setText, setTransform, setVar } from '../dom.ts';
 import { icon, setIcon, type IconId } from '../icons.ts';
@@ -55,7 +58,45 @@ interface ItemEl {
   el: HTMLButtonElement;
   ico: SVGSVGElement;
   charges: HTMLElement;
+  key: HTMLElement;
   id: string;
+}
+
+/** Xbox face-button colours, darkened to read on the cream key pill. */
+const FACE_INK: Record<string, string> = { A: '#1d7a2c', B: '#b3261e', X: '#1f5fbf', Y: '#946400' };
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A small D-pad cross with one arm lit: the glyph of item i (left, up, right, down). */
+function dpadGlyph(i: number): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 12 12');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'it-dpad');
+  // as tall as the item number it stands in for, a little bigger so the lit arm reads
+  svg.style.width = '1.25em';
+  svg.style.height = '1.25em';
+  svg.style.display = 'block';
+  svg.style.filter = 'drop-shadow(0 0.08rem 0 #0a0503)';
+  const arms: Record<(typeof PAD_ITEM_DPAD)[number], [number, number]> = { left: [0, 4], up: [4, 0], right: [8, 4], down: [4, 8] };
+  const lit = PAD_ITEM_DPAD[i];
+  for (const [dir, [x, y]] of Object.entries(arms)) {
+    const r = document.createElementNS(SVG_NS, 'rect');
+    r.setAttribute('x', String(x));
+    r.setAttribute('y', String(y));
+    r.setAttribute('width', '4');
+    r.setAttribute('height', '4');
+    r.setAttribute('rx', '0.8');
+    r.setAttribute('fill', dir === lit ? '#fff3d9' : 'rgba(255, 243, 217, 0.28)');
+    svg.append(r);
+  }
+  const c = document.createElementNS(SVG_NS, 'rect');
+  c.setAttribute('x', '4');
+  c.setAttribute('y', '4');
+  c.setAttribute('width', '4');
+  c.setAttribute('height', '4');
+  c.setAttribute('fill', 'rgba(255, 243, 217, 0.28)');
+  svg.append(c);
+  return svg;
 }
 
 interface BuffEl {
@@ -83,6 +124,7 @@ export class BottomBar {
   private readonly gold: HTMLElement;
   private readonly goldWrap: HTMLElement;
   private readonly goldFloat: HTMLElement;
+  private readonly shopKey: HTMLElement;
   private readonly spec: HTMLElement;
   private readonly main: HTMLElement;
   private trail = 1;
@@ -94,6 +136,8 @@ export class BottomBar {
   private frameNo = 0;
   private lastT = 0;
   private scheme = '';
+  /** the item and shop hints currently show gamepad glyphs */
+  private padGlyphs = false;
   private mhpShown = -1;
   private readonly actions: AppActions;
   private readonly openShop: () => void;
@@ -121,7 +165,8 @@ export class BottomBar {
     for (let i = 0; i < 4; i++) {
       const ico = icon('pie', 'it-ico');
       const charges = h('span', { class: 'it-charges' });
-      const el = noFocus(h('button', { class: 'item-slot empty', type: 'button', tabindex: -1 }, ico, charges, h('span', { class: 'it-key', text: String(i + 1) }))) as HTMLButtonElement;
+      const key = h('span', { class: 'it-key', text: String(i + 1) });
+      const el = noFocus(h('button', { class: 'item-slot empty', type: 'button', tabindex: -1 }, ico, charges, key)) as HTMLButtonElement;
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         // selling only while the shop is open, so a classic-controls right-click move never sells
@@ -136,12 +181,13 @@ export class BottomBar {
         this.openShop();
       });
       itemRow.append(el);
-      this.items.push({ el, ico, charges, id: '' });
+      this.items.push({ el, ico, charges, key, id: '' });
     }
     // gold
     this.gold = h('span', { class: 'gold-num', text: '0' });
     this.goldFloat = h('span', { class: 'gold-float' });
-    this.goldWrap = noFocus(h('button', { class: 'gold', type: 'button', tabindex: -1, title: 'Gold. Press B for the shop.' }, icon('coin', 'gold-ico'), this.gold, h('span', { class: 'gold-shop' }, h('kbd', { class: 'keycap', text: 'B' }), h('span', { text: 'Shop' })), this.goldFloat));
+    this.shopKey = h('kbd', { class: 'keycap', text: 'B' });
+    this.goldWrap = noFocus(h('button', { class: 'gold', type: 'button', tabindex: -1, title: 'Gold. Press B for the shop.' }, icon('coin', 'gold-ico'), this.gold, h('span', { class: 'gold-shop' }, this.shopKey, h('span', { text: 'Shop' })), this.goldFloat));
     this.goldWrap.addEventListener('click', () => {
       this.goldWrap.blur();
       this.openShop();
@@ -202,11 +248,14 @@ export class BottomBar {
     const dead = me.st === UnitState.Dead;
     const busy = me.st === UnitState.Hooked || me.st === UnitState.Knocked;
 
-    // key labels follow the chosen scheme
-    if (settings.controls !== this.scheme) {
-      this.scheme = settings.controls;
-      const keys = ABILITY_KEYS[settings.controls];
-      this.abilities.forEach((a, i) => setText(a.key, keys[i]));
+    // the aim stick's full push reaches the current hook range (input.ts reads it)
+    noteHookRange(you.hookRange);
+
+    // key labels follow the chosen scheme, or show gamepad glyphs while a controller is in use
+    const mode = lastDevice() === 'pad' ? 'pad' : settings.controls;
+    if (mode !== this.scheme) {
+      this.scheme = mode;
+      this.paintKeys(mode === 'pad', settings);
     }
 
     // abilities: extrapolate between snapshots so the sweep is smooth at any frame rate
@@ -283,6 +332,24 @@ export class BottomBar {
     setDisplay(this.tags.stealth, !dead && (me.fl & UFlag.Stealth) !== 0);
   }
 
+  private paintKeys(pad: boolean, settings: Settings): void {
+    const keys = pad ? PAD_ABILITY_GLYPHS : ABILITY_KEYS[settings.controls];
+    this.abilities.forEach((a, i) => {
+      setText(a.key, keys[i]);
+      inkKey(a.key, pad ? FACE_INK[keys[i]] : undefined);
+    });
+    // the item and shop hints only change once a pad was used (the keyboard look stays untouched)
+    if (pad === this.padGlyphs) return;
+    this.padGlyphs = pad;
+    this.items.forEach((it, i) => {
+      if (pad) it.key.replaceChildren(dpadGlyph(i));
+      else it.key.textContent = String(i + 1);
+    });
+    this.shopKey.textContent = pad ? PAD_SHOP_GLYPH : 'B';
+    inkKey(this.shopKey, pad ? FACE_INK[PAD_SHOP_GLYPH] : undefined);
+    this.goldWrap.title = pad ? `Gold. Press ${PAD_SHOP_GLYPH} for the shop.` : 'Gold. Press B for the shop.';
+  }
+
   private paintItem(it: ItemEl, slot: ItemSlot | null): void {
     const key = slot ? `${slot.id}:${slot.charges}` : '';
     if (key === it.id) return;
@@ -338,6 +405,12 @@ export class BottomBar {
       this.buffs.delete(k);
     }
   }
+}
+
+/** Colour a key hint like its pad button, or drop the inline style (the keyboard look is the stylesheet's). */
+function inkKey(el: HTMLElement, ink: string | undefined): void {
+  if (ink) el.style.color = ink;
+  else if (el.hasAttribute('style')) el.removeAttribute('style');
 }
 
 function goldSep(): HTMLElement {

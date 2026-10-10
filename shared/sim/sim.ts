@@ -818,6 +818,15 @@ export class GameSim {
     return tiersTouch(this.tierOf(a), this.tierOf(b));
   }
 
+  /**
+   * Whether a mine lies on the bed under a deck (dropped from down in the channel, inside a footprint over
+   * a dry or wading channel): the same layer rule that decides who sets it off. The client draws the mine
+   * and its blast on the bed there (MineSnap.ud, mineBoom.ud), not on the deck top.
+   */
+  private mineUnderDeck(m: Mine): boolean {
+    return !!m.under && deckTier(this.world, this.river, m.x, m.z, true) === 2 && !!platformAt(this.map, m.x, m.z);
+  }
+
   private isSolid(u: Unit): boolean {
     return u.state === UnitState.Alive || u.state === UnitState.Casting || u.state === UnitState.Drowning;
   }
@@ -1732,7 +1741,7 @@ export class GameSim {
       }
       if (!trig) continue;
       m.dead = true;
-      this.emit({ e: 'mineBoom', m: m.id, x: q2(m.x), z: q2(m.z) });
+      this.emit(this.mineUnderDeck(m) ? { e: 'mineBoom', m: m.id, x: q2(m.x), z: q2(m.z), ud: 1 } : { e: 'mineBoom', m: m.id, x: q2(m.x), z: q2(m.z) });
       const r = BAL.mineRadius * 1.35;
       for (const u of this.units) {
         if (u.team === m.team || !this.isHittable(u)) continue;
@@ -1798,9 +1807,15 @@ export class GameSim {
       fx: (h.ember ? 1 : 0) | (h.ricochet ? 2 : 0) | (h.steer ? 4 : 0) | (h.longshot ? 8 : 0),
     }));
     const runes: RuneSnap[] = this.runes.map((r) => ({ i: r.id, t: r.type, x: q2(r.x), z: q2(r.z), d: r.dragged ? 1 : 0 }));
-    const mines: MineSnap[] = this.mines
-      .filter((m) => !spectator && m.team === team)
-      .map((m) => ({ i: m.id, o: m.owner, x: q2(m.x), z: q2(m.z), a: m.armT <= 0 ? 1 : 0 }));
+    const mines: MineSnap[] = [];
+    if (!spectator) {
+      for (const m of this.mines) {
+        if (m.team !== team) continue;
+        const s: MineSnap = { i: m.id, o: m.owner, x: q2(m.x), z: q2(m.z), a: m.armT <= 0 ? 1 : 0 };
+        if (this.mineUnderDeck(m)) s.ud = 1;
+        mines.push(s);
+      }
+    }
     const ev = spectator ? this.events.filter((e) => this.eventVisible(e, 0) && this.eventVisible(e, 1)) : this.events.filter((e) => this.eventVisible(e, team));
     const snap: Snapshot = {
       t: this.tick,

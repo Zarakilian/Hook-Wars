@@ -196,6 +196,11 @@ export interface MineSnap {
   x: number;
   z: number;
   a: 0 | 1; // armed
+  /**
+   * Lies on the river bed under a deck (dropped from down in the channel), not on the deck top: set only
+   * while the channel is dry or wading, like UFlag.UnderDeck (deep or frozen water has no "under").
+   */
+  ud?: 1;
 }
 
 export interface ItemSlot {
@@ -290,7 +295,7 @@ export type GameEvent =
   | { e: 'runeSpawn'; r: number; t: RuneType; x: number; z: number }
   | { e: 'rune'; u: number; t: RuneType }
   | { e: 'mineArm'; o: number; m: number; x: number; z: number }
-  | { e: 'mineBoom'; m: number; x: number; z: number }
+  | { e: 'mineBoom'; m: number; x: number; z: number; ud?: 1 } // ud: it lay on the bed under a deck (see MineSnap.ud)
   | { e: 'buy'; u: number; item: ItemId | UpgradeStat }
   | { e: 'useItem'; u: number; item: ItemId; x: number; z: number }
   | { e: 'tide'; phase: TidePhase; left: number }

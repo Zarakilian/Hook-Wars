@@ -149,8 +149,23 @@ export class MissCounter {
 
 const MAX_PAYLOAD = 4096;
 const HEARTBEAT_MS = 10_000;
+/**
+ * Liveness: a socket is dead once it has neither answered a ping nor sent a valid message for
+ * deadAfterMs(heartbeat). A browser tab that stalls (GC, a background tab, a slow laptop) answers
+ * late but answers: a client heard from within LIVENESS_GRACE_MS is never dropped, whatever the ping
+ * cadence. With the default 10 s heartbeat a dead socket is still caught 10 to 20 s after it died.
+ */
+export const LIVENESS_GRACE_MS = 5_000;
+export function deadAfterMs(heartbeatMs: number, graceMs = LIVENESS_GRACE_MS): number {
+  return Math.max(heartbeatMs, graceMs);
+}
 const HELLO_MS = 5_000; // the client sends hello as soon as the socket opens
-const IDLE_MS = 60_000; // the client pings every 2 s, so a minute of silence is a dead or idle socket
+/**
+ * No valid message for this long (pongs do not count) and the socket is idle: the client pings every
+ * 2 s. Chrome may wake the timers of a tab hidden for over 5 minutes only once a minute, so the margin
+ * is a full extra half minute over that.
+ */
+export const IDLE_MS = 90_000;
 const BUCKET_RATE = 90; // messages per second sustained (inputs are 30/s)
 const BUCKET_BURST = 180;
 // Lobby messages fan out to the whole room, so they get their own, much smaller bucket.
@@ -177,7 +192,8 @@ interface Conn extends RoomClient {
   lobbyTokens: number;
   lobbyRefill: number;
   strikes: number;
-  alive: boolean;
+  /** Date.now() of the last pong or valid message: what the heartbeat judges liveness by */
+  heardAt: number;
   lastChat: number;
   lastCreate: number;
   pingSent: number;
@@ -212,9 +228,14 @@ export class GameServer {
   /** observed timer lateness in ms (about 15.6 on Windows, about 1 on Linux), slowly decaying */
   private timerLate = 2;
   readonly economy: ServerEconomy;
+  /** silence allowed before a socket is judged dead, at the least, and before it is idle (tests shorten them) */
+  private readonly graceMs: number;
+  private readonly idleMs: number;
 
-  constructor(cfg: ServerConfig, economy?: ServerEconomy) {
+  constructor(cfg: ServerConfig, economy?: ServerEconomy, liveness: { graceMs?: number; idleMs?: number } = {}) {
     this.cfg = cfg;
+    this.graceMs = liveness.graceMs ?? LIVENESS_GRACE_MS;
+    this.idleMs = liveness.idleMs ?? IDLE_MS;
     this.economy = economy ?? createServerEconomy(cfg);
     this.wss = new WebSocketServer({
       noServer: true,
@@ -306,7 +327,7 @@ export class GameServer {
       lobbyTokens: LOBBY_BURST,
       lobbyRefill: now,
       strikes: 0,
-      alive: true,
+      heardAt: now,
       lastChat: 0,
       lastCreate: 0,
       pingSent: 0,
@@ -325,7 +346,7 @@ export class GameServer {
     };
     this.conns.set(id, conn);
     ws.on('pong', () => {
-      conn.alive = true;
+      conn.heardAt = Date.now();
       if (conn.pingSent) conn.ping = Math.min(9999, Date.now() - conn.pingSent);
     });
     ws.on('message', (data, isBinary) => {
@@ -337,7 +358,7 @@ export class GameServer {
       conn.lastMsg = Date.now(); // only valid messages keep a socket alive
       // A valid message proves the peer is alive even when our ping is stuck behind a backlog of
       // snapshots on a slow downlink: throttle such a client (room.ts), never kill it.
-      conn.alive = true;
+      conn.heardAt = conn.lastMsg;
       if (LOBBY_MSGS.has(msg.t) && !this.takeLobbyToken(conn)) return;
       if (ECONOMY_MSGS.has(msg.t) && !this.takeEconToken(conn)) return;
       try {
@@ -727,7 +748,7 @@ export class GameServer {
     this.heartbeat = setInterval(() => this.sweepConnections(), this.cfg.heartbeatMs ?? HEARTBEAT_MS);
   }
 
-  /** Heartbeat: close dead, silent and hello-less sockets, ping the rest, decay strikes, close idle lobbies. */
+  /** Heartbeat: close dead, idle and hello-less sockets, ping the rest, decay strikes, close idle lobbies. */
   private sweepConnections(): void {
     const now = Date.now();
     // If this process itself was frozen (GC, a slow disk write, the machine descheduling it) for half
@@ -738,14 +759,19 @@ export class GameServer {
     const stalled = Math.max(this.maxLoopGap, performance.now() - this.lastLoopAt) > hb / 2;
     this.maxLoopGap = 0;
     this.joinMisses.sweep(now);
+    // Dead: silent (no pong, no valid message) for longer than a heartbeat, and never sooner than the
+    // grace. The old rule (no pong since the last heartbeat) tied the allowed stall to the ping
+    // cadence: a heartbeat shorter than a tab's stall dropped a tab that was only late.
+    const deadAfter = deadAfterMs(hb, this.graceMs);
     for (const c of this.conns.values()) {
       const helloLate = !c.hello && now - c.connectedAt > HELLO_MS;
-      const idle = now - c.lastMsg > IDLE_MS;
-      if (!stalled && (!c.alive || helloLate || idle)) {
+      const idle = now - c.lastMsg > this.idleMs;
+      // never before it was pinged and stayed silent since (a socket that just connected, a late timer)
+      const dead = c.pingSent > c.heardAt && now - c.heardAt > deadAfter;
+      if (!stalled && (dead || helloLate || idle)) {
         c.ws.terminate(); // 'close' runs onClose, which frees the slot and the per-IP count
         continue;
       }
-      c.alive = false;
       c.pingSent = now;
       c.ws.ping();
       c.strikes = Math.max(0, c.strikes - 10); // strikes decay

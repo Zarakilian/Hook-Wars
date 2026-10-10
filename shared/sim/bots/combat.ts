@@ -5,6 +5,7 @@ import { BAL, HOOK_LEVELS, TICK_DT, UNIT_RADIUS } from '../../constants.ts';
 import { dist, dist2, distToSegment } from '../../math.ts';
 import { Btn, HookKind, HookPhase, UFlag, UnitState, type PlayerInput, type RuneType } from '../../types.ts';
 import type { Hook, Unit } from '../entities.ts';
+import { hookCanCatch, hookTierOf } from '../movement.ts';
 import type { GameSim } from '../sim.ts';
 import { HookPath, intercept, scanPath, traceHook, type Body, type Intercept, type ScanResult } from './aim.ts';
 import type { BotContext, Seen } from './context.ts';
@@ -117,15 +118,26 @@ function hookedByTeam(sim: GameSim, e: Unit, team: number): Hook | null {
 // World model
 // ---------------------------------------------------------------------------------------------
 
+/** True while deck layers exist at all: a map with decks over a dry or wading channel. */
+function decksLive(sim: GameSim): boolean {
+  return !!sim.map.platforms && sim.map.platforms.length > 0 && !sim.river.deep && !sim.river.frozen;
+}
+
 /**
  * Fill the shared body list as `u` perceives the world right now: visible enemies (late by the
  * perception delay, velocities scaled by how much this bot trusts them), allies, and loose runes.
+ * Units that a hook or grapple thrown from where `u` stands cannot catch (under a deck while we throw
+ * from the bank or a deck top, on a deck while we throw from under it) are left out: the throw passes
+ * over or under them, so they are neither targets nor blockers.
  */
 export function gatherBodies(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): number {
   nb = 0;
   const lead = b.tune.leadSkill;
+  const layers = decksLive(sim);
+  const tier = layers ? hookTierOf(sim.world, sim.river, u) : 0;
   for (const o of sim.units) {
     if (o === u || o.state === UnitState.Dead || nb >= MAXB - 4) continue;
+    if (layers && !hookCanCatch(sim.world, sim.river, tier, o)) continue;
     const bd = bodies[nb];
     if (o.team !== u.team) {
       if (!ctx.perceive(o, u.team, b.tune.perceiveTicks, seen)) continue;
@@ -699,6 +711,7 @@ export function runIntent(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, inpu
     if (b.reeling || b.comboTarget >= 0) return false; // the combo owns the bash
     const tg = sim.unitById.get(it.id);
     if (!tg || tg.state === UnitState.Dead || tg.state === UnitState.Hooked) return false;
+    if (!sim.sameLayer(u, tg)) return false; // a deck and the bed below it: the shove cannot reach
     if (!ctx.perceive(tg, u.team, b.tune.perceiveTicks, seen)) return false;
     if (dist(u.x, u.z, seen.x, seen.z) > BAL.bashRange + UNIT_RADIUS - 0.2) return false;
     bestBash(sim, u, seen.x, seen.z, bash, ctx.untilDeep < 2.2);
@@ -827,6 +840,7 @@ export function steerBendy(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, inp
     let pick = -1;
     for (const e of ctx.foes[u.team]) {
       if (e.state === UnitState.Dead || e.spawnProt > 0 || hookedByTeam(sim, e, u.team)) continue;
+      if (!hookCanCatch(sim.world, sim.river, h.tier, e)) continue; // it would fly over (or under) them
       if (!ctx.perceive(e, u.team, b.tune.perceiveTicks, seen)) continue;
       const rx = seen.x - hx;
       const rz = seen.z - hz;
@@ -971,7 +985,7 @@ export function comboWatch(sim: GameSim, ctx: BotContext, u: Unit, b: Brain, inp
   b.holdStill = true;
   if (t < b.comboAt || !canCast(u, 'bash') || tg.state === UnitState.Hooked) return;
   b.comboTarget = -1;
-  if (!ctx.perceive(tg, u.team, 1, seen)) return;
+  if (!sim.sameLayer(u, tg) || !ctx.perceive(tg, u.team, 1, seen)) return;
   if (dist(u.x, u.z, seen.x, seen.z) > BAL.bashRange + UNIT_RADIUS - 0.2) return;
   bestBash(sim, u, seen.x, seen.z, bash, ctx.untilDeep < 2.2);
   if (bash.score < 1 && effHp(tg) > BAL.bashDamage) return;
@@ -994,6 +1008,7 @@ export function thinkBash(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): voi
   const edge = -sim.world.channel(u.x, u.z);
   for (const e of ctx.foes[u.team]) {
     if (e.state === UnitState.Hooked || e.state === UnitState.Grappling || e.spawnProt > 0) continue;
+    if (!sim.sameLayer(u, e)) continue; // on a deck and on the bed below it: a bash never reaches
     if (!ctx.perceive(e, u.team, b.tune.perceiveTicks, seen)) continue;
     const d = dist(u.x, u.z, seen.x, seen.z);
     if (d > reach) continue;

@@ -3,6 +3,7 @@
 // reach or behind cover while it cools down, keep spacing from teammates, never stand in hazards or
 // near the enemy fountain. Walkable beds open up pushes for bruisers; tides chase everyone out.
 import { BAL, HOOK_LEVELS } from '../../constants.ts';
+import { platformAt } from '../../maps/helpers.ts';
 import { dist, dist2 } from '../../math.ts';
 import { UnitState, type RuneType, type Team } from '../../types.ts';
 import type { Unit } from '../entities.ts';
@@ -222,6 +223,10 @@ export function plan(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): void {
       let bestS = -1e9;
       for (const e of ctx.foes[team]) {
         if (e.state === UnitState.Dead || ctx.spawnProtLeft(e, u) > 0.5) continue;
+        // out on the bed and up on a bridge, or up on a deck and on the bed under it: walking to them keeps
+        // us on our layer, so no wallop or bash ever reaches them. One out on the open bed beside a deck
+        // (outside any footprint) is reachable: we step off the deck's side onto their layer.
+        if (!sim.sameLayer(u, e) && platformAt(sim.map, e.x, e.z)) continue;
         const low = e.hp < e.maxHp * 0.25 && hpFrac > 0.6;
         if (nearEnemyFountain(sim, team, e.x, e.z, 2.5) && !low) continue;
         const s = -dist(u.x, u.z, e.x, e.z) * 0.12 + (1 - e.hp / e.maxHp) * 2 + (low ? 1.5 : 0);

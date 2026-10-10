@@ -4,6 +4,7 @@ import { DEFAULT_LOADOUT } from '../shared/cosmetics.ts';
 import { FAMILIES, type ControlScheme, type FamilyId, type MatchConfig } from '../shared/types.ts';
 import { DEFAULT_CONFIG, MAX_NAME_LEN } from '../shared/constants.ts';
 import { FUNNY_NAMES, parseConfig, parseProfile } from '../shared/protocol.ts';
+import { DEFAULT_PAD, cleanPadConfig, setPadConfig, type PadConfig } from './game/gamepad.ts';
 import type { Quality } from './render/contracts.ts';
 
 export interface Settings {
@@ -26,6 +27,19 @@ export interface Settings {
   cinematic?: boolean;
   /** Steam build only: the desktop window is fullscreen (through the Steam bridge). */
   fullscreen?: boolean;
+  /** Controller (Gamepad API) on. Missing = on. The pad fields are read through padSettings(). */
+  padEnabled?: boolean;
+  /** Inner stick dead zone, 0..0.5 of a full push (missing = 0.15). */
+  padDeadzone?: number;
+  /** Aim stick sensitivity 0..1: how far a light push reaches (missing = 0.5). */
+  padAimSens?: number;
+  /** Aim stick Y inverted (missing = off). */
+  padInvertY?: boolean;
+}
+
+/** The controller settings with defaults filled in and values clamped. */
+export function padSettings(s: Partial<Settings>): PadConfig {
+  return cleanPadConfig({ enabled: s.padEnabled, deadzone: s.padDeadzone, aimSens: s.padAimSens, invertY: s.padInvertY });
 }
 
 const KEY_PROFILE = 'hookwars.profile.v1';
@@ -43,6 +57,10 @@ export const DEFAULT_SETTINGS: Settings = {
   serverUrl: '',
   soloConfig: { ...DEFAULT_CONFIG, killsToWin: 20 },
   soloTeam: 0,
+  padEnabled: DEFAULT_PAD.enabled,
+  padDeadzone: DEFAULT_PAD.deadzone,
+  padAimSens: DEFAULT_PAD.aimSens,
+  padInvertY: DEFAULT_PAD.invertY,
 };
 
 function read(key: string): unknown {
@@ -77,10 +95,19 @@ export function saveProfile(p: Profile): void {
   write(KEY_PROFILE, p);
 }
 
+/** Settings from storage. The controller part is also handed to the gamepad reader (gamepad.ts). */
 export function loadSettings(): Settings {
-  const raw = read(KEY_SETTINGS) as Partial<Settings> | null;
+  const s = parseSettings(read(KEY_SETTINGS));
+  setPadConfig(padSettings(s));
+  return s;
+}
+
+/** Stored settings (any shape) to valid settings: unknown or broken fields take the defaults. */
+export function parseSettings(v: unknown): Settings {
+  const raw = v as Partial<Settings> | null;
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS, soloConfig: { ...DEFAULT_SETTINGS.soloConfig } };
   const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
+  const pad = padSettings(raw);
   return {
     controls: raw.controls === 'classic' ? 'classic' : 'modern',
     quality: (['low', 'medium', 'high', 'ultra', 'auto'] as const).includes(raw.quality as Quality) ? (raw.quality as Quality | 'auto') : 'auto',
@@ -96,11 +123,17 @@ export function loadSettings(): Settings {
     cinematic: raw.cinematic === true,
     // undefined = never chosen: the desktop app's own window state stands
     fullscreen: typeof raw.fullscreen === 'boolean' ? raw.fullscreen : undefined,
+    padEnabled: pad.enabled,
+    padDeadzone: pad.deadzone,
+    padAimSens: pad.aimSens,
+    padInvertY: pad.invertY,
   };
 }
 
+/** Store the settings; a controller change takes effect at once (the pad is read every tick). */
 export function saveSettings(s: Settings): void {
   write(KEY_SETTINGS, s);
+  setPadConfig(padSettings(s));
 }
 
 /** Pick a quality tier from a quick hardware guess. */
