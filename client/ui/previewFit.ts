@@ -27,6 +27,18 @@ export interface FitMargin {
 /** Whole-body preview margins: room for the "Drag to spin" pill at the top, a little on the other edges. */
 export const BODY_MARGIN: FitMargin = { top: 0.075, bottom: 0.03, side: 0.035 };
 
+/**
+ * BODY_MARGIN with the top raised, when needed, to clear an overlay (the menu's "Drag to spin" pill)
+ * that reaches clearPx down into a canvas canvasH pixels tall. On a short canvas (the stacked menu on
+ * narrow screens) 7.5% of the height is less than the pill. Returns BODY_MARGIN itself whenever 7.5%
+ * already clears it, so the framing is unchanged on every screen where it was fine.
+ */
+export function bodyMargin(canvasH: number, clearPx: number): FitMargin {
+  if (!(canvasH > 0) || !(clearPx > 0)) return BODY_MARGIN;
+  const top = Math.min(0.4, clearPx / canvasH);
+  return top > BODY_MARGIN.top ? { ...BODY_MARGIN, top } : BODY_MARGIN;
+}
+
 /** Smallest camera distance at which every point projects inside the margins (0 for no points). */
 export function fitDistance(points: readonly THREE.Vector3[], v: FitView, m: FitMargin = BODY_MARGIN): number {
   const t = Math.tan((v.fov * Math.PI) / 360);

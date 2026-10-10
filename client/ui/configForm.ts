@@ -44,8 +44,8 @@ export function createConfigForm(o: { variant: FormVariant; cfg: MatchConfig; on
   for (const id of MAP_IDS) {
     const m = getMap(id);
     const chips = h('div', { class: 'mc-chips' },
-      h('span', { class: 'chip chip-deep', title: RIVER_INFO.deep.line }, icon('wave'), h('span', { text: 'Deep' })),
-      h('span', { class: 'chip chip-dry', title: RIVER_INFO.dry.line }, icon('dry'), h('span', { text: 'Dry' })),
+      h('span', { class: 'chip chip-deep', title: `${RIVER_INFO.deep.name}: ${RIVER_INFO.deep.line}` }, icon('wave'), h('span', { text: 'Deep' })),
+      h('span', { class: 'chip chip-dry', title: `${RIVER_INFO.dry.name}: ${RIVER_INFO.dry.line}` }, icon('dry'), h('span', { text: 'Dry' })),
       m.tide
         ? h('span', { class: 'chip chip-tidal', title: tidalLine(m) ?? '' }, icon(m.tide.style === 'freeze' ? 'ice' : m.tide.style === 'locks' ? 'lock' : 'tidal'), h('span', { text: tidalShort(m) }))
         : h('span', { class: 'chip chip-none', title: 'This map has no tide: Tidal plays as Deep Water.' }, h('span', { text: 'No tide' })),

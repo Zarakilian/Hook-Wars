@@ -9,7 +9,7 @@ import { DEFAULT_LOADOUT } from '../../../shared/cosmetics.ts';
 import { FAMILIES, UnitState, type FamilyId } from '../../../shared/types.ts';
 import type { PudgyOneShot, PudgyView } from '../../render/contracts.ts';
 import { createPudgy } from '../../render/models/pudgy.ts';
-import { BODY_MARGIN, fitDistance, meshCorners, projectNdc } from '../previewFit.ts';
+import { BODY_MARGIN, bodyMargin, fitDistance, meshCorners, projectNdc } from '../previewFit.ts';
 
 // the preview's camera (client/ui/preview.ts): fov 28, tilt 0.28, menu canvas 545 x 493 at 1280x720
 const FOV = 28;
@@ -112,4 +112,56 @@ test('without the guard the spawn pop leaves the frame (the bug), with it every 
     }
   }
   for (const v of keep) v.dispose();
+});
+
+/** Highest pixel row of the character from the canvas top over a pose (the preview's eased camera plus its keep-in-frame floor with this margin). */
+function topPx(family: FamilyId, shot: PudgyOneShot | null, aspect: number, canvasH: number, margin: typeof BODY_MARGIN): number {
+  const holder = new THREE.Group();
+  const v = createPudgy({ family, loadout: DEFAULT_LOADOUT[family], team: 0, name: 'p', isLocal: true, quality: 'high', detail: 'showcase' });
+  holder.add(v.root);
+  holder.rotation.y = 0.5;
+  v.update(1 / 60, input(0));
+  holder.updateMatrixWorld(true);
+  const rest = restFrame(v, aspect);
+  let camDist = rest.dist;
+  if (shot) v.play(shot);
+  let worst = Infinity;
+  for (let i = 0; i < 80; i++) {
+    const dt = 1 / 60;
+    v.update(dt, input(i * dt));
+    holder.updateMatrixWorld(true);
+    camDist += (rest.dist - camDist) * (1 - Math.exp(-dt * 6));
+    camDist = Math.max(camDist, fitDistance(meshCorners(v.root), { fov: FOV, aspect, tilt: TILT, target: rest.target }, margin));
+    worst = Math.min(worst, ((1 - topNdc(v, camAt(rest.target, camDist, aspect))) / 2) * canvasH);
+  }
+  v.dispose();
+  return worst;
+}
+
+test('a short menu canvas keeps the whole body under the "Drag to spin" pill, other canvases frame as before', () => {
+  // menu canvases measured in the browser (width, height, how far the pill reaches in + the 6 px gap):
+  // 1280x720, 1920x1080, 2560x1440, 1366x768, 1280x800 and the two-column 1024x768. 7.5% already
+  // clears the pill on all of them, so the margin is BODY_MARGIN itself and the framing does not move.
+  for (const [w, hgt, clear] of [[545, 493, 32], [729, 768, 40], [913, 1042, 50], [569, 530, 33], [586, 553, 35], [442, 530, 33]]) {
+    assert.equal(bodyMargin(hgt, clear), BODY_MARGIN, `${w}x${hgt} canvas: margin unchanged`);
+  }
+  assert.equal(bodyMargin(0, 40), BODY_MARGIN);
+  assert.equal(bodyMargin(300, 0), BODY_MARGIN);
+  // the stacked menu below 5:4 (768x1024, 1000x900): a 569 x 228 canvas, the pill reaching 49 px in
+  const W = 569;
+  const H = 228;
+  const clear = 49 + 6;
+  const keep = FAMILIES.map((f) => createPudgy({ family: f, loadout: DEFAULT_LOADOUT[f], team: 0, name: 'keep', isLocal: true, quality: 'high', detail: 'showcase' }));
+  let oldTop = Infinity;
+  let newTop = Infinity;
+  for (const f of FAMILIES) {
+    for (const shot of [null, 'celebrate', 'throw', 'bash'] as (PudgyOneShot | null)[]) {
+      oldTop = Math.min(oldTop, topPx(f, shot, W / H, H, BODY_MARGIN));
+      newTop = Math.min(newTop, topPx(f, shot, W / H, H, bodyMargin(H, clear)));
+    }
+  }
+  for (const v of keep) v.dispose();
+  console.log(`569x228 canvas: character top at ${oldTop.toFixed(1)} px with the 7.5% margin, ${newTop.toFixed(1)} px with the pill margin (pill bottom 49 px)`);
+  assert.ok(oldTop < 49, `old framing puts the head under the pill (top ${oldTop.toFixed(1)} px < 49 px)`);
+  assert.ok(newTop >= clear - 0.5, `the character stays under the pill and its gap (top ${newTop.toFixed(1)} px >= ${clear} px)`);
 });

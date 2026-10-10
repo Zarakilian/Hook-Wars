@@ -2463,7 +2463,7 @@ table.stats tr.you td {
   100% { opacity: 0.9; transform: translateY(110vh) translateX(3rem) rotate(calc(var(--r) + 720deg)); }
 }
 
-@media (max-aspect-ratio: 4/3) {
+@media (max-aspect-ratio: 1249/1000) {
   .awards {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2746,4 +2746,25 @@ table.stats tr.you td {
   font-size: max(11px, 0.85rem);
   font-weight: 800;
   color: rgba(255, 243, 217, 0.75);
+}
+
+/* ------------------------------------------------------------------------------------------
+   Squarer screens (5:4 up to just below 3:2, e.g. 1024x768 and 1280x1024): about 72rem wide, so a
+   centred bottom bar would cover the minimap's corner. It centres in the room right of the minimap
+   instead (18.9rem of minimap plus a gap), whatever its width. The shop starts under the river chip,
+   which it would cover otherwise (the chip is centred, the shop is 33rem wide on one side).
+   ------------------------------------------------------------------------------------------ */
+@media (min-aspect-ratio: 5/4) and (max-aspect-ratio: 1499/1000) {
+  .hud-bottom {
+    left: 19.8rem;
+    right: 0.9rem;
+    width: max-content;
+    max-width: calc(100% - 20.7rem);
+    margin-inline: auto;
+    transform: none;
+  }
+
+  .shop {
+    top: 7rem;
+  }
 }

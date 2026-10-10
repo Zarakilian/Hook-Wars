@@ -189,23 +189,24 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
       frameStage();
     } else {
       menuShowcase.setLook(null);
-      ctx.preview.mount(stage);
+      ctx.preview.mount(stage, { clearTop: hint });
     }
     paint(ctx.get());
   });
   if (epic) epicChrome();
 
   // mount the preview after the element is in the document so it can measure itself
+  // the whole body stays under the "Drag to spin" pill, however short the stage (stacked narrow layouts)
   queueMicrotask(() => {
     if (!el.isConnected) return;
     if (epic) frameStage();
-    else ctx.preview.mount(stage);
+    else ctx.preview.mount(stage, { clearTop: hint });
     paint(ctx.get());
   });
   requestAnimationFrame(() => {
     if (!el.isConnected) return;
     if (epic) frameStage();
-    else ctx.preview.mount(stage);
+    else ctx.preview.mount(stage, { clearTop: hint });
     paint(ctx.get());
   });
   paint(s0);

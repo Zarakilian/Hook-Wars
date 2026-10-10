@@ -2525,15 +2525,26 @@
 }
 
 /* ------------------------------------------------------------------------------------------
-   Small or narrow screens
+   Narrow screens (below 5:4, portrait included). 4:3 and 5:4 keep the side-by-side layouts with
+   narrower columns: see "Squarer screens" at the end of this file.
    ------------------------------------------------------------------------------------------ */
-@media (max-aspect-ratio: 4/3) {
+/* the main menu stacks only below 11:10; from 11:10 to 5:4 it keeps two columns with a slimmer left one */
+@media (max-aspect-ratio: 1099/1000) {
   .hw-ui .scr-menu {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(24rem, 1fr);
     overflow-y: auto;
   }
+}
 
+@media (min-aspect-ratio: 11/10) and (max-aspect-ratio: 1249/1000) {
+  .hw-ui .scr-menu {
+    grid-template-columns: minmax(0, 31rem) minmax(0, 1fr);
+    column-gap: 1.5rem;
+  }
+}
+
+@media (max-aspect-ratio: 1249/1000) {
   .lk-layout,
   .st-layout,
   .cr-layout {
@@ -2750,10 +2761,12 @@
 }
 
 /* Squarer screens (5:4 up to just below 3:2, e.g. 1280x1024, 1024x768, 1400x1000): four maps per
-   row, flatter art, and the blurb only in the card's tooltip (it is already there). From just above
-   4:3 up to 3:2 the whole form then fits; at 4:3 and 5:4 the Rules still need a short scroll, but far
-   less than with two maps per row. Narrower and portrait screens keep the two-column grid; 3:2 and
-   wider use the 8-map row below, with blurbs. */
+   row, flatter art, the blurb only in the card's tooltip (it is already there), and Deep and Dry (on
+   every map) as icon chips with their names in the tooltip, so every card keeps one chip row. The
+   river, hazard and rule pickers keep the three columns of 16:9, narrower: the hazards in rows of
+   three and a slimmer label column for the rules. Solo and Create Room then fit without a scroll
+   from 5:4 to 3:2 (1024x768, 1280x1024 included). Narrower and portrait screens keep the two-column
+   grid; 3:2 and wider use the 8-map row below, with blurbs. */
 @media (min-aspect-ratio: 5/4) and (max-aspect-ratio: 1499/1000) {
   .cfg-solo .map-cards,
   .cfg-room .map-cards {
@@ -2762,11 +2775,59 @@
 
   .cfg-solo .mc-art,
   .cfg-room .mc-art {
-    aspect-ratio: 3.6 / 1;
+    aspect-ratio: 4.2 / 1;
   }
 
   .cfg-solo .mc-blurb,
   .cfg-room .mc-blurb {
+    display: none;
+  }
+
+  .cfg-solo :is(.chip-deep, .chip-dry) > span,
+  .cfg-room :is(.chip-deep, .chip-dry) > span {
+    display: none;
+  }
+
+  .cfg-solo :is(.chip-deep, .chip-dry),
+  .cfg-room :is(.chip-deep, .chip-dry) {
+    padding: 0.14rem 0.3rem;
+  }
+
+  .cfg-solo .seg-hazard,
+  .cfg-room .seg-hazard {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cfg-solo .seg-hazard .seg-opt,
+  .cfg-room .seg-hazard .seg-opt {
+    gap: 0.2rem;
+    padding: 0.4rem 0.2rem 0.35rem;
+  }
+
+  .cfg-solo .seg-hazard .seg-ico,
+  .cfg-room .seg-hazard .seg-ico {
+    width: 1.55rem;
+    height: 1.55rem;
+  }
+
+  .cfg-solo .rule,
+  .cfg-room .rule {
+    grid-template-columns: 5.4rem minmax(0, 1fr);
+    column-gap: 0.5rem;
+  }
+
+  .cfg-solo .seg-team .seg-opt {
+    gap: 0.4rem;
+    padding: 0.45rem 0.5rem;
+  }
+
+  .cfg-solo .seg-team .seg-ico {
+    width: 1.4rem;
+    height: 1.4rem;
+  }
+
+  /* the preset lines are their buttons' tooltips, and the summary by Start says what you picked */
+  .scr-solo .pr-line {
     display: none;
   }
 }
@@ -2790,4 +2851,89 @@
 .scr-solo .wide-panel > .panel-head .panel-title {
   flex: none;
   text-align: left;
+}
+
+/* ------------------------------------------------------------------------------------------
+   Squarer screens: 5:4 up to just below 3:2 (1024x768, 1280x1024, 1400x1050). The root size
+   follows the height, so these have the vertical room of a 16:9 screen of the same height but
+   only about 67 to 87rem of width (16:9 has 94 to 105rem). The side-by-side layouts stay, with
+   the long texts allowed to wrap. 3:2 and wider never see these rules.
+   ------------------------------------------------------------------------------------------ */
+@media (min-aspect-ratio: 5/4) and (max-aspect-ratio: 1499/1000) {
+  /* hub header: the subtitle wraps under the title so the tabs and the profile chip stay in; every
+     hub header keeps the two-line height so switching tabs does not move the page */
+  .hub-head {
+    gap: 0.7rem;
+    min-height: 5.2rem;
+  }
+
+  .hub-sub {
+    max-width: 11rem;
+    white-space: normal;
+    line-height: 1.15;
+  }
+
+  .hub-tabs {
+    margin-left: 0.2rem;
+  }
+
+  .hub-tab {
+    gap: 0.35rem;
+    padding: 0.5rem 0.75rem 0.5rem 0.55rem;
+  }
+
+  /* Locker: the family tabs show the name only (the passive is under the preview), on two lines */
+  .lkf-passive {
+    display: none;
+  }
+
+  .lkf-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    line-height: 1.05;
+  }
+
+  .lkf-ico {
+    width: 1.9rem;
+    height: 1.9rem;
+  }
+
+  /* Play Online: a slimmer left column so the room names fit; a 28-letter name may take two lines */
+  .online-grid {
+    grid-template-columns: minmax(17rem, 21rem) minmax(0, 1fr);
+    gap: 1.4rem;
+  }
+
+  .room-row {
+    gap: 0.7rem;
+  }
+
+  .rr-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    line-height: 1.05;
+  }
+
+  /* lobby: the teams get the width (six slots a side keep their names), the rules a slimmer column */
+  .lobby-body {
+    grid-template-columns: minmax(0, 1.95fr) minmax(17rem, 1fr);
+    gap: 1.1rem;
+  }
+
+  .teams-row {
+    gap: 0.4rem;
+  }
+
+  .team-col {
+    padding: 0.45rem;
+  }
+
+  .slot {
+    gap: 0.4rem;
+    padding-right: 0.45rem;
+  }
 }

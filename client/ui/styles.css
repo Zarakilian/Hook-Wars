@@ -2725,19 +2725,11 @@ kbd.keycap {
 }
 
 /* ------------------------------------------------------------------------------------------
-   Smaller screens: stack the main menu and loosen grids
+   Narrow screens (below 5:4, portrait included): stack the main menu and loosen grids. 4:3 and
+   5:4 keep the side-by-side layouts: the root size follows the height, so 1024x768 has the same
+   vertical room as 1366x768 and only needs narrower columns (the 5:4 to 3:2 band in v2.css).
    ------------------------------------------------------------------------------------------ */
-@media (max-aspect-ratio: 4/3) {
-  .scr-menu {
-    grid-template-columns: minmax(0, 1fr);
-    overflow: auto;
-    align-content: start;
-  }
-
-  .menu-right {
-    justify-content: flex-start;
-  }
-
+@media (max-aspect-ratio: 1249/1000) {
   .cfg {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
@@ -2751,7 +2743,27 @@ kbd.keycap {
   }
 
   .lobby-body,
-  .online-grid,
+  .online-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The main menu stacks only below 11:10 (portrait and near-square): its left column is fixed and the
+   stage takes the rest, which stays wide enough for the character and its nameplate down to 11:10 */
+@media (max-aspect-ratio: 1099/1000) {
+  .scr-menu {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+    align-content: start;
+  }
+
+  .menu-right {
+    justify-content: flex-start;
+  }
+}
+
+/* Settings keeps its one-column body up to 4:3 (its own screen file is not part of the band above) */
+@media (max-aspect-ratio: 4/3) {
   .settings-body {
     grid-template-columns: minmax(0, 1fr);
   }

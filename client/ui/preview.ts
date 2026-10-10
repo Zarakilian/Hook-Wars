@@ -16,7 +16,7 @@ import { cinematicEnabled, onCinematicChange } from '../render/cinematic.ts';
 import type { PudgyOneShot, PudgyView } from '../render/contracts.ts';
 import { createPudgy } from '../render/models/pudgy.ts';
 import { createShowcaseStage, menuShowcase, type ShowcaseStage } from '../render/showcase/index.ts';
-import { fitDistance, meshCorners } from './previewFit.ts';
+import { bodyMargin, fitDistance, meshCorners } from './previewFit.ts';
 
 /** Random show-offs (idle and on click). No grapple: it throws the arm and hook high over the head. */
 export const ONE_SHOTS: readonly PudgyOneShot[] = ['celebrate', 'throw', 'bash', 'melee'];
@@ -34,6 +34,8 @@ const STUDIO_NEAR = 0.1;
  * much in front of the Lunker spot, but never so far out that the deck at the bottom of the frame goes.
  */
 const EPIC_CLEAR = 2.6;
+/** CSS px kept free between the "Drag to spin" pill and the top of the character */
+const PILL_GAP = 6;
 
 /** Camera framing per slot: look-at height (fraction of the model height) and distance multiplier. */
 const FOCUS: Record<CosmeticSlot | 'all', { y: number; d: number }> = {
@@ -100,6 +102,10 @@ export class PudgyPreview {
   private tilt = TILT;
   /** Epic as the stage was last synced (a toggle rebuilds the shown model as a fresh start would) */
   private stageEpic = false;
+  /** an overlay over the canvas top the whole body must stay under (the menu's "Drag to spin" pill) */
+  private clearEl: HTMLElement | null = null;
+  /** how far that overlay reaches into the canvas, plus a small gap (CSS px; 0 = nothing to clear) */
+  private clearPx = 0;
 
   constructor() {
     this.canvas = this.makeCanvas();
@@ -142,8 +148,13 @@ export class PudgyPreview {
     return this.renderer !== null;
   }
 
-  /** Attach to a container and start rendering. */
-  mount(parent: HTMLElement): void {
+  /**
+   * Attach to a container and start rendering. clearTop: an element over the canvas top (the menu's
+   * "Drag to spin" pill) that the whole-body view keeps the character under, however short the canvas.
+   */
+  mount(parent: HTMLElement, opts: { clearTop?: HTMLElement | null } = {}): void {
+    this.clearEl = opts.clearTop ?? null;
+    this.clearPx = 0;
     // a failed context creation is retried after a pause instead of disabling the preview for good
     if (this.failed && performance.now() - this.failedAt < 3000) return;
     if (this.canvas.parentElement !== parent) parent.append(this.canvas);
@@ -543,7 +554,8 @@ export class PudgyPreview {
     if (!this.pudgy || !this.camera) return;
     this.spinner.rotation.y = this.yaw;
     this.spinner.updateMatrixWorld(true);
-    const need = fitDistance(meshCorners(this.pudgy.root, this.corners), { fov: this.camera.fov, aspect: this.camera.aspect, tilt: this.tilt, target: this.target });
+    const margin = bodyMargin(this.canvas.clientHeight, this.clearPx);
+    const need = fitDistance(meshCorners(this.pudgy.root, this.corners), { fov: this.camera.fov, aspect: this.camera.aspect, tilt: this.tilt, target: this.target }, margin);
     if (need > this.camDist) {
       this.camDist = need;
       this.dist = need;
@@ -558,8 +570,22 @@ export class PudgyPreview {
     r.setSize(w, hgt, false);
     this.camera.aspect = w / hgt;
     this.camera.updateProjectionMatrix();
+    this.measureClear();
     this.frameModel();
     this.renderOnce(0);
+  }
+
+  /** How far the clearTop overlay reaches into the canvas (layout only changes it, so on resize). */
+  private measureClear(): void {
+    const el = this.clearEl;
+    if (!el || !el.isConnected || !this.canvas.isConnected) {
+      this.clearPx = 0;
+      return;
+    }
+    const c = this.canvas.getBoundingClientRect();
+    const p = el.getBoundingClientRect();
+    const overlaps = p.width > 0 && p.height > 0 && p.left < c.right && p.right > c.left && p.top < c.top + c.height / 2;
+    this.clearPx = overlaps ? Math.max(0, p.bottom - c.top + PILL_GAP) : 0;
   }
 
   private disposePudgy(): void {
