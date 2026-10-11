@@ -74,15 +74,15 @@ Follow [steam-desktop.md](steam-desktop.md): part A (setup), part B (two windows
 3. Check the names "Hook Wars", "Lunkers" and "Dredge-Bot" for trademark clashes before the store page goes public.
 4. Ask a tax adviser about income from Steam sales.
 
-## Decisions waiting for Miguel
+## Decisions (made 2026-10-11, on Miguel's go-ahead)
 
-Nothing here is changed yet. The numbers are from the builder's logs and have not been measured again.
+Miguel left these to my recommendation. Each line gives the decision and the reason.
 
-1. **Own-hook hand-over feel** (`client/game/ghost.ts`). Current: the predicted head waits at the tip for the server's turn: about 0.10 s on LAN, 0.17 s at 50 ms ping, 0.25 s at 150 ms. A catch overshoots the target by 2.5 to 3 m at 100 ms ping and 4 to 4.5 m at 150 ms. Old blend (kept for Bendy Eel): the head slows to about 7.5 to 14 m/s and never waits. Catches land close to the target.
-2. **First pad press.** A pad only reaches the page after a press, and that press is treated as the baseline, so it is lost. If it is Start, the menu does not open and the second press works. Option: open the menu on a Start held at a fresh pad sighting. Side effect: a Start held as a match starts, or a pad plugged in, also opens the menu.
-3. **Auto How-to dialog.** On a fresh profile it opens 450 ms after the first menu shows, and nothing cancels it when a match starts. The first Escape or Start then closes it. Option: cancel the timer when a match starts (a few lines in `client/ui/ui.ts`).
-4. **Map blurbs and Solo preset lines.** On 16:10 and on 1366x768 they show as tooltips only, so keyboard and pad players never see them. Options: keep it, or build a focus tooltip.
-5. **Stand-in bots always play at "normal" difficulty**, whatever the room asks for. Read in the code near `server/room.ts` line 261, not tested.
+1. **Own-hook hand-over feel: keep the current design.** The predicted head keeps full speed (30 m/s) and waits at the tip for the server's turn: about 0.10 s on LAN, 0.17 s at 50 ms ping, 0.25 s at 150 ms. The old blend slowed the head to about 7.5 to 14 m/s on every throw, LAN included. The cost of the current design: a catch overshoots the target by about 2.6 to 3.1 m at 100 ms ping and 4.1 to 4.6 m at 150 ms, then snaps back. The old blend overshoots less (1.9 to 2.4 m at 7 m) but lands short at 12 m. Bendy Eel keeps the old blend. The figures are from the builder's logs, not re-measured.
+2. **First pad press: keep it, and document it.** A pad reaches the page only after a press, and that press becomes the baseline. So a Start that wakes the pad does not open the menu, and the next press does. The proposed fix opens the menu on any Start held when a pad first appears. That would also fire when a match starts with Start held, or when a pad is plugged in. Keeping the baseline stops a held button from acting at match start.
+3. **Auto How-to dialog: no change.** It opens 450 ms after the menu first shows. It sits over a match only if something starts a match while it is open. The menu's scrim blocks mouse clicks on Play, so a player cannot do that. The overlap only appeared when a debug hook started the match under the open dialog, so it is a test setup problem, not a player bug.
+4. **Map blurbs and preset lines: keep them hidden.** Map blurbs are hidden at 1366x768, 1280x800 and 1440x900. Preset lines are hidden at 1280x800 and 1440x900. Keyboard and pad players do not see them. Mouse hover and screen readers still get the text. The river and chips still show on each map, and the rules columns show each preset's settings.
+5. **Stand-in bot difficulty: open.** The stand-in always plays at normal difficulty, whatever the room asks (read near `server/room.ts` line 261, not tested). It needs a test before any change.
 
 ## Open items, in the order I would do them
 
