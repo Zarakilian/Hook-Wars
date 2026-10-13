@@ -1,6 +1,0 @@
-# installed by npm install inside desktop/ (never committed)
-node_modules/
-# made by npm run build / npm run dist
-build/
-dist/
-*.log

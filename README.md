@@ -7,9 +7,9 @@
 
 A voxel hook-brawler. Up to 6v6 Lunkers stand on either side of a river and drag each other across it with chain hooks (5v5 is the default). Empty slots fill with bots, so you can play alone, with one friend, or with eleven.
 
-This is the standard edition: a normal game with no crypto of any kind. It runs in the browser (free, cosmetics earned with Pearls) and is being packaged for Steam (paid, premium cosmetics sold through Steam). An experimental Solana edition is parked on the `edition/solana` branch.
+This is the browser edition: a normal game with no crypto of any kind. It runs in the browser for free, and cosmetics are earned with Pearls.
 
-More docs: [design](docs/design.md), [economy](docs/economy.md), [Steam desktop app](docs/steam-desktop.md), [moving development to another PC](docs/home-pc-handoff.md).
+More docs: [design](docs/design.md), [economy](docs/economy.md).
 
 Inspired by the classic Pudge Wars custom game. Every character, name, model and sound here is original and generated in code.
 
@@ -21,7 +21,7 @@ Inspired by the classic Pudge Wars custom game. Every character, name, model and
 | River | Deep Water (fall in and you drown), Dry Bed (walk the channel), Tidal (the water comes and goes, or the river freezes and thaws) |
 | Hazards | Thorns, Bristles, or each map's special: quicksand, ice spikes, jellyfish, steam vents |
 | Lunkers | Harbour Brawler, Swamp Ogre, Dredge-Bot. Each has a bare base and six cosmetic slots (head, face, outfit, hook, feet, back) |
-| Cosmetics | Earned with Pearls from matches, worn in the Locker, traded for Pearls on the Market. Premium items are Steam only |
+| Cosmetics | Earned with Pearls from matches, worn in the Locker, traded for Pearls on the Market |
 | Kit | Chain Hook, Grapple, Belly Bash, auto melee, 4 hook upgrades, 8 items, 5 runes and 3 hook power-ups you hook out of the river |
 | Maps | Muckmire Bayou, Frostfang Fjord, Coral Cove, Cogwater Canal, Mirelight Marsh, Aurora Harbour, Maelstrom Lagoon, Lanternwharf |
 
@@ -62,7 +62,7 @@ Switch schemes in **Settings**. Teams go up to 6 v 6. 5 v 5 is the default and t
 
 ### Gamepad
 
-A standard (Xbox-layout) pad works in matches, in the browser and in the Steam app. The menus still use the mouse.
+A standard (Xbox-layout) pad works in matches in the browser. The menus still use the mouse.
 
 | Action | Control |
 |---|---|
