@@ -1,0 +1,177 @@
+{
+  "browserMenu": [
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1280,
+        800
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1024,
+        768
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1280,
+        1024
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1366,
+        768
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1440,
+        900
+      ]
+    },
+    {
+      "clipped": [],
+      "overflow": false,
+      "size": [
+        1920,
+        1080
+      ]
+    }
+  ],
+  "steamMenu": [
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1280,
+        800
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1024,
+        768
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1280,
+        1024
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1366,
+        768
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1440,
+        900
+      ]
+    },
+    {
+      "clipped": [],
+      "edition": "steam-stand-in",
+      "overflow": false,
+      "size": [
+        1920,
+        1080
+      ]
+    }
+  ],
+  "browserHud": [
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1024,
+        768
+      ]
+    },
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1280,
+        1024
+      ]
+    }
+  ],
+  "steamHud": [
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1024,
+        768
+      ]
+    },
+    {
+      "bottomMinimapOverlap": false,
+      "clipped": [],
+      "size": [
+        1280,
+        1024
+      ]
+    }
+  ]
+}

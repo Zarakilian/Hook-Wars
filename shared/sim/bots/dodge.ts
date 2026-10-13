@@ -1,7 +1,7 @@
 // Dodging: read enemy hooks in flight (every hook is public) and enemy wind-ups (their facing is
 // public), then sidestep. Each threat is judged once, so a slow bot that misses its chance does not
 // get a second roll: that is what makes easy bots catchable and brutal bots slippery.
-import { UNIT_RADIUS } from '../../constants.ts';
+import { BAL, UNIT_RADIUS } from '../../constants.ts';
 import { dist2 } from '../../math.ts';
 import { HookKind, HookPhase, UnitState } from '../../types.ts';
 import type { Unit } from '../entities.ts';
@@ -9,6 +9,7 @@ import type { GameSim } from '../sim.ts';
 import type { BotContext } from './context.ts';
 import { standable } from './mapinfo.ts';
 import type { Brain } from './types.ts';
+import { emptyReturn } from '../hookMotion.ts';
 
 export const JUDGED = 16;
 
@@ -42,31 +43,45 @@ export function checkDodge(sim: GameSim, ctx: BotContext, u: Unit, b: Brain): vo
   if (u.state !== UnitState.Alive || t < b.dodgeUntil) return;
   const tune = b.tune;
   for (const h of sim.hooks) {
-    if (h.dead || h.kind !== HookKind.Hook || h.phase !== HookPhase.Out) continue;
+    if (h.dead || h.kind !== HookKind.Hook || (h.phase !== HookPhase.Out && !emptyReturn(h))) continue;
     const o = sim.unitById.get(h.owner);
     if (!o || o.team === u.team) continue;
     if (ctx.hookAge(h.id) < tune.dodgeReact) continue; // not noticed yet
-    if (judged(b, h.id)) continue;
+    const returning = h.phase === HookPhase.Back;
+    const key = h.id * 2 + (returning ? 1 : 0); // a missed outward head is a new threat on return
+    if (judged(b, key)) continue;
+    let dx = h.dx, dz = h.dz;
+    let left = ctx.reachOf(o) - ctx.hookTravel(h.id, h.x, h.z);
+    let speed = h.speed;
+    if (returning) {
+      const x = h.pts.length ? h.pts[h.pts.length - 2] : o.x + Math.sin(o.face) * BAL.hookHand * 0.8;
+      const z = h.pts.length ? h.pts[h.pts.length - 1] : o.z + Math.cos(o.face) * BAL.hookHand * 0.8;
+      const d = Math.hypot(x - h.x, z - h.z);
+      if (d < 1e-6) continue;
+      dx = (x - h.x) / d;
+      dz = (z - h.z) / d;
+      left = d;
+      speed *= BAL.hookRetractMul;
+    }
     const rx = u.x - h.x;
     const rz = u.z - h.z;
-    const along = rx * h.dx + rz * h.dz;
+    const along = rx * dx + rz * dz;
     if (along < -0.3) continue;
     // how far it can still fly: the longest throw we have seen from them, minus what it has flown
-    const left = ctx.reachOf(o) - ctx.hookTravel(h.id, h.x, h.z);
     if (along > left + 1.4) continue;
-    const tti = Math.max(0, along) / h.speed;
+    const tti = Math.max(0, along) / speed;
     if (tti > 1) continue;
-    const perp = rx * h.dz - rz * h.dx;
-    const vperp = u.vx * h.dz - u.vz * h.dx;
+    const perp = rx * dz - rz * dx;
+    const vperp = u.vx * dz - u.vz * dx;
     const fut = perp + vperp * tti;
     const hitR = h.r + UNIT_RADIUS + 0.2;
     if (Math.abs(fut) > hitR && Math.abs(perp) > hitR) continue;
-    markJudged(b, h.id);
+    markJudged(b, key);
     if (b.rng.next() >= tune.dodge) continue; // froze
     let s = Math.abs(fut) > 0.15 ? Math.sign(fut) : b.rng.next() < 0.5 ? 1 : -1;
-    if (!stepSafe(sim, ctx, u, h.dz * s, -h.dx * s) && stepSafe(sim, ctx, u, -h.dz * s, h.dx * s)) s = -s;
-    b.dodgeX = h.dz * s;
-    b.dodgeZ = -h.dx * s;
+    if (!stepSafe(sim, ctx, u, dz * s, -dx * s) && stepSafe(sim, ctx, u, -dz * s, dx * s)) s = -s;
+    b.dodgeX = dz * s;
+    b.dodgeZ = -dx * s;
     b.dodgeUntil = t + Math.max(0.2, Math.min(0.6, tti + 0.12));
     b.stats.dodges++;
     return;

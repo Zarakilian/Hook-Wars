@@ -1,17 +1,38 @@
-// The animated HOOK WARS wordmark: chunky extruded letters that bob like buoys, and a barbed hook
-// swinging on a chain from the top of the sign. Built with createElementNS, animated in CSS.
+// Concept C wordmark: tall condensed block lettering, offset WARS and an angled steel hook.
+// Paths are authored here, not text baked into a generated image. The root supplies its accessible name.
 import { h, s } from './dom.ts';
 
 let uid = 0;
 
-function word(text: string, cls: string, delay0: number): HTMLElement {
-  const w = h('span', { class: `lw ${cls}` });
-  [...text].forEach((ch, i) => {
-    const l = h('span', { class: 'll', 'data-l': ch, style: `--d:${(delay0 + i * 0.11).toFixed(2)}s` });
-    l.textContent = ch;
-    w.append(l);
-  });
-  return w;
+const LETTERS: Record<string, string> = {
+  H: 'M0 0H25V32H60V0H85V85H60V56H25V85H0Z',
+  O: 'M9 0H76L85 9V76L76 85H9L0 76V9ZM33 22V63H52V22Z',
+  K: 'M0 0H25V32L55 0H85L49 42L87 85H56L25 55V85H0Z',
+  W: 'M0 0H28L36 54L50 0H77L92 54L100 0H128L112 85H84L64 40L44 85H16Z',
+  A: 'M9 0H76L85 85H60L58 66H27L25 85H0ZM34 23L31 44H54L51 23Z',
+  R: 'M0 0H76L85 9V49L63 59L87 85H56L36 61H25V85H0ZM25 23V40H59V23Z',
+  S: 'M8 0H77L85 8V25H25V33H77L85 41V77L77 85H8L0 77V60H60V52H8L0 44V8Z',
+};
+
+function wordmark(): SVGSVGElement {
+  const svg = s('svg', { class: 'dock-wordmark', viewBox: '0 0 310 245', 'aria-hidden': 'true' });
+  for (const [row, text] of ['HOOK', 'WARS'].entries()) {
+    const transform = row ? 'translate(38 135) rotate(-2) scale(0.64 1.08)' : 'translate(5 26) rotate(-2) scale(0.65 1.08)';
+    const word = s('g', { class: row ? 'dock-wars' : 'dock-hook-word', transform });
+    let x = 0;
+    for (const ch of text) {
+      word.append(s('path', { d: LETTERS[ch], transform: `translate(${x} 0)`, 'fill-rule': 'evenodd' }));
+      x += ch === 'W' ? 136 : 93;
+    }
+    svg.append(word);
+  }
+  const hook = chainHook();
+  hook.setAttribute('x', '217');
+  hook.setAttribute('y', '-8');
+  hook.setAttribute('width', '65');
+  hook.setAttribute('height', '170');
+  svg.append(hook);
+  return svg;
 }
 
 function chainHook(): SVGSVGElement {
@@ -22,16 +43,12 @@ function chainHook(): SVGSVGElement {
       s('stop', { offset: '0', 'stop-color': '#6d7a86' }),
       s('stop', { offset: '0.35', 'stop-color': '#f2f7fa' }),
       s('stop', { offset: '0.6', 'stop-color': '#b9c5ce' }),
-      s('stop', { offset: '1', 'stop-color': '#55606a' })),
-    s('linearGradient', { id: `${id}b`, x1: '0', y1: '0', x2: '0', y2: '1' },
-      s('stop', { offset: '0', 'stop-color': '#ffe89a' }),
-      s('stop', { offset: '0.5', 'stop-color': '#d9a03a' }),
-      s('stop', { offset: '1', 'stop-color': '#8a5612' })));
+      s('stop', { offset: '1', 'stop-color': '#55606a' })));
   svg.append(defs);
-  // brass mount the chain hangs from
-  svg.append(s('rect', { x: 25, y: 0, width: 40, height: 12, rx: 4, fill: `url(#${id}b)`, stroke: '#2a160a', 'stroke-width': 3 }));
+  // copper mount the steel chain hangs from
+  svg.append(s('rect', { x: 25, y: 0, width: 40, height: 12, rx: 1, fill: '#b76f4e', stroke: '#151d21', 'stroke-width': 3 }));
   const g = s('g', { class: 'swing' });
-  const OL = '#24140a';
+  const OL = '#151d21';
   // chain links, alternating face-on ovals and edge-on bars
   for (let i = 0; i < 7; i++) {
     const y = 14 + i * 16;
@@ -51,22 +68,11 @@ function chainHook(): SVGSVGElement {
   g.append(s('path', { d: 'M2 168 L6 136 L24 158 Z', fill: '#dfe7ec', stroke: OL, 'stroke-width': 4, 'stroke-linejoin': 'round' }));
   g.append(s('path', { d: 'M49 140 V168', fill: 'none', stroke: 'rgba(255,255,255,0.8)', 'stroke-width': 3, 'stroke-linecap': 'round' }));
   g.append(s('path', { class: 'glint', d: 'M30 196 A20 20 0 0 0 44 188', fill: 'none', stroke: 'rgba(255,255,255,0.9)', 'stroke-width': 3, 'stroke-linecap': 'round' }));
-  // a little fish caught on the barb, for slapstick
-  const fish = s('g', { class: 'logo-fish' },
-    s('path', { d: 'M4 150 C 12 138 30 138 36 150 C 30 162 12 162 4 150 Z', fill: '#ff9a3c', stroke: OL, 'stroke-width': 3 }),
-    s('path', { d: 'M34 150 L46 140 L44 150 L46 160 Z', fill: '#e86a1c', stroke: OL, 'stroke-width': 3, 'stroke-linejoin': 'round' }),
-    s('circle', { cx: 13, cy: 147, r: 2.6, fill: OL }),
-    s('path', { d: 'M20 142 C 23 147 23 153 20 158', fill: 'none', stroke: OL, 'stroke-width': 2 }));
-  fish.setAttribute('transform', 'translate(-4 30) rotate(-20 20 150)');
-  g.append(fish);
   svg.append(g);
   return svg;
 }
 
 export function createLogo(): HTMLElement {
   return h('div', { class: 'logo', role: 'img', 'aria-label': 'Hook Wars' },
-    h('div', { class: 'logo-sign' },
-      h('div', { class: 'logo-words' }, word('HOOK', 'lw-hook', 0), word('WARS', 'lw-wars', 0.45)),
-      chainHook()),
-    h('div', { class: 'logo-ribbon' }, h('span', { text: 'Fish for your friends' })));
+    h('div', { class: 'logo-sign' }, wordmark()));
 }

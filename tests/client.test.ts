@@ -12,7 +12,7 @@ import { Connection, defaultServerUrl, normaliseServerUrl, setDefaultServerUrl, 
 import { SnapshotBuffer, clockStepMs } from '../client/net/interp.ts';
 import { RejoinStore, type KeyValueStore } from '../client/net/rejoin.ts';
 import { LocalSession } from '../client/net/session.ts';
-import { GHOST_STALL_CAP, HANDOVER_GRACE, OwnHookPredictor, flightReach, ghostHead, ghostHookParams } from '../client/game/ghost.ts';
+import { GHOST_STALL_CAP, HANDOVER_GRACE, OwnHookPredictor, fliesStraight, flightReach, ghostChainPoints, ghostHead, ghostHookParams, startGhostFlight, launchGhost } from '../client/game/ghost.ts';
 
 // ---------------------------------------------------------------------------------------------
 // helpers
@@ -552,7 +552,11 @@ function throwAndCompare(setup: (sim: GameSim) => void, label: string) {
   assert.ok(Math.abs(ghost.speed - h.speed) < 1e-9, `${label}: ghost flies ${ghost.speed} m/s, the server hook ${h.speed} m/s`);
   assert.ok(Math.abs(ghost.range - h.range) < 1e-9, `${label}: ghost range ${ghost.range} m, the server hook ${h.range} m`);
   assert.ok(Math.abs(ghost.radius - h.r) < 1e-9, `${label}: ghost radius ${ghost.radius}, the server hook ${h.r}`);
-  if (snapHook) assert.equal(ghost.fx, snapHook.fx, `${label}: ghost skin bits ${ghost.fx}, the server hook ${snapHook.fx}`);
+  if (snapHook) {
+    assert.equal(ghost.fx & 15, snapHook.fx & 15, `${label}: ghost cosmetic bits differ`);
+    assert.ok(ghost.fx & 16, 'predicted hook must use a live chain');
+    assert.ok(snapHook.fx & 16, 'authoritative hook must use a live chain');
+  }
   return { ghost, h };
 }
 
@@ -573,6 +577,36 @@ test('predicted hook: same speed, range, width and look as the hook the server l
     sim.grantRune(u, 'bouncy');
     sim.grantRune(u, 'bendy');
   }, 'Boing Barb + Bendy Eel');
+});
+
+test('live chain points do not slow a straight predicted head, but a deflected head hands over', () => {
+  const sim = new GameSim({ ...DEFAULT_CONFIG, botFill: false }, players([0, 1]), 11);
+  const you = sim.snapshotFor(1).you!;
+  const body = { x: -20, z: 0 };
+  const own = new OwnHookPredictor();
+  own.press(you, 0, { x: 10, z: 0 }, 100, 2.5, 100);
+  const g = own.ghost!;
+  own.frame({ tick: 100, hooks: [], freshHooks: new Set() }, 1, g.start + 0.01, body, false);
+  const server: HookSnap = { i: 50, o: 1, k: 0, p: 0, x: -16, z: 0, r: 0.45, pts: [-19, 0.5, -17, 0.1], tg: -1, ru: -1, fx: 16 };
+  assert.equal(fliesStraight(server), true, 'bending links changed the classification of the aimed head');
+  assert.equal(own.frame({ tick: 103, hooks: [server], freshHooks: new Set() }, 1, g.start + 0.15, body, false).act, 'fly');
+  assert.ok(Math.abs(ghostHead(g, g.start + 0.15, { x: 0, z: 0 }).x - (g.ox + g.speed * 0.15)) < 1e-8);
+  const bent = { ...server, fx: 16 | 32, z: 1 };
+  assert.equal(fliesStraight(bent), false);
+  assert.equal(own.frame({ tick: 104, hooks: [bent], freshHooks: new Set() }, 1, g.start + 0.18, body, false).act, 'take');
+});
+
+test('the predicted chain bends with the moving hand without changing the head aim or exceeding its cap', () => {
+  const sim = new GameSim({ ...DEFAULT_CONFIG, botFill: false }, players([0, 1]), 11);
+  const g = startGhostFlight(sim.snapshotFor(1).you!, 0, { x: 10, z: 0 }, 100, 2.5);
+  launchGhost(g, { x: -20, z: 0 });
+  for (let i = 1; i <= 12; i++) ghostChainPoints(g, g.start + i * 0.05, { x: g.ox, z: i * 0.25 });
+  assert.ok(g.chain.length >= 4);
+  assert.ok(g.chain.length <= 64);
+  assert.ok(g.chain.some((v, i) => i % 2 === 1 && Math.abs(v) > 0.1));
+  const h = ghostHead(g, g.start + 0.6, { x: 0, z: 0 });
+  assert.equal(h.z, 0);
+  assert.ok(h.x - g.ox <= g.range);
 });
 
 test('predicted hook: the ghost stops where the server hook turns, at every speed and range level, with and without Long Line', () => {
@@ -616,7 +650,7 @@ test('predicted hook: the ghost stops where the server hook turns, at every spee
 });
 
 /** Our hook flies out on a straight line (no catch, no bend, no Bendy Eel steering): what the ghost predicts. */
-const straight = (h: HookSnap) => h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && !(h.fx & 4);
+const straight = (h: HookSnap) => h.p === 0 && h.tg < 0 && h.ru < 0 && !(h.fx & 4) && (h.fx & 16 ? !(h.fx & 32) : h.pts.length === 0);
 
 interface OwnThrow {
   v: number;
@@ -713,7 +747,7 @@ function runOwnHook(
       sim.step();
       // on the server: where our hook stops flying out
       const sh = a.activeHook >= 0 ? sim.hookById(a.activeHook) : undefined;
-      if (cur && sh && Number.isNaN(cur.tx) && (sh.phase !== 0 || sh.tg >= 0 || sh.ru >= 0 || sh.pts.length > 0)) {
+      if (cur && sh && Number.isNaN(cur.tx) && (sh.phase !== 0 || sh.tg >= 0 || sh.ru >= 0 || sh.curved || (!sh.live && sh.pts.length > 0))) {
         cur.tx = sh.x;
         cur.tz = sh.z;
         cur.caught = sh.tg >= 0;
@@ -941,6 +975,22 @@ test('interpolation marks hooks it could not interpolate (only in the newer snap
   assert.equal(f.hooks.find((h) => h.i === 2)!.z, -1, 'hook 2 stands at its newer position');
   buf.push(snap(12, [hook(1, -2), hook(2, -2)]), 66);
   assert.equal(buf.sample(11.5)!.freshHooks.size, 0, 'one tick later both hooks are interpolated');
+});
+
+test('live chain interpolation preserves link identity as links are added or removed at the hand', () => {
+  const sample = (oldPts: number[], newPts: number[], live = true) => {
+    const buf = new SnapshotBuffer(false);
+    const hook = (x: number, pts: number[]): HookSnap => ({ i: 1, o: 1, k: 0, p: 0, x, z: 0, r: 0.45, pts, tg: -1, ru: -1, fx: live ? 16 : 0 });
+    const snap = (t: number, h: HookSnap) => ({ t, u: [], h: [h], r: [], ev: [] }) as unknown as Snapshot;
+    buf.push(snap(10, hook(5, oldPts)), 0);
+    buf.push(snap(11, hook(6, newPts)), 33);
+    return buf.sample(10.5)!.hooks[0];
+  };
+  assert.deepEqual(sample([0, 0, 2, 0], [1, 1, 3, 1]).pts, [0.5, 0.5, 2.5, 0.5]);
+  assert.deepEqual(sample([0, 0, 2, 0], [-1, 0, 0, 1, 3, 1]).pts, [-1, 0, 0, 0.5, 2.5, 0.5]);
+  assert.deepEqual(sample([0, 0, 2, 0, 4, 0], [3, 1, 5, 1]).pts, [2.5, 0.5, 4.5, 0.5]);
+  assert.deepEqual(sample([0, 0, 2, 0], [1, 1, 3, 1], false).pts, [1, 1, 3, 1], 'fixed waypoints must not slide through terrain');
+  assert.equal(sample([0, 0], [1, 1]).x, 5.5);
 });
 
 test('own hook online: a snapshot stream that stalls mid-throw does not make the hook vanish, pop in behind or move back', () => {

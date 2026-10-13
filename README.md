@@ -9,7 +9,9 @@ A voxel hook-brawler. Up to 6v6 Lunkers stand on either side of a river and drag
 
 This is the browser edition: a normal game with no crypto of any kind. It runs in the browser for free, and cosmetics are earned with Pearls.
 
-More docs: [design](docs/design.md), [economy](docs/economy.md).
+Browser is the free demo for the paid Steam game. Both editions share the Iron Dock UI and look and feel; the Steam edition will receive more advanced graphics. Steam pricing and browser content limits are not implemented here.
+
+More docs: [design](docs/design.md), [economy](docs/economy.md), [latest browser update](docs/browser-update-2026-10-13.md).
 
 Inspired by the classic Pudge Wars custom game. Every character, name, model and sound here is original and generated in code.
 

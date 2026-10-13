@@ -184,7 +184,14 @@ export class SnapshotBuffer {
         freshHooks.add(h.i);
         return h;
       }
-      return { ...h, x: lerp(p.x, h.x, t), z: lerp(p.z, h.z, t) };
+      let pts = h.pts;
+      if ((h.fx & 16) && (p.fx & 16)) {
+        // Live links are added/removed at the hand end. Align from the head so old links
+        // keep their identity instead of blending into the next link when the count changes.
+        const offset = p.pts.length - h.pts.length;
+        pts = h.pts.map((value, i) => i + offset >= 0 ? lerp(p.pts[i + offset], value, t) : value);
+      }
+      return { ...h, pts, x: lerp(p.x, h.x, t), z: lerp(p.z, h.z, t) };
     });
     const prevRunes = new Map<number, RuneSnap>();
     for (const r of na.r) prevRunes.set(r.i, r);

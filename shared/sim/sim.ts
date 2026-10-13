@@ -12,7 +12,7 @@ import {
   type MatchPhase, type MineSnap, type PlayerInfo, type PlayerInput, type RiverState, type RuneSnap, type RuneType, type ScoreRow,
   type Snapshot, type Team, type UnitSnap, type UpgradeStat, type YouSnap,
 } from '../types.ts';
-import { World } from '../world.ts';
+import { World, type Contact } from '../world.ts';
 import type { HazardInst, Hook, Mine, Rune, Unit } from './entities.ts';
 import { buildHazards, hazardTouches, updateHazards } from './hazards.ts';
 import { blockWater, deckLayer, deckTier, hookCanCatch, hookTierOf, stepMove, tiersTouch, type DeckTier } from './movement.ts';
@@ -21,8 +21,8 @@ import type { Whirlpool } from '../maps/types.ts';
 import { moversFloat, moversPresent, riverStateAt } from './river.ts';
 import { updateRunes } from './runes.ts';
 import { updateBots } from './bots.ts';
+import { emptyReturn, extendChain, HOOK_SUBSTEP, retractChain } from './hookMotion.ts';
 
-const HOOK_SUBSTEP = 0.35;
 const MAX_BEND_PTS = 64; // numbers, i.e. 32 points
 const BUFFER_TIME = 0.3;
 /** Ticks with no input before a human's held movement is dropped (jitter is fine, a hidden tab is not). */
@@ -53,6 +53,30 @@ interface InputQueueState {
   sinceHold: number;
   holds: number;
   drained: number;
+}
+
+interface HookMove {
+  h: Hook;
+  owner: Unit;
+  x: number;
+  z: number;
+  dx: number;
+  dz: number;
+  end?: 'range' | 'point' | 'done';
+  endT: number;
+  held?: boolean; // turned during this tick: stationary, but still an eligible clash target
+}
+
+interface HookContact {
+  t: number;
+  priority: number;
+  move: HookMove;
+  kind: 'wall' | 'cover' | 'unit' | 'rune' | 'clash' | 'range' | 'point' | 'done';
+  other?: Hook;
+  unit?: Unit;
+  rune?: Rune;
+  wall?: Contact;
+  targetId: number;
 }
 
 /** What consumeInput is doing for one unit, for tests and diagnostics. */
@@ -157,6 +181,7 @@ export class GameSim {
     if (!u) return;
     const wasBot = u.isBot;
     u.isBot = isBot;
+    if (isBot) u.botDifficulty = this.config.botDifficulty;
     u.brain = null;
     u.queue.length = 0;
     u.input.b = 0;
@@ -290,8 +315,7 @@ export class GameSim {
     if (this.phase === 'playing') for (const u of this.units) this.handleActions(u, dt);
     for (const u of this.units) this.updateUnit(u, dt);
 
-    for (const h of this.hooks) if (!h.dead) this.updateHook(h, dt);
-    this.checkClashes();
+    this.updateHooks(dt);
     this.hooks = this.hooks.filter((h) => !h.dead);
 
     this.separateUnits();
@@ -875,6 +899,9 @@ export class GameSim {
       range: isHook ? HOOK_LEVELS.range[u.up.range] * (longshot ? BAL.longshotRangeMul : 1) : BAL.grappleRange,
       traveled: 0,
       pts: [],
+      live: isHook,
+      curved: false,
+      spent: false,
       bounces: ricochet ? (bouncy ? Math.max(BAL.ricochetBounces, BAL.bouncyBounces) : BAL.ricochetBounces) : 0,
       tg: -1,
       ru: -1,
@@ -914,114 +941,225 @@ export class GameSim {
     return { x: u.x + Math.sin(u.face) * BAL.hookHand * 0.8, z: u.z + Math.cos(u.face) * BAL.hookHand * 0.8 };
   }
 
-  private updateHook(h: Hook, dt: number): void {
-    const owner = this.unitById.get(h.owner);
-    if (!owner || owner.state === UnitState.Dead) {
-      this.breakHook(h);
-      return;
-    }
-    if (h.phase === HookPhase.Out) this.hookOut(h, owner, dt);
-    else if (h.phase === HookPhase.Back) this.hookBack(h, owner, dt);
-    else this.grapplePull(h, owner, dt);
-  }
-
-  private hookOut(h: Hook, owner: Unit, dt: number): void {
-    let remaining = h.speed * dt;
-    const wp = this.activeWhirlpool();
-    while (remaining > 1e-6 && h.phase === HookPhase.Out && !h.dead) {
-      const step = Math.min(remaining, HOOK_SUBSTEP);
-      remaining -= step;
-      if (h.steer) this.steerHook(h, owner, step);
-      if (wp) {
-        const d = dist(h.x, h.z, wp.x, wp.z);
-        if (d < wp.r) {
-          const w = wp.strength * (1 - d / wp.r);
-          const a = w * (step / h.speed);
-          const c = Math.cos(a);
-          const s = Math.sin(a);
-          const ndx = h.dx * c - h.dz * s;
-          const ndz = h.dx * s + h.dz * c;
-          h.dx = ndx;
-          h.dz = ndz;
-          h.bendAcc += Math.abs(a);
-          if (h.bendAcc > 0.1 && h.pts.length < MAX_BEND_PTS) {
-            h.pts.push(q2(h.x), q2(h.z));
-            h.bendAcc = 0;
-          }
-        }
-      }
-      const nx = h.x + h.dx * step;
-      const nz = h.z + h.dz * step;
-      let bestT = 2;
-      let hitUnit: Unit | null = null;
-      let hitRune: Rune | null = null;
-      for (const u of this.units) {
-        if (u.id === h.owner || u.state === UnitState.Dead || u.spawnProt > 0) continue;
-        if (h.kind === HookKind.Hook && u.hookedBy === h.id) continue;
-        const t = sweepCircle(h.x, h.z, nx, nz, u.x, u.z, h.r + UNIT_RADIUS);
-        // inside a deck footprint the hook passes over (or under) a unit on the other layer
-        if (t >= 0 && t < bestT && hookCanCatch(this.world, this.river, h.tier, u)) {
-          bestT = t;
-          hitUnit = u;
-        }
-      }
-      if (h.kind === HookKind.Hook) {
-        for (const r of this.runes) {
-          if (r.dragged) continue;
-          const t = sweepCircle(h.x, h.z, nx, nz, r.x, r.z, h.r + BAL.runeRadius);
-          if (t >= 0 && t < bestT) {
-            bestT = t;
-            hitRune = r;
-            hitUnit = null;
-          }
-        }
-      }
-      const c = this.world.sweep(h.x, h.z, nx, nz, h.r);
-      if (c && c.t < bestT) {
-        bestT = c.t;
-        hitUnit = null;
-        hitRune = null;
-      } else if (bestT > 1) {
-        h.x = nx;
-        h.z = nz;
-        h.traveled += step;
-        if (h.traveled >= h.range) this.startRetract(h);
+  /** Advance all heads on one clock; resolve the earliest contact before any later hit. */
+  private updateHooks(dt: number): void {
+    const frozen = new Set<Hook>();
+    let maxSpeed = 1;
+    for (const h of this.hooks) {
+      if (h.dead) continue;
+      const owner = this.unitById.get(h.owner);
+      if (!owner || owner.state === UnitState.Dead) {
+        this.breakHook(h);
         continue;
       }
-      // move to contact
-      h.x += h.dx * step * bestT;
-      h.z += h.dz * step * bestT;
-      h.traveled += step * bestT;
-      if (hitUnit) {
-        if (h.kind === HookKind.Hook) this.hookHitUnit(h, owner, hitUnit);
-        else this.grappleLatch(h, owner, hitUnit.x, hitUnit.z, hitUnit.id);
-      } else if (hitRune) {
-        hitRune.dragged = true;
-        h.ru = hitRune.id;
-        this.emit({ e: 'runeGrab', u: owner.id, r: hitRune.id, t: hitRune.type });
+      if (h.phase === HookPhase.Pull) this.grapplePull(h, owner, dt);
+      else maxSpeed = Math.max(maxSpeed, h.speed * (h.phase === HookPhase.Back ? BAL.hookRetractMul : 1));
+    }
+    let left = dt;
+    while (left > 1e-8) {
+      const slice = Math.min(left, HOOK_SUBSTEP / maxSpeed);
+      left -= slice;
+      for (const h of this.hooks) {
+        if (h.dead || frozen.has(h) || h.phase !== HookPhase.Out) continue;
+        const owner = this.unitById.get(h.owner)!;
+        if (h.steer) this.steerHook(h, owner, h.speed * slice);
+        const wp = this.activeWhirlpool();
+        if (wp) {
+          const d = dist(h.x, h.z, wp.x, wp.z);
+          if (d < wp.r) {
+            const a = wp.strength * (1 - d / wp.r) * slice;
+            const c = Math.cos(a), s = Math.sin(a);
+            const dx = h.dx * c - h.dz * s;
+            h.dz = h.dx * s + h.dz * c;
+            h.dx = dx;
+            h.curved = true;
+            if (!h.live) {
+              h.bendAcc += Math.abs(a);
+              if (h.bendAcc > 0.1 && h.pts.length < MAX_BEND_PTS) {
+                h.pts.push(h.x, h.z);
+                h.bendAcc = 0;
+              }
+            }
+          }
+        }
+      }
+      let pending = slice;
+      let contacts = 0;
+      // A bounded zero-time corner loop must never hold up an authoritative tick.
+      while (pending > 1e-8 && contacts++ < 128) {
+        const moves: HookMove[] = [];
+        for (const h of this.hooks) {
+          if (h.dead || h.phase === HookPhase.Pull) continue;
+          const owner = this.unitById.get(h.owner);
+          if (!owner || owner.state === UnitState.Dead) {
+            this.breakHook(h);
+            continue;
+          }
+          moves.push(frozen.has(h) ? { h, owner, x: h.x, z: h.z, dx: 0, dz: 0, endT: 2, held: true } : this.planHookMove(h, owner, pending));
+        }
+        if (!moves.some((m) => !m.held)) break;
+        let contact: HookContact | null = null;
+        const offer = (e: HookContact) => {
+          if (!contact || e.t < contact.t - 1e-9 || (Math.abs(e.t - contact.t) <= 1e-9 &&
+            (e.priority < contact.priority || (e.priority === contact.priority &&
+              (e.move.h.id < contact.move.h.id || (e.move.h.id === contact.move.h.id && e.targetId < contact.targetId)))))) contact = e;
+        };
+        for (const move of moves) {
+          const h = move.h;
+          if (move.end) offer({ t: move.endT, priority: 4, move, kind: move.end, targetId: -1 });
+          if (!move.held && (h.phase === HookPhase.Out || emptyReturn(h))) {
+            for (const u of this.units) {
+              if (u.id === h.owner || u.state === UnitState.Dead || u.spawnProt > 0 || u.hookedBy === h.id || !hookCanCatch(this.world, this.river, h.tier, u)) continue;
+              const carried = moves.find((m) => m.h.tg === u.id);
+              const ux = carried ? carried.x - carried.h.x : 0;
+              const uz = carried ? carried.z - carried.h.z : 0;
+              const t = sweepCircle(h.x - u.x, h.z - u.z, move.x - u.x - ux, move.z - u.z - uz, 0, 0, h.r + UNIT_RADIUS);
+              if (t >= 0) offer({ t, priority: 2, move, kind: 'unit', unit: u, targetId: u.id });
+            }
+            if (h.kind === HookKind.Hook) {
+              for (const r of this.runes) {
+                if (r.dragged) continue;
+                const t = sweepCircle(h.x, h.z, move.x, move.z, r.x, r.z, h.r + BAL.runeRadius);
+                if (t >= 0) offer({ t, priority: 3, move, kind: 'rune', rune: r, targetId: r.id });
+              }
+            }
+            const wall = this.world.sweep(h.x, h.z, move.x, move.z, h.r);
+            // Retrieval may pass through cover, but cannot catch a body through it. Exiting the
+            // wall that caused retraction is allowed, so a harmless t=0 exit is not another hit.
+            if (wall && (h.phase === HookPhase.Out || move.dx * wall.nx + move.dz * wall.nz < -1e-8)) {
+              offer({ t: wall.t, priority: 0, move, kind: h.phase === HookPhase.Out ? 'wall' : 'cover', wall, targetId: wall.index });
+            }
+          }
+        }
+        const sorted = [...moves].sort((a, b) => a.h.id - b.h.id);
+        for (let i = 0; i < sorted.length; i++) {
+          const a = sorted[i];
+          if (a.h.kind !== HookKind.Hook || (a.h.phase !== HookPhase.Out && !emptyReturn(a.h))) continue;
+          for (let j = i + 1; j < sorted.length; j++) {
+            const b = sorted[j];
+            if (b.h.kind !== HookKind.Hook || a.owner.team === b.owner.team || (b.h.phase !== HookPhase.Out && !emptyReturn(b.h))) continue;
+            if (a.h.phase !== HookPhase.Out && b.h.phase !== HookPhase.Out) continue;
+            const t = sweepCircle(a.h.x - b.h.x, a.h.z - b.h.z, a.x - b.x, a.z - b.z, 0, 0, a.h.r + b.h.r + 0.1);
+            if (t < 0) continue;
+            const cx = a.h.x + (a.x - a.h.x) * t, cz = a.h.z + (a.z - a.h.z) * t;
+            if (platformAt(this.map, cx, cz) && ((a.h.tier === 0 && b.h.tier === 2) || (a.h.tier === 2 && b.h.tier === 0))) continue;
+            offer({ t, priority: 1, move: a, kind: 'clash', other: b.h, targetId: b.h.id });
+          }
+        }
+        // TS does not track assignments made inside offer's callback.
+        const hit = contact as HookContact | null;
+        const fraction = hit ? clamp(hit.t, 0, 1) : 1;
+        const elapsed = pending * fraction;
+        for (const m of moves) {
+          if (m.held) continue;
+          const h = m.h;
+          h.x += (m.x - h.x) * fraction;
+          h.z += (m.z - h.z) * fraction;
+          if (h.phase === HookPhase.Out) {
+            h.traveled += h.speed * elapsed;
+            if (h.live) {
+              const hand = this.handPos(m.owner);
+              extendChain(h.pts, h.x, h.z, hand.x, hand.z, h.speed * elapsed);
+            }
+          } else {
+            h.dx = m.dx; h.dz = m.dz;
+            if (h.live) {
+              const hand = this.handPos(m.owner);
+              retractChain(h.pts, hand.x, hand.z, h.speed * BAL.hookRetractMul * elapsed);
+            }
+            this.dragAttached(h);
+          }
+        }
+        pending -= elapsed;
+        if (!hit) break;
+        this.applyHookContact(hit, frozen);
+      }
+    }
+  }
+
+  private planHookMove(h: Hook, owner: Unit, dt: number): HookMove {
+    const move = h.speed * (h.phase === HookPhase.Back ? BAL.hookRetractMul : 1) * dt;
+    if (h.phase === HookPhase.Out) {
+      return { h, owner, x: h.x + h.dx * move, z: h.z + h.dz * move, dx: h.dx, dz: h.dz,
+        end: h.traveled + move >= h.range ? 'range' : undefined, endT: Math.max(0, (h.range - h.traveled) / move) };
+    }
+    const hand = this.handPos(owner);
+    const points = h.live ? h.pts.slice() : h.pts;
+    if (h.live) retractChain(points, hand.x, hand.z, move);
+    const hasPoint = points.length >= 2;
+    const tx = hasPoint ? points[points.length - 2] : hand.x;
+    const tz = hasPoint ? points[points.length - 1] : hand.z;
+    const d = dist(h.x, h.z, tx, tz);
+    const dx = d > 1e-8 ? (tx - h.x) / d : 0, dz = d > 1e-8 ? (tz - h.z) / d : 0;
+    const travel = h.live && hasPoint ? Math.min(move, d) : move;
+    return { h, owner, x: h.x + dx * travel, z: h.z + dz * travel, dx, dz,
+      end: d <= move && (!h.live || !hasPoint) ? hasPoint ? 'point' : 'done' : undefined, endT: d / move };
+  }
+
+  private applyHookContact(hit: HookContact, frozen: Set<Hook>): void {
+    const h = hit.move.h, owner = hit.move.owner;
+    switch (hit.kind) {
+      case 'unit': {
+        const outgoing = h.phase === HookPhase.Out;
+        if (h.kind === HookKind.Hook) this.hookHitUnit(h, owner, hit.unit!);
+        else this.grappleLatch(h, owner, hit.unit!.x, hit.unit!.z, hit.unit!.id);
+        if (outgoing) frozen.add(h);
+        return;
+      }
+      case 'rune': {
+        const outgoing = h.phase === HookPhase.Out;
+        hit.rune!.dragged = true;
+        h.ru = hit.rune!.id;
+        h.spent = true;
+        this.emit({ e: 'runeGrab', u: owner.id, r: h.ru, t: hit.rune!.type });
         this.startRetract(h);
-      } else if (c) {
+        if (outgoing) frozen.add(h);
+        return;
+      }
+      case 'clash':
+        h.spent = hit.other!.spent = true;
+        this.startRetract(h);
+        this.startRetract(hit.other!);
+        frozen.add(h); frozen.add(hit.other!);
+        this.emit({ e: 'hookClash', a: h.owner, b: hit.other!.owner, x: q2((h.x + hit.other!.x) / 2), z: q2((h.z + hit.other!.z) / 2) });
+        return;
+      case 'cover':
+        h.spent = true;
+        return;
+      case 'range':
+        h.traveled = h.range;
+        this.startRetract(h);
+        frozen.add(h);
+        return;
+      case 'point':
+        h.pts.splice(-2, 2);
+        return;
+      case 'done':
+        this.finishHook(h, owner);
+        return;
+      case 'wall': {
+        const c = hit.wall!;
         if (h.kind === HookKind.Grapple) {
           if (c.what === 'mover' && this.river.deep) {
-            // a log or barge floating in deep water is no anchor: latching would drop you in the river
             this.emit({ e: 'hookWall', u: owner.id, x: q2(h.x), z: q2(h.z) });
             this.startRetract(h);
           } else this.grappleLatch(h, owner, h.x, h.z, -1);
+          frozen.add(h);
         } else if (c.bouncy || h.bounces > 0) {
           if (!c.bouncy) h.bounces--;
           const dot = h.dx * c.nx + h.dz * c.nz;
           h.dx -= 2 * dot * c.nx;
           h.dz -= 2 * dot * c.nz;
-          const l = Math.sqrt(h.dx * h.dx + h.dz * h.dz) || 1;
-          h.dx /= l;
-          h.dz /= l;
-          h.x += c.nx * 0.02;
-          h.z += c.nz * 0.02;
-          if (h.pts.length < MAX_BEND_PTS) h.pts.push(q2(h.x), q2(h.z));
+          const len = Math.hypot(h.dx, h.dz) || 1;
+          h.dx /= len; h.dz /= len;
+          h.x += c.nx * 0.02; h.z += c.nz * 0.02;
+          h.curved = true;
+          if (!h.live && h.pts.length < MAX_BEND_PTS) h.pts.push(h.x, h.z);
           this.emit({ e: 'hookBounce', u: owner.id, x: q2(h.x), z: q2(h.z) });
         } else {
           this.emit({ e: 'hookWall', u: owner.id, x: q2(h.x), z: q2(h.z) });
           this.startRetract(h);
+          frozen.add(h);
         }
       }
     }
@@ -1040,8 +1178,9 @@ export class GameSim {
     const a = cur + d;
     h.dx = Math.sin(a);
     h.dz = Math.cos(a);
+    if (Math.abs(d) > 1e-8) h.curved = true;
     h.bendAcc += Math.abs(d);
-    if (h.bendAcc > 0.07 && h.pts.length < MAX_BEND_PTS) {
+    if (!h.live && h.bendAcc > 0.07 && h.pts.length < MAX_BEND_PTS) {
       h.pts.push(q2(h.x), q2(h.z));
       h.bendAcc = 0;
     }
@@ -1052,12 +1191,14 @@ export class GameSim {
   }
 
   private hookHitUnit(h: Hook, owner: Unit, t: Unit): void {
+    h.spent = true;
     const ally = t.team === owner.team;
     let saved = false;
     if (t.hookedBy >= 0) {
       const old = this.hookById(t.hookedBy);
       if (old) {
         old.tg = -1;
+        old.spent = true;
         this.startRetract(old);
         this.emit({ e: 'hookSteal', u: owner.id, from: old.owner, tg: t.id });
         const oldOwner = this.unitById.get(old.owner);
@@ -1132,32 +1273,6 @@ export class GameSim {
       if (oh) this.breakHook(oh);
     }
     this.emit({ e: 'grappleHit', u: owner.id, x: q2(x), z: q2(z) });
-  }
-
-  private hookBack(h: Hook, owner: Unit, dt: number): void {
-    let move = h.speed * BAL.hookRetractMul * dt;
-    const hand = this.handPos(owner);
-    while (move > 1e-6) {
-      const hasPt = h.pts.length >= 2;
-      const tx = hasPt ? h.pts[h.pts.length - 2] : hand.x;
-      const tz = hasPt ? h.pts[h.pts.length - 1] : hand.z;
-      const d = dist(h.x, h.z, tx, tz);
-      if (d <= move) {
-        h.x = tx;
-        h.z = tz;
-        move -= d;
-        if (hasPt) {
-          h.pts.length -= 2;
-          continue;
-        }
-        this.finishHook(h, owner);
-        return;
-      }
-      h.x += ((tx - h.x) / d) * move;
-      h.z += ((tz - h.z) / d) * move;
-      move = 0;
-    }
-    this.dragAttached(h);
   }
 
   private dragAttached(h: Hook): void {
@@ -1350,29 +1465,6 @@ export class GameSim {
       if (r) r.dragged = false;
     }
     this.emit({ e: 'hookBreak', u: h.owner, tg: tgId, x: q2(h.x), z: q2(h.z) });
-  }
-
-  private checkClashes(): void {
-    const hs = this.hooks;
-    for (let i = 0; i < hs.length; i++) {
-      const a = hs[i];
-      if (a.dead || a.kind !== HookKind.Hook || a.phase !== HookPhase.Out) continue;
-      const aTeam = this.unitById.get(a.owner)?.team;
-      for (let j = 0; j < hs.length; j++) {
-        if (i === j) continue;
-        const b = hs[j];
-        if (b.dead || b.kind !== HookKind.Hook || b.owner === a.owner) continue;
-        if (this.unitById.get(b.owner)?.team === aTeam) continue; // allies' hooks pass through each other
-        if (b.phase === HookPhase.Back && b.tg >= 0) continue;
-        const rr = a.r + b.r + 0.1;
-        if (dist2(a.x, a.z, b.x, b.z) < rr * rr) {
-          this.startRetract(a);
-          this.startRetract(b);
-          this.emit({ e: 'hookClash', a: a.owner, b: b.owner, x: q2((a.x + b.x) / 2), z: q2((a.z + b.z) / 2) });
-          break;
-        }
-      }
-    }
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1803,8 +1895,8 @@ export class GameSim {
       units.push(this.unitSnap(u));
     }
     const hooks: HookSnap[] = this.hooks.map((h) => ({
-      i: h.id, o: h.owner, k: h.kind, p: h.phase, x: q2(h.x), z: q2(h.z), r: h.r, pts: h.pts.slice(), tg: h.tg, ru: h.ru,
-      fx: (h.ember ? 1 : 0) | (h.ricochet ? 2 : 0) | (h.steer ? 4 : 0) | (h.longshot ? 8 : 0),
+      i: h.id, o: h.owner, k: h.kind, p: h.phase, x: q2(h.x), z: q2(h.z), r: h.r, pts: h.pts.map(q2), tg: h.tg, ru: h.ru,
+      fx: (h.ember ? 1 : 0) | (h.ricochet ? 2 : 0) | (h.steer ? 4 : 0) | (h.longshot ? 8 : 0) | (h.live ? 16 : 0) | (h.curved ? 32 : 0),
     }));
     const runes: RuneSnap[] = this.runes.map((r) => ({ i: r.id, t: r.type, x: q2(r.x), z: q2(r.z), d: r.dragged ? 1 : 0 }));
     const mines: MineSnap[] = [];

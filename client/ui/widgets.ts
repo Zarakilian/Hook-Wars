@@ -1,7 +1,8 @@
-// Reusable menu widgets: chunky buttons, segmented pickers, arrow pickers, switches, sliders.
+// Reusable menu widgets: control plates, segmented pickers, arrow pickers, switches, sliders.
 // Every widget is built once and updated in place with set(), so focus and hover survive re-renders.
 import { h } from './dom.ts';
 import { icon, type IconId } from './icons.ts';
+import { plateIcon } from './plateIcons.ts';
 import type { AppActions } from './types.ts';
 
 let sound: AppActions['uiSound'] | null = null;
@@ -35,7 +36,7 @@ export interface ButtonOpts {
 
 export function button(label: string, onClick: (e: MouseEvent) => void, o: ButtonOpts = {}): HTMLButtonElement {
   const b = h('button', { class: `btn ${o.cls ?? ''}`.trim(), type: o.type ?? 'button', title: o.title, disabled: o.disabled });
-  if (o.icon) b.append(icon(o.icon, 'btn-ico'));
+  if (o.icon) b.append(plateIcon(o.icon, 'btn-ico'));
   if (label) b.append(h('span', { class: 'btn-label', text: label }));
   b.addEventListener('click', (e) => {
     if (b.disabled) return;

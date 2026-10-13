@@ -125,7 +125,10 @@ export interface Hook {
   r: number;
   range: number;
   traveled: number;
-  pts: number[]; // fixed bend points from hand to head
+  pts: number[]; // hand-to-head chain points (live links for normal hooks, waypoints for legacy fixtures)
+  live?: boolean; // classic flexible chain: links follow the head outward and the caster on return
+  curved?: boolean; // head was deflected/steered; chain bending alone does not change its aimed flight
+  spent?: boolean; // already caught something or clashed: cannot take a second catch on return
   bounces: number;
   tg: number;
   ru: number;

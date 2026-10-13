@@ -10,6 +10,7 @@ import { menuShowcase, themeForMap } from '../../render/showcase/index.ts';
 import type { ScreenView, UiCtx } from '../ctx.ts';
 import { h } from '../dom.ts';
 import { icon, setIcon, type IconId } from '../icons.ts';
+import { plateIcon } from '../plateIcons.ts';
 import { TIPS } from '../info.ts';
 import { createLogo } from '../logo.ts';
 import { ONE_SHOTS } from '../preview.ts';
@@ -23,12 +24,12 @@ export function buildMenu(ctx: UiCtx, s0: AppState): ScreenView {
   // ---------------------------------------------------------------- left: logo + nav
   const navBtn = (label: string, sub: string, ico: IconId, fn: () => void, cls = '') => {
     const b = button('', fn, { cls: `nav-btn ${cls}` });
-    b.append(h('span', { class: 'nav-ico' }, icon(ico)), h('span', { class: 'nav-text' }, h('span', { class: 'nav-label', text: label }), h('span', { class: 'nav-sub', text: sub })));
+    b.append(h('span', { class: 'nav-ico' }, plateIcon(ico)), h('span', { class: 'nav-text' }, h('span', { class: 'nav-label', text: label }), h('span', { class: 'nav-sub', text: sub })), h('span', { class: 'nav-next', 'aria-hidden': 'true', text: '›' }));
     return b;
   };
   const tile = (label: string, sub: string, ico: IconId, fn: () => void, cls = '') => {
     const b = button('', fn, { cls: `hub-tile ${cls}` });
-    b.append(h('span', { class: 'ht-art' }, icon(ico)), h('span', { class: 'ht-label', text: label }), h('span', { class: 'ht-sub', text: sub }));
+    b.append(h('span', { class: 'ht-art' }, plateIcon(ico)), h('span', { class: 'ht-label', text: label }), h('span', { class: 'ht-sub', text: sub }));
     return b;
   };
   const econ = ctx.econ();

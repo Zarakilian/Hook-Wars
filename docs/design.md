@@ -7,7 +7,7 @@
 
 Hook Wars is a voxel hook-brawler. Two teams of up to 6 Lunkers (5v5 is the default and the Quick Play size) stand on either side of a river and drag each other across it with chain hooks. It is inspired by the classic "Pudge Wars" custom game, but every character, name and asset is original.
 
-**Editions.** This tree is the standard edition: no crypto of any kind. It ships as a free browser build (cosmetics earned with Pearls) and as a paid Steam build (US$4.99 Early Access; premium cosmetics sold through Steam's Item Store and traded on the Steam Community Market). Steam does not allow games that issue or exchange crypto or NFTs, so the Solana edition lives only on branch `edition/solana`. Code identifiers keep the old internal name `Pudgy`; players only ever see "Lunker".
+**Editions.** This public repository is the free browser demo. The paid full game lives in [Hook-Wars-Steam](https://github.com/Zarakilian/Hook-Wars-Steam) (private), with the same UI and look and feel, plus more advanced graphics still to come. Keep shared combat and controls aligned. The separate private [Hook-Wars-Solana](https://github.com/Zarakilian/Hook-Wars-Solana) edition remains on hold; do not import its crypto dependencies. Browser content limits and final Steam pricing remain undecided. Internal code retains the legacy name Pudgy; players see Lunker.
 
 ## The one-line pitch
 
@@ -63,7 +63,7 @@ Cosmetic option names live in `client/render/contracts.ts` as `COSMETIC_NAMES`: 
 
 | Ability | Modern keys | Classic keys | What it does |
 |---|---|---|---|
-| Chain Hook | Left mouse | Q | 0.12 s wind-up, then a skillshot. Drags the first unit it hits back to you. Hooks that meet in flight clash and both retract. Hooking an ally saves them |
+| Chain Hook | Left mouse | Q | 0.12 s wind-up, then an aimed skillshot with a flexible chain. An empty head catches the first eligible target outward or returning. Opposing heads clash at swept first contact and return harmlessly. Hooking an ally saves them |
 | Grapple | Right mouse or Q | E | Latches onto a tree, rock, wall or unit and flies you to it. You can cross the river. Works while drowning |
 | Belly Bash | Space or E | W | Short cone shove: 70 damage, 6 m knockback, interrupts hooks |
 | Wallop | automatic | automatic | Melee swing at an adjacent enemy, 45 damage per second |
@@ -73,6 +73,19 @@ Cosmetic option names live in `client/render/contracts.ts` as `COSMETIC_NAMES`: 
 Hook upgrades: Damage, Range, Speed and Width, 5 levels each. Items: Ricochet Spring, Ember Barb, Lucky Sinker, Iron Gut, Swift Wellies, Bramble Mine, Healing Pie, Puffball. Runes spawn on river spots every 40 s, and you hook them to claim them: Tailwind (speed), Kraken Ink (double damage), Barnacle Hide (shield), Sea Fog (stealth), Sunken Loot (gold), plus three hook power-ups for 15 s: Bendy Eel (the flying hook curves toward your cursor), Boing Barb (the hook ricochets) and Long Line (50% more range, 15% faster). Names, colours and blurbs live in `RUNE_NAMES`, `RUNE_COLORS` and `RUNE_BLURBS`. All numbers are in `shared/constants.ts`.
 
 You keep walking while your hook or grapple winds up and flies, at 85% speed. Only Belly Bash plants your feet.
+
+**Classic / Advanced hook behavior (2026-10-12).** The ordinary outward head keeps the throw's
+aimed heading. Live chain links follow the head on extension, then follow their neighbor toward
+the moving caster on retraction; walking bends the chain and its return trajectory. Bendy Eel
+adds cursor steering to the outward head. Curving is not automatic target seeking.
+
+Empty return heads use swept catches with the same ally/enemy, protection and deck rules as
+outbound heads. A hook carries one unit or rune; a stolen-from hook cannot collect a second catch.
+Clashed hooks return harmlessly. Cover encountered during an empty return disables further
+catches while still allowing retrieval. Loaded returning heads do not block opposing shots.
+Head contacts resolve on a shared clock: terrain, clash, unit, rune, then range/finish at exact ties,
+with stable hook/target IDs. Range is capped exactly. Protocol 4 distinguishes live chain points
+from actual head deflection so prediction retains the ordinary outward speed.
 
 ## Maps
 

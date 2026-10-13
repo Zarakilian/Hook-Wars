@@ -72,8 +72,10 @@ const HOOK: Spec[] = [
   ...stroke2('M32 3 V9', METAL_D, 4),
   ['ellipse', { cx: 32, cy: 10, rx: 4.5, ry: 6, fill: 'none', stroke: OL, 'stroke-width': 7 }],
   ['ellipse', { cx: 32, cy: 10, rx: 4.5, ry: 6, fill: 'none', stroke: METAL, 'stroke-width': 3 }],
-  ...stroke2('M32 17 V40 A12.5 12.5 0 1 1 13.5 31', METAL, 6),
-  path('M9 37 L12 22 L21 33 Z', METAL),
+  ...stroke2('M32 17 V28', METAL, 5),
+  ...stroke2('M32 28 V40 A12.5 12.5 0 1 1 13.5 31', '#c98459', 6),
+  path('M9 37 L12 22 L21 33 Z', '#c98459'),
+  rect(28, 18, 8, 6, 1, '#bd805b', 1.6),
   hl('M35 21 V38', 2),
   hl('M23 52 A10 10 0 0 0 30 49', 2, 0.45),
 ];
@@ -82,8 +84,8 @@ const ICONS = {
   // ------------------------------------------------------------------ abilities
   hook: HOOK,
   grapple: [
-    ...stroke2('M32 4 C 25 9, 39 13, 32 19', ROPE, 4),
-    circ(32, 22.5, 4.5, BRASS),
+    ...stroke2('M32 4 C 25 9, 39 13, 32 19', '#c9ab79', 4),
+    circ(32, 22.5, 4.5, '#c7a574'),
     ...stroke2('M32 27 V40', METAL, 6),
     ...stroke2('M32 40 C 20 40, 13 46, 14 57', METAL, 5),
     ...stroke2('M32 40 C 44 40, 51 46, 50 57', METAL, 5),
@@ -95,12 +97,12 @@ const ICONS = {
   ],
   bash: [
     path('M6 22 H16 M3 32 H14 M6 42 H16', 'none', 4),
-    circ(29, 33, 18, '#f2a066'),
+    circ(29, 33, 18, '#cd8657'),
     flat('M17 40 A16 16 0 0 0 44 42 A18 12 0 0 1 17 40Z', 'rgba(150,60,20,0.35)'),
     path('M25 34 q4 4 8 0', 'none', 2.6),
     hl('M18 26 A13 13 0 0 1 28 18', 3, 0.55),
-    poly(star(50, 26, 13, 6, 7), FIRE_Y),
-    poly(star(50, 26, 6, 3, 7), '#fff6c8', 0),
+    poly(star(50, 26, 13, 6, 7), '#efd7a1'),
+    poly(star(50, 26, 6, 3, 7), '#fff4d9', 0),
   ],
   // ------------------------------------------------------------------ items
   ricochet: [
@@ -518,7 +520,7 @@ const ICONS = {
   skullsea: [circ(32, 30, 20, '#f0ead8'), rect(22, 44, 20, 12, 4, '#f0ead8'), ell(24, 30, 5, 6, OL, 0), ell(40, 30, 5, 6, OL, 0), path('M27 50 V56 M32 50 V56 M37 50 V56', 'none', 2.2)],
   wallop: [poly(star(32, 32, 28, 14, 9), FIRE_Y), poly(star(32, 32, 16, 8, 9), '#fff6c8', 0)],
   ping: [rect(6, 40, 10, 18, 2, 'currentColor', 0), rect(20, 30, 10, 28, 2, 'currentColor', 0), rect(34, 20, 10, 38, 2, 'currentColor', 0), rect(48, 8, 10, 50, 2, 'currentColor', 0)],
-  flag: [...stroke2('M14 6 V60', WOOD, 4), path('M16 8 C 28 2 38 16 54 8 V34 C 38 42 28 28 16 34 Z', 'currentColor')],
+  flag: [...stroke2('M14 6 V60', 'currentColor', 3.5), path('M16 8 C 28 2 38 16 54 8 V34 C 38 42 28 28 16 34 Z', 'currentColor', 2)],
 } satisfies Record<string, Spec[]>;
 
 export type IconId = keyof typeof ICONS;

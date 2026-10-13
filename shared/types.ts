@@ -176,10 +176,10 @@ export interface HookSnap {
   x: number;
   z: number;
   r: number; // head radius
-  pts: number[]; // fixed chain bend points [x0,z0,x1,z1,...] between the owner's hand and the head
+  pts: number[]; // chain points [x0,z0,x1,z1,...] between the owner's hand and the head
   tg: number; // dragged unit id or -1
   ru: number; // dragged rune id or -1
-  fx: number; // bit 1 = ember, 2 = ricochet spring or Boing Barb, 4 = steer (Bendy Eel), 8 = Long Line
+  fx: number; // 1 ember, 2 ricochet, 4 Bendy Eel, 8 Long Line, 16 live chain, 32 deflected head
 }
 
 export interface RuneSnap {

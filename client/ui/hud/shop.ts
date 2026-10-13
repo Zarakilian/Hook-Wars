@@ -72,10 +72,13 @@ export class Shop {
   constructor(actions: AppActions, close: () => void) {
     this.actions = actions;
     this.gold = h('span', { class: 'shop-gold-num', text: '0' });
+    const closeButton = hudButton('shop-x', close, icon('close'));
+    closeButton.setAttribute('aria-label', 'Close shop');
+    closeButton.title = 'Close shop (B)';
     const head = h('div', { class: 'shop-head' },
       h('div', { class: 'shop-sign' }, h('span', { class: 'shop-sign-top', text: 'Bait & Tackle' }), h('span', { class: 'shop-sign-sub', text: 'Upgrades and odd gadgets' })),
       h('div', { class: 'shop-gold' }, icon('coin'), this.gold),
-      hudButton('shop-x', close, icon('close')));
+      closeButton);
 
     // upgrades
     const upList = h('div', { class: 'shop-list' });

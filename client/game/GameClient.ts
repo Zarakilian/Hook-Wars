@@ -28,7 +28,7 @@ import { createWater, syncWaterMovers } from '../render/world/water.ts';
 import type { Settings } from '../settings.ts';
 import type { Hud, HudFrame } from '../ui/types.ts';
 import { CameraRig } from './camera.ts';
-import { OwnHookPredictor, ghostHead } from './ghost.ts';
+import { OwnHookPredictor, ghostChainPoints, ghostHead } from './ghost.ts';
 import { InputController } from './input.ts';
 
 export interface GameClientDeps {
@@ -537,8 +537,13 @@ export class GameClient {
     const head = ghostHead(g, this.time, this.headTmp);
     const v = this.views.get(this.youId);
     const hand = v ? v.pudgy.getHandWorld(this.tmpV2) : this.tmpV2.set(g.ox, y, g.oz);
+    const links = ghostChainPoints(g, this.time, hand);
+    const count = links.length / 2 + 2;
+    while (this.ghostPts.length < count) this.ghostPts.push(new THREE.Vector3());
+    this.ghostPts.length = count;
     this.ghostPts[0].copy(hand);
-    this.ghostPts[1].set(head.x, y, head.z);
+    for (let i = 0; i < links.length; i += 2) this.ghostPts[i / 2 + 1].set(links[i], y, links[i + 1]);
+    this.ghostPts[count - 1].set(head.x, y, head.z);
     c.setVisible(true);
     c.update(this.ghostPts, 1 / 60, { retracting: false, carrying: false, time: this.time });
   }

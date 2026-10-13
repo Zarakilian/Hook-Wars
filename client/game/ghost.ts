@@ -13,6 +13,7 @@
 import { BAL, HOOK_LEVELS, TICK_DT } from '../../shared/constants.ts';
 import { clamp } from '../../shared/math.ts';
 import type { HookSnap, YouSnap } from '../../shared/types.ts';
+import { extendChain, HOOK_SUBSTEP } from '../../shared/sim/hookMotion.ts';
 
 export interface GhostHookParams {
   /** m/s, Long Line included */
@@ -23,28 +24,15 @@ export interface GhostHookParams {
   range: number;
   /** HookSnap.fx bits: 1 ember, 2 ricochet, 4 bendy, 8 longshot */
   fx: number;
-  /** m from the hand where the server's hook turns at the end of a straight flight (range, rounded up to its 0.35 m step) */
+  /** m from the hand where the server's hook turns at the end of a straight flight (exact range) */
   reach: number;
 }
 
-/** shared/sim/sim.ts HOOK_SUBSTEP: the sim moves a flying hook in steps this long (m). */
-const SIM_HOOK_SUBSTEP = 0.35;
-
 /**
- * Where the server's hook turns on a straight flight: the sim adds its steps (shared/sim/sim.ts hookOut)
- * and turns on the one that reaches the range, up to a step past it. Same arithmetic, same number.
+ * The authoritative head now turns exactly at range, even when range ends inside a substep.
+ * Keep the old helper signature for callers that select speed and range together.
  */
-export function flightReach(speed: number, range: number): number {
-  let traveled = 0;
-  for (let tick = 0; tick < 100_000; tick++) {
-    let remaining = speed * TICK_DT;
-    while (remaining > 1e-6) {
-      const step = Math.min(remaining, SIM_HOOK_SUBSTEP);
-      remaining -= step;
-      traveled += step;
-      if (traveled >= range) return traveled;
-    }
-  }
+export function flightReach(_speed: number, range: number): number {
   return range;
 }
 
@@ -57,7 +45,7 @@ export function ghostHookParams(you: YouSnap): GhostHookParams {
     speed,
     radius: HOOK_LEVELS.width[you.up.width],
     range: you.hookRange,
-    fx: (item('ember') ? 1 : 0) | (item('ricochet') || has('bouncy') ? 2 : 0) | (has('bendy') ? 4 : 0) | (longshot ? 8 : 0),
+    fx: 16 | (item('ember') ? 1 : 0) | (item('ricochet') || has('bouncy') ? 2 : 0) | (has('bendy') ? 4 : 0) | (longshot ? 8 : 0),
     reach: flightReach(speed, you.hookRange),
   };
 }
@@ -96,6 +84,10 @@ export interface GhostFlight extends GhostHookParams {
   turnAt: number;
   /** client clock of the last frame */
   lastTime: number;
+  /** Predicted live links, solely for drawing the chain; never used for hit registration. */
+  chain: number[];
+  chainX: number;
+  chainZ: number;
 }
 
 /**
@@ -150,6 +142,9 @@ export function startGhostFlight(
     srvS: Number.NaN,
     turnAt: -1,
     lastTime: Number.NaN,
+    chain: [],
+    chainX: Number.NaN,
+    chainZ: Number.NaN,
   };
 }
 
@@ -179,6 +174,20 @@ export function ghostHead(g: GhostFlight, time: number, out: { x: number; z: num
   return out;
 }
 
+/** Follow the predicted head in the same short spatial steps as the authoritative chain. */
+export function ghostChainPoints(g: GhostFlight, time: number, hand: { x: number; z: number }): readonly number[] {
+  const head = ghostHead(g, time, { x: 0, z: 0 });
+  if (Number.isNaN(g.chainX)) { g.chainX = g.ox; g.chainZ = g.oz; }
+  const dx = head.x - g.chainX, dz = head.z - g.chainZ;
+  const distance = Math.hypot(dx, dz);
+  const pieces = Math.max(1, Math.ceil(distance / HOOK_SUBSTEP));
+  for (let i = 1; i <= pieces; i++) {
+    extendChain(g.chain, g.chainX + dx * i / pieces, g.chainZ + dz * i / pieces, hand.x, hand.z, distance / pieces);
+  }
+  g.chainX = head.x; g.chainZ = head.z;
+  return g.chain;
+}
+
 /** A point's distance along the ghost's throw, from the hand it left (m). */
 function along(g: GhostFlight, x: number, z: number): number {
   return (x - g.ox) * g.dx + (z - g.oz) * g.dz;
@@ -186,12 +195,13 @@ function along(g: GhostFlight, x: number, z: number): number {
 
 /** The hook flies out on a straight line, the flight the ghost predicts (no catch, no bend, no steering). */
 export function fliesStraight(h: Pick<HookSnap, 'p' | 'tg' | 'ru' | 'pts' | 'fx'>): boolean {
-  return h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && !(h.fx & 4);
+  const straightHead = h.fx & 16 ? !(h.fx & 32) : h.pts.length === 0;
+  return h.p === 0 && h.tg < 0 && h.ru < 0 && straightHead && !(h.fx & 4);
 }
 
 /** Bendy Eel: flying out, but steered toward the live cursor on the server, which the ghost cannot follow. */
 function steers(h: Pick<HookSnap, 'p' | 'tg' | 'ru' | 'pts' | 'fx'>): boolean {
-  return h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && (h.fx & 4) !== 0;
+  return h.p === 0 && h.tg < 0 && h.ru < 0 && ((h.fx & 16) !== 0 || h.pts.length === 0) && (h.fx & 4) !== 0;
 }
 
 /**
@@ -326,7 +336,7 @@ export function blendHead(bl: HeadBlend, h: Pick<HookSnap, 'x' | 'z' | 'p' | 'tg
   const k = Math.max(0, 1 - bl.t / bl.dur);
   out.x = h.x + bl.ox * k;
   out.z = h.z + bl.oz * k;
-  if (h.p === 0 && h.tg < 0 && h.ru < 0 && h.pts.length === 0 && !(h.fx & 4)) {
+  if (fliesStraight(h)) {
     const along = (out.x - bl.lx) * bl.dx + (out.z - bl.lz) * bl.dz;
     if (along < 0) {
       out.x -= bl.dx * along;

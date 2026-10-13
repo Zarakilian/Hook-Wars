@@ -6,6 +6,7 @@ import type { UiCtx } from './ctx.ts';
 import { h, pulse } from './dom.ts';
 import { fmtPearls } from './econ.ts';
 import { icon, setIcon, type IconId } from './icons.ts';
+import { plateIcon } from './plateIcons.ts';
 import type { AppState, Screen } from './types.ts';
 import { button, clickSound } from './widgets.ts';
 
@@ -83,7 +84,7 @@ export function hubShell(ctx: UiCtx, active: Screen, title: string, subtitle: st
   const chip = profileChip(ctx);
   const tabs = h('nav', { class: 'hub-tabs', 'aria-label': 'Hub' });
   for (const t of HUB) {
-    const b = h('button', { class: `hub-tab ${t.screen === active ? 'on' : ''}`, type: 'button', 'aria-current': t.screen === active ? 'page' : 'false' }, icon(t.icon, 'ht-ico'), h('span', { text: t.label }));
+    const b = h('button', { class: `hub-tab ${t.screen === active ? 'on' : ''}`, type: 'button', 'aria-current': t.screen === active ? 'page' : 'false' }, plateIcon(t.icon, 'ht-ico'), h('span', { text: t.label }));
     b.addEventListener('click', () => {
       if (t.screen === active) return;
       clickSound();

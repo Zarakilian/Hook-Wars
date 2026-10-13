@@ -2,7 +2,7 @@
 import type { FamilyId, ItemId, MatchConfig, RuneType, UpgradeStat } from './types.ts';
 
 export const GAME_VERSION = '0.1.0';
-export const PROTOCOL_VERSION = 3; // 2: slot loadouts, accounts, economy messages. 3: snapshot acks, rejoin tokens, spectator delay
+export const PROTOCOL_VERSION = 4; // 4: live chain points and independent head-deflection flags
 
 export const TICK_RATE = 30;
 export const TICK_DT = 1 / TICK_RATE;
@@ -72,6 +72,7 @@ export const BAL = {
   castMoveMul: 0.85, // walking speed during the Hook / Grapple wind-up (they no longer root you)
   hookHand: 0.95, // hand offset from unit centre
   hookDeliver: 1.7, // release distance in front of the caster
+  hookChainSpacing: 1.5, // metres between simulated links; links bend with the moving caster
 
   // Grapple
   grappleCooldown: 12,

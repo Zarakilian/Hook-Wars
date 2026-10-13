@@ -139,6 +139,45 @@ test('leaving and rejoining a running match takes your own unit back, with its p
   assert.equal(room.members.get(2)!.team, u.team);
 });
 
+test('disconnect stand-ins use the room difficulty and rejoin restores the same progress and control', () => {
+  for (const botDifficulty of ['easy', 'normal', 'hard', 'brutal'] as const) {
+    const a = fakeClient(1, 'A');
+    const b = fakeClient(2, 'B');
+    const room = new Room('DIFFS', 'r', false, { ...DEFAULT_CONFIG, teamSize: 1, botDifficulty }, a, () => {});
+    room.join(a);
+    room.join(b);
+    assert.equal(room.start(1), null);
+    const sim = room.sim!;
+    const u = sim.unitById.get(2)!;
+    const token = room.rejoinToken(2)!;
+    u.gold = 4321;
+    u.up.range = 2;
+    u.items[0] = { id: 'pie', charges: 1 };
+    u.stats.k = 3;
+    room.leave(2, true);
+    assert.equal(u.isBot, true);
+    assert.equal(u.botDifficulty, botDifficulty);
+    const update = a.msgs.findLast((m) => m.t === 'players');
+    assert.ok(update?.t === 'players');
+    assert.equal(update.players.find((p) => p.id === u.id)!.botDifficulty, botDifficulty);
+    u.input.mx = 1;
+    u.input.mz = 0.5;
+    u.queue.push({ seq: 1, mx: 1, mz: 0, ax: 0, az: 0, b: 0 });
+    const returning = fakeClient(3, 'B');
+    room.join(returning, token);
+    assert.equal(room.members.get(3)!.unit, u.id);
+    assert.equal(sim.unitById.get(u.id), u);
+    assert.equal(u.isBot, false);
+    assert.equal(u.gold, 4321);
+    assert.equal(u.up.range, 2);
+    assert.deepEqual(u.items[0], { id: 'pie', charges: 1 });
+    assert.equal(u.stats.k, 3);
+    assert.equal(u.queue.length, 0);
+    assert.equal(u.input.mx, 0);
+    assert.equal(u.input.mz, 0);
+  }
+});
+
 test('spectator snapshots do not reveal stealthed units or any mines', () => {
   const players: PlayerInfo[] = [0, 1].map((team, i) => ({ id: i + 1, name: `P${i}`, team: team as 0 | 1, family: 'bot', loadout: {}, isBot: false }));
   const sim = new GameSim({ ...DEFAULT_CONFIG, botFill: false }, players, 3);
